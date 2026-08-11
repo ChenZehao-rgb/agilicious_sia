@@ -1,0 +1,27 @@
+general:
+  generate_plots: True            # generate a plot visualizing the generated trajectory
+  n_trajectories: 1               # generate multiple trajectories
+  debug: False                    # Enable debug outputs
+quadrotor:
+  mass: 0.7                       # [kg]
+  inertia: [ .03, .03, .06 ]      # [kg m^2]
+  max_thrust_per_motor: 7.0       # [N]
+  rotor_drag_coeff: 0.13          # [Nm/N]
+  arm_length: 0.15                # [m]
+trajectory:
+  type: "symbolic"                # "random", "symbolic"
+  yaw_mode: "min_yaw_rate"        # "min_yaw_rate", "constant", "velocity", "acceleration"
+  yaw: 0.0                        # [deg] desired yaw. only used if `yaw_mode` is `constant`
+  duration: 30.0                  # [s] duration of trajectory
+  dt: 0.02                        # [s] trajectory will be sampled with this period
+  seed: -1                        # set to -1 for random seed
+  bound_min: [ -4.0, -4.0, 1.0 ]  # min corner of bounding box around trajectory
+  bound_max: [ 8.0, 5.0, 5.0 ]    # max corner of bounding box around trajectory
+  random:
+    num_kernels: 3                # number of kernels to overlay
+    max_length_scale: 0.12        # shorter length scales result in more aggressive trajectories
+    min_length_scale: 0.10        # shorter length scales result in more aggressive trajectories
+    max_period: 50.0              # sampled trajectories repeat after a sampled period
+    min_period: 20.0              # sampled trajectories repeat after a sampled period
+  dt_gen: 0.005                   # numerical diff is done with this period, does not affect dt of saved trajectory
+  t_speedup: 5.0                  # duration of speedup and slowdown at the start and end of the trajectory

@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<launch>
+    <arg name="quad_name"/>
+
+    <include file="$(find agiros)/launch/real_world/t265_only.launch"/>
+
+    <group ns="$(arg quad_name)">
+        <include file="$(find agiros)/launch/mavros/betaflight.launch"></include>
+
+        <node name="agiros_pilot" pkg="agiros" type="agiros" output="screen">
+            <param name="agi_param_dir" value="$(find agilib)/params"/>
+            <param name="ros_param_dir" value="$(find agiros)/parameters"/>
+            <param name="pilot_config" value="outdoor_pilot_betaflight.yaml"/>
+            <remap from="agiros_pilot/odometry_estimate" to="/t265/odom/sample"/>
+            <remap from="agiros_pilot/pose_estimate" to="/vicon/$(arg quad_name)"/>
+        </node>
+    </group>
+</launch>

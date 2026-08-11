@@ -1,0 +1,38 @@
+pipeline:
+  estimator:
+    type:               "Feedthrough"
+    file:               "feedthrough_betaflight_sitl.yaml"
+
+  sampler:
+    type:               "Time"
+
+  controller:
+    type:               "MPC"
+    file:               "mpc_betaflight_sitl.yaml"
+
+  bridge:
+    type:               "External"
+    file:               "betaflight_udp.yaml"
+
+quadrotor:              "betaloop_iris.yaml"
+
+dt_min:                 0.01
+outerloop_divisor:      1
+dt_telemetry:           0.1
+
+traj_type:              "poly_min_snap"
+velocity_in_bodyframe:  true
+takeoff_height:         1.0
+takeoff_threshold:      1.0
+start_land_speed:       0.5
+brake_deceleration:     3.0
+go_to_pose_mean_vel:    1.0
+stop_after_feedthrough: true
+feedthrough_timeout:    0.1
+
+viz_sampler_dt:         0.1
+sphere_size:            0.15
+pub_log_var:            false
+
+guard:
+  type:                 "None"

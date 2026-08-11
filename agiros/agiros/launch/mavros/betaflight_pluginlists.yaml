@@ -1,0 +1,36 @@
+plugin_blacklist:
+# common
+- 3dr_radio
+- actuator_control
+- safety_area
+- altitude
+- command
+- ftp
+- global_position
+- hil
+- home_position
+- imu
+- local_position
+- manual_control
+- param
+- rc_io
+- safety_area
+- setpoint_accel
+- setpoint_position
+- setpoint_raw
+- setpoint_trajectory
+- setpoint_velocity
+# - sys_status
+- sys_time
+- vfr_hud
+- waypoint
+- wind_estimation
+# extras
+- image_pub
+- vibration
+- distance_sensor
+- rangefinder
+- wheel_odometry
+
+plugin_whitelist: []
+#- 'sys_*'

@@ -1,0 +1,29 @@
+quadrotor: "kingfisher.yaml"
+
+delay: 0.02
+controller:
+  name: "Betaflight"
+  file: "llc_betaflight.yaml"
+#  name: "Simple"
+#  file: "llc_simple.yaml"
+integrator:
+  name: "RK4"
+  step_size: 0.001
+
+# Dynamics Pipeline
+model_pipeline:
+  - type: "ModelInit"
+    file: "model_init.yaml"
+  - type: "ModelMotor"
+    file: "model_motor.yaml"
+  - type: "ModelRotorSimple"
+    file: "model_rotor_simple.yaml"
+  #- type: "ModelRotorBEM"
+  #  file: "model_rotor_bem.yaml"
+  #- type: "ModelBodyDrag"
+  #  file: "model_body_drag.yaml"
+  - type: "ModelRigidBody"
+    file: "model_rigid_body.yaml"
+
+
+

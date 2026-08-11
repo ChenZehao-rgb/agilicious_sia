@@ -1,0 +1,12 @@
+<?xml version="1.0"?>
+<launch>
+    <arg name="quad_name"/>
+
+    <group ns="$(arg quad_name)">
+	    <node name="laird_to_sbus" pkg="agiros" type="laird_to_sbus_bridge" output="screen">
+            <param name="sbus_config" value="$(find agilib)/params/sbus.yaml"/>
+            <param name="laird_config" value="$(find agilib)/params/laird_receive.yaml"/>
+            <param name="quadrotor" value="$(find agiros)/parameters/quads/kingfisher.yaml"/>
+        </node>
+    </group>
+</launch>

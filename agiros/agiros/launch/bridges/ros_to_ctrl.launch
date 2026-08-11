@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="ctrl_config" default="$(find agilib)/params/ctrl.yaml"/>
+  <arg name="quadrotor" default="$(find agiros)/parameters/quads/kingfisher.yaml"/>
+  
+    <node pkg="agiros" name="ros_to_ctrl_bridge" type="ros_to_ctrl_bridge" output="screen">
+        <param name="quadrotor" value="$(arg quadrotor)"/>
+        <param name="ctrl_config" value="$(arg ctrl_config)"/>
+    </node>
+
+</launch>

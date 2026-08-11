@@ -1,0 +1,24 @@
+name: clang_format
+
+on:
+  pull_request:
+    if: github.event.pull_request.draft == false
+  workflow_dispatch:
+  schedule:
+    - cron: 0 4 * * *
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2.3.4
+    - name: 'clang-format agilib'
+      uses: DoozyX/clang-format-lint-action@v0.5
+      with:
+        source: './agilib'
+        exclude: './agilib/externals'
+    - name: 'clang-format agiros'
+      uses: DoozyX/clang-format-lint-action@v0.5
+      with:
+        source: './agiros'

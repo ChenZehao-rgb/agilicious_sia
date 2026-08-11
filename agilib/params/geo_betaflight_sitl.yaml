@@ -1,0 +1,16 @@
+drag_compensation: false
+
+# Conservative first-flight gains.  Betaflight retains the high-rate body-rate
+# and motor loops; this controller is the 100 Hz position / attitude outer loop.
+kpacc:   [4.0, 4.0, 6.0]
+kdacc:   [3.0, 3.0, 4.0]
+kpatt_z: 3.0
+kpatt_xy: 8.0
+kprate:  [0.0, 0.0, 0.0]
+
+p_err_max: [0.6, 0.6, 0.6]
+v_err_max: [1.0, 1.0, 1.0]
+
+filter_sampling_frequency: 100
+filter_cutoff_frequency: 6
+

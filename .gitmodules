@@ -1,0 +1,6 @@
+[submodule "externals/agiNuttx/rpg-nuttx-apps"]
+	path = externals/agiNuttx/rpg-nuttx-apps
+	url = git@github.com:uzh-rpg/rpg-nuttx-apps.git
+[submodule "externals/agiNuttx/rpg-nuttx-nuttx"]
+	path = externals/agiNuttx/rpg-nuttx-nuttx
+	url = git@github.com:uzh-rpg/rpg-nuttx-nuttx.git

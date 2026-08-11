@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="port" default="/dev/ttyTHS2" />
+  <arg name="baudrate" default="115200" />
+
+    <node pkg="agiros" name="ros_to_msp_bridge" type="ros_to_msp_bridge" output="screen">
+        <param name="port" value="$(arg port)"/>
+        <param name="baudrate" value="$(arg baudrate)"/>
+    </node>
+
+</launch>

@@ -1,0 +1,30 @@
+name: CLANG_CI
+
+on:
+  pull_request:
+    if: github.event.pull_request.draft == false
+  workflow_dispatch:
+  schedule:
+    - cron: 0 4 * * *
+
+jobs:
+  build:
+
+    runs-on: ubuntu-20.04
+
+    steps:
+    - uses: actions/checkout@v2.3.4
+    - name: cmake
+      run: scripts/cmake_ci.sh clang
+      shell: bash
+    - name: make
+      run: cd agilib/build && make -j${nprog}
+    - name: test
+      run: >
+        cd agilib/build &&
+        ./tests --gtest_filter=-MPC.*:
+        ./tests --gtest_filter=MPC.ConstrutorTest &&
+        ./tests --gtest_filter=MPC.StaticTest &&
+        ./tests --gtest_filter=MPC.TakeoffTest &&
+        ./tests --gtest_filter=MPC.TakeOffTestCollectiveThrustRates &&
+        ./tests --gtest_filter=MPC.StepReferenceJump

@@ -1,0 +1,26 @@
+<?xml version="1.0"?>
+<launch>
+    <arg name="quad_name"/>
+    <arg name="rviz" default="false"/>
+
+    <!-- GUI -->
+    <node name="agiros_gui" pkg="rqt_gui" type="rqt_gui"
+          args="-s agiros_gui.basic_flight.BasicFlight --args
+        --quad_name $(arg quad_name)" output="screen"/>
+
+     <node pkg="vrpn_client_ros" type="vrpn_client_node" name="mocap" output="screen">
+       <param name="server" value="192.168.200.119"/>
+       <param name="update_frequency" value="400"/>
+       <param name="use_server_time" value="false"/>
+       <param name="broadcast_tf" value="true"/>
+       <param name="frame_id" value="world"/>
+       <param name="refresh_tracker_frequency" value="1"/>
+     </node>
+
+    <!-- Visualization -->
+    <group if="$(arg rviz)">
+        <node pkg="rviz" type="rviz" name="viz_face" args="-d $(find agiros)/resources/rviz/arena.rviz"
+              ns="$(arg quad_name)">
+        </node>
+    </group>
+</launch>

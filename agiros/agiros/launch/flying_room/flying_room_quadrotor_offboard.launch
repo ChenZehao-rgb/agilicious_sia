@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<launch>
+    <arg name="quad_name"/>
+
+    <group ns="$(arg quad_name)">
+          <node name="laird_to_ctrl" pkg="agiros" type="laird_to_ctrl_bridge" output="screen">
+            <param name="ctrl_config" value="$(find agilib)/params/ctrl.yaml"/>
+            <param name="laird_config" value="$(find agilib)/params/laird_receive.yaml"/>
+            <param name="quadrotor" value="$(find agiros)/parameters/quads/kingfisher.yaml"/>
+        
+        	<remap from="battery" to="mavros/battery"/>
+        </node>
+
+    </group>
+</launch>

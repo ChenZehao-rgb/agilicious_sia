@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="port" default="/dev/ttyUSB0" />
+  <arg name="baudrate" default="115200" />
+
+    <node pkg="agiros" name="ros_to_laird_bridge" type="ros_to_laird_bridge" output="screen">
+        <param name="port" value="$(arg port)"/>
+        <param name="baudrate" value="$(arg baudrate)"/>
+    </node>
+
+</launch>

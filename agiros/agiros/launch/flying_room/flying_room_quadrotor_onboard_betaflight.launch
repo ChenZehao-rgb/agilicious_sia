@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<launch>
+    <arg name="quad_name"/>
+
+    <group ns="$(arg quad_name)">
+
+        <include file="$(find agiros)/launch/mavros/betaflight.launch"></include>
+
+        <!-- controller -->
+        <node name="agiros_pilot" pkg="agiros" type="agiros" output="screen" >
+            <param name="agi_param_dir" value="$(find agilib)/params"/>
+            <param name="ros_param_dir" value="$(find agiros)/parameters"/>
+            <param name="pilot_config" value="onboard_pilot_betaflight.yaml"/>
+            <remap from="agiros_pilot/odometry_estimate" to="state_estimate"/>
+            <remap from="agiros_pilot/pose_estimate" to="/mocap/$(arg quad_name)/pose"/>
+            <remap from="agiros_pilot/guard_pose_estimate" to="/mocap/$(arg quad_name)/pose"/>
+        </node>
+
+    </group>
+</launch>

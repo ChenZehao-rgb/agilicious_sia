@@ -1,0 +1,17 @@
+<launch>
+    <node pkg="load_cell_ros_node" type="load_cell" name="load_cell" output="screen">
+        <param name="load_cell_ip_addr" value="192.168.1.1"/>
+    </node>
+
+    <node pkg="load_cell_ros_node" type="collect_data.py"
+          name="collect_data" output="screen">
+        <param name="data_dir" value="$(find load_cell_ros_node)/data"/>
+        <param name="single_rotor_thrust" value="False"/>
+        <param name="cycles" value="1"/>
+        <param name="min_cmd" value="1000"/>
+        <param name="max_cmd" value="2000"/>
+        <param name="zero_cmd" value="1000"/>
+        <param name="num_cmd_steps" value="20"/>
+        <param name="step_duration" value="1"/>
+    </node>
+</launch>

@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="quad_name"/>
+  <group ns="$(arg quad_name)" >
+    <node pkg="joy" type="joy_node" name="joy_node">
+      <param name="autorepeat_rate" value="10"/>
+    </node>
+    <node pkg="manual_flight_interface" type="manual_flight_interface"
+        name="manual_flight_interface" output="screen">
+      <rosparam file="$(find manual_flight_interface)/parameters/default.yaml"/>
+    </node>
+  </group>
+
+</launch>

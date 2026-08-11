@@ -1,0 +1,239 @@
+--- BetaflightPlugin.cc
++++ BetaflightPlugin.cc
+@@ -62,11 +62,15 @@
+ #include <gz/sim/components/Pose.hh>
+ #include <gz/sim/components/Sensor.hh>
+ #include <gz/sim/components/SphericalCoordinates.hh>
++#include <gz/sim/components/AngularVelocity.hh>
++#include <gz/sim/components/LinearVelocity.hh>
++#include <gz/msgs/odometry.pb.h>
++#include <gz/transport/Node.hh>
+ #include <gz/plugin/Register.hh>
+ 
+ #include "BetaflightPlugin.hh"
+ 
+-#define MAX_MOTORS 255
++#define MAX_MOTORS 4
+ #define RADSEC2RPM 9.549296585513721
+ 
+ using namespace gz;
+@@ -132,13 +136,16 @@
+   ///        spherical coordinates are configured (virtual GPS mode)
+   double positionXYZ[3];
+ 
+-  double escTemperature[4];
+-  double escVoltage[4];
+-  double escCurrent[4];
+-  double escConsumption[4];
+-  double escRpm[4];
++  /// \brief Atmospheric pressure. The Gazebo-enabled 2026.6 target derives
++  /// this from position, but it remains part of the wire protocol.
++  double pressure;
+ };
+ 
++static_assert(sizeof(ServoPacket) == 4 * sizeof(float),
++              "Betaflight servo packet must be 16 bytes");
++static_assert(sizeof(fdmPacket) == 18 * sizeof(double),
++              "Betaflight FDM packet must be 144 bytes");
++
+ /// \brief Rotor class
+ class Rotor
+ {
+@@ -310,6 +317,30 @@
+ 
+   /// \brief Send state to Betaflight
+   public: void SendState(EntityComponentManager &_ecm) const;
++
++  /// \brief Publish exact rigid-body odometry for the outer-loop controller.
++  ///
++  /// gz-sim's OdometryPublisher finite-differences pose and reports Euler
++  /// angle rates, which diverge from body rates as soon as the vehicle leaves
++  /// near-hover attitudes.  The physics engine already knows the true twist
++  /// here, so publish it directly: world pose, body-frame linear velocity and
++  /// body-frame angular velocity.
++  public: void PublishOdometry(EntityComponentManager &_ecm,
++              const std::chrono::steady_clock::duration &_simTime);
++
++  /// \brief Transport node owning the odometry publisher.
++  public: transport::Node node;
++
++  /// \brief Ground-truth odometry publisher.
++  public: transport::Node::Publisher odomPub;
++
++  /// \brief Minimum simulated interval between odometry messages.
++  public: std::chrono::steady_clock::duration odomPubPeriod{
++              std::chrono::steady_clock::duration::zero()};
++
++  /// \brief Simulated time of the last published odometry message.
++  public: std::chrono::steady_clock::duration lastOdomPubTime{
++              std::chrono::steady_clock::duration::zero()};
+ };
+ 
+ ////////////////////////////////////////////////////////////////////////////////
+@@ -381,6 +412,31 @@
+   // Enable velocity component for the canonical link
+   _ecm.CreateComponent(this->dataPtr->modelLinkEntity,
+                        components::WorldLinearVelocity());
++  _ecm.CreateComponent(this->dataPtr->modelLinkEntity,
++                       components::WorldAngularVelocity());
++
++  // Ground-truth odometry for the Agilicious outer loop.  Publishing is opt-in
++  // so the plugin keeps behaving exactly as before for other Aeroloop worlds.
++  std::string odometryTopic;
++  getSdfParam<std::string>(_sdf, "odometryTopic", odometryTopic, std::string());
++  if (!odometryTopic.empty())
++  {
++    double odometryPublishFrequency = 0.0;
++    getSdfParam<double>(_sdf, "odometryPublishFrequency",
++        odometryPublishFrequency, 0.0);
++    if (odometryPublishFrequency > 0.0)
++    {
++      this->dataPtr->odomPubPeriod =
++        std::chrono::duration_cast<std::chrono::steady_clock::duration>(
++          std::chrono::duration<double>(1.0 / odometryPublishFrequency));
++    }
++    this->dataPtr->odomPub =
++      this->dataPtr->node.Advertise<msgs::Odometry>(odometryTopic);
++    if (!this->dataPtr->odomPub)
++    {
++      gzerr << "failed to advertise odometry on [" << odometryTopic << "]\n";
++    }
++  }
+ 
+   // per rotor
+   if (_sdf->HasElement("rotor"))
+@@ -586,6 +642,9 @@
+       this->ApplyMotorForces(dt, _ecm);
+       this->SendState(_ecm);
+     }
++    // Deliberately outside the betaflightOnline branch: the outer-loop
++    // controller needs state before it may command anything.
++    this->PublishOdometry(_ecm, _simTime);
+   }
+ 
+   this->lastControllerUpdateTime = _simTime;
+@@ -634,32 +693,16 @@
+ /////////////////////////////////////////////////
+ void BetaflightPluginPrivate::ReceiveMotorCommand()
+ {
+-  // Added detection for whether Betaflight is online or not.
+-  // If Betaflight is detected (receive of fdm packet from someone),
+-  // then socket receive wait time is increased from 1ms to 1 sec
+-  // to accommodate network jitter.
+-  // If Betaflight is not detected, receive call blocks for 1ms
+-  // on each call.
++  // Keep socket polling bounded. This function runs inside Gazebo PreUpdate,
++  // so a long receive timeout freezes physics, sensors and odometry.
+   // Once Betaflight presence is detected, it takes this many
+   // missed receives before declaring the FCS offline.
+ 
+-  ServoPacket pkt;
+-  int waitMs = 1;
+-  if (this->betaflightOnline)
+-  {
+-    // increase timeout for receive once we detect a packet from
+-    // Betaflight FCS.
+-    waitMs = 1000;
+-  }
+-  else
+-  {
+-    // Otherwise skip quickly and do not set control force.
+-    waitMs = 1;
+-  }
++  ServoPacket pkt{};
++  constexpr int waitMs = 1;
+   ssize_t recvSize = this->Recv(&pkt, sizeof(ServoPacket), waitMs);
+-  ssize_t expectedPktSize =
+-    sizeof(pkt.motorSpeed[0])*this->rotors.size();
+-  if ((recvSize == -1) || (recvSize < expectedPktSize))
++  constexpr ssize_t expectedPktSize = sizeof(ServoPacket);
++  if (recvSize != expectedPktSize)
+   {
+     // didn't receive a packet
+     if (recvSize != -1)
+@@ -713,10 +756,55 @@
+ }
+ 
+ /////////////////////////////////////////////////
++void BetaflightPluginPrivate::PublishOdometry(EntityComponentManager &_ecm,
++    const std::chrono::steady_clock::duration &_simTime)
++{
++  if (!this->odomPub)
++    return;
++
++  if (this->odomPubPeriod > std::chrono::steady_clock::duration::zero() &&
++      _simTime - this->lastOdomPubTime < this->odomPubPeriod &&
++      _simTime >= this->lastOdomPubTime)
++  {
++    return;
++  }
++
++  auto linearComp =
++    _ecm.Component<components::WorldLinearVelocity>(this->modelLinkEntity);
++  auto angularComp =
++    _ecm.Component<components::WorldAngularVelocity>(this->modelLinkEntity);
++  if (!linearComp || !angularComp)
++    return;
++
++  const gz::math::Pose3d pose = worldPose(this->modelLinkEntity, _ecm);
++  // Express both twists in the body frame: that is the convention the
++  // Agilicious pipeline and the Betaflight rate loop both work in.
++  const gz::math::Vector3d bodyLinear =
++    pose.Rot().RotateVectorReverse(linearComp->Data());
++  const gz::math::Vector3d bodyAngular =
++    pose.Rot().RotateVectorReverse(angularComp->Data());
++
++  msgs::Odometry msg;
++  const std::chrono::duration<double> stamp(_simTime);
++  const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(stamp);
++  msg.mutable_header()->mutable_stamp()->set_sec(seconds.count());
++  msg.mutable_header()->mutable_stamp()->set_nsec(
++    static_cast<int32_t>((stamp - seconds).count() * 1e9));
++
++  msgs::Set(msg.mutable_pose()->mutable_position(), pose.Pos());
++  msgs::Set(msg.mutable_pose()->mutable_orientation(), pose.Rot());
++  msgs::Set(msg.mutable_twist()->mutable_linear(), bodyLinear);
++  msgs::Set(msg.mutable_twist()->mutable_angular(), bodyAngular);
++
++  this->odomPub.Publish(msg);
++  this->lastOdomPubTime = _simTime;
++}
++
++/////////////////////////////////////////////////
+ void BetaflightPluginPrivate::SendState(EntityComponentManager &_ecm) const
+ {
+   // send_fdm
+-  fdmPacket pkt;
++  fdmPacket pkt{};
+ 
+   // Get current simulation time
+   // Note: We're using the last update time since we don't have direct access to UpdateInfo here
+@@ -833,27 +921,7 @@
+     pkt.velocityXYZ[2] = velGazeboWorldFrame.Z();  // Up    (m/s)
+   }
+ 
+-  // Emulate ESC Sensor
+-  pkt.escTemperature[4] = {};
+-  pkt.escVoltage[4] = {};
+-  pkt.escCurrent[4]  = {};
+-  pkt.escConsumption[4] = {};
+-
+-  for (size_t i = 0; i < this->rotors.size(); ++i)
+-  {
+-    auto jointVelComp = _ecm.Component<components::JointVelocity>(
+-        this->rotors[i].jointEntity);
+-
+-    if (jointVelComp && !jointVelComp->Data().empty())
+-    {
+-      // Angular velocity is returned in rad/s
+-      pkt.escRpm[i] = jointVelComp->Data()[0];
+-    }
+-    else
+-    {
+-      pkt.escRpm[i] = 0.0;
+-    }
+-  }
++  pkt.pressure = 0.0;
+ 
+   struct sockaddr_in sockaddr;
+   this->MakeSockAddr("127.0.0.1", 9003, sockaddr);

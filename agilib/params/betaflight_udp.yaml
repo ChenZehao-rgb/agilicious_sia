@@ -1,0 +1,72 @@
+# Betaflight 2026.6 SITL rc_packet destination.
+host: 127.0.0.1
+port: 9004
+
+# BridgeBase command watchdog. A lock forces AUX1 low on the next packet.
+timeout: 0.10
+n_timeouts_for_lock: 4
+
+# Betaflight rate profile must use ACTUAL rates. betaflight_sitl/run.py writes
+# these into its isolated EEPROM copy and then reads them back, so this file is
+# the single source of truth for the rate curve the bridge inverts.
+#
+# Center Sensitivity stays low for fine control around neutral; Max Rate has to
+# cover the fastest reference trajectory in miscellaneous/datasets/ref_trajs,
+# which peaks near 860 deg/s (CPC33_Z1).
+center_rate_deg_s: [70.0, 70.0, 70.0]
+max_rate_deg_s:    [1000.0, 1000.0, 1000.0]
+expo_percent:      [0.0, 0.0, 0.0]
+
+# Copy the Betaflight receiver deadband settings for exact rate inversion.
+deadband: 0
+yaw_deadband: 0
+
+# Throttle mapping.  Betaflight scales stick throttle onto the motor output
+# range [motor_idle, 1], and the Gazebo rotor plant produces thrust
+# proportional to the square of that motor output:
+#
+#   motor = motor_idle + (1 - motor_idle) * u
+#   collective_thrust = g * (motor / motor_hover)^2
+#
+# Inverting for the stick position u, with motor_hover the motor output that
+# holds a hover:
+#
+#   u = (hover_throttle_motor * sqrt(collective_thrust / g) - motor_idle)
+#       / (1 - motor_idle)
+#   pwm = min_check + (2000 - min_check) * u
+#
+# motor_idle mirrors Betaflight's `motor_idle` setting (550 = 5.5%).  Ignoring
+# it biases the feed-forward by about 5% of full throttle at both ends of the
+# range, which matters once a trajectory asks for sustained high collective.
+#
+# hover_throttle is the stick position that hovers; measured with
+# betaflight_sitl/calibrate_plant.py, whose trim search puts the hover motor
+# output at 0.4136 for the overlay model.
+motor_idle: 0.055
+hover_throttle: 0.3795
+min_check: 1050
+
+# Betaflight inner-loop gains, written into the isolated EEPROM by
+# betaflight_sitl/run.py.  Roll and pitch keep the Betaflight defaults: the
+# overlay airframe reaches about 420 rad/s^2 on those axes, which is what those
+# gains expect.
+#
+# Yaw is the exception.  Yaw torque is only kappa * thrust differential, so this
+# airframe tops out near 15 rad/s^2 about z -- roughly a seventh of what a 5"
+# quadcopter delivers, while its yaw inertia is four times larger.  At the
+# default gains the yaw rate loop is unstable: a rate of 0.004 rad/s grows by a
+# factor of e every 0.12 s until it saturates and drags roll and pitch with it.
+# Scaling the yaw gains down by the same factor as the missing authority makes
+# the axis stable without touching the two axes that were already correct.
+p_roll: 45
+i_roll: 80
+d_roll: 30
+f_roll: 120
+p_pitch: 47
+i_pitch: 84
+d_pitch: 34
+f_pitch: 125
+p_yaw: 7
+i_yaw: 14
+d_yaw: 0
+f_yaw: 20

@@ -1,0 +1,38 @@
+# Aeroloop betaloop_iris_with_standoffs model.  The model links sum to 0.54 kg.
+mass:               0.54
+tbm_fr:             [ 0.13, -0.22, 0.0]
+tbm_bl:             [-0.13,  0.20, 0.0]
+tbm_br:             [-0.13, -0.20, 0.0]
+tbm_fl:             [ 0.13,  0.22, 0.0]
+inertia:            [0.0065, 0.0060, 0.0115]
+
+# Rotor plant identified with betaflight_sitl/calibrate_plant.py against the
+# generated overlay model.  The Gazebo rotor is a velocity servo whose steady
+# state is set by the plugin's vel_p_gain against the joint damping, so the
+# reachable rotor speed is 0.01 / (0.01 + 0.004) * 838 = 598.6 rad/s rather
+# than the plugin's nominal 838.  Thrust follows k * rotor_speed^2 with
+# k = 2.15e-5 N s^2, giving 57.1 m/s^2 of collective thrust at full motor
+# output and a hover at motor output 0.415.
+motor_omega_min:    0.0
+motor_omega_max:    598.6
+# Rotor spin-up constant: rotor inertia 1.676e-4 kg m^2 over the same
+# 0.014 N m s/rad the servo and joint damping present together.
+motor_tau:          0.012
+# Matches the 1000 deg/s ACTUAL max rate written into Betaflight by
+# betaflight_sitl/run.py; the MPC must not ask for rates the inner loop
+# cannot deliver.
+omega_max:          [17.45, 17.45, 17.45]
+
+thrust_map:         [2.15e-5, 0.0, 0.0]
+kappa:              0.016
+thrust_min:         0.0
+# Per-rotor thrust at full motor output: 57.1 m/s^2 * 0.54 kg / 4.  The old
+# 2.0 N capped the MPC at 14.8 m/s^2 of collective, which is below what any
+# reference trajectory in miscellaneous/datasets/ref_trajs asks for and below
+# what this airframe can actually produce.
+thrust_max:         7.70
+rotors_config:      "cross"
+
+aero_coeff_1:       [0.0, 0.0, 0.0]
+aero_coeff_3:       [0.0, 0.0, 0.0]
+aero_coeff_h:       0.0

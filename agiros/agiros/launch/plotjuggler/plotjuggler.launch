@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<launch>
+    
+    <arg name="quad_name"/>
+    <arg name="buffer_size" default="10"/>
+    
+    <node name="agiros_plotjuggler_config" pkg="agiros" type="create_quad_plotjuggler_config.py" output="screen">
+        <param name="quad_name" value="$(arg quad_name)"/>
+        <param name="template_file" value="$(find agiros)/resources/plotjuggler/template.xml"/>
+        <param name="output_config_file"  value="$(find agiros)/resources/plotjuggler/$(arg quad_name)plot.xml"/>
+    </node>
+	
+    <node name="agiros_plotjuggler" pkg="plotjuggler" type="plotjuggler" output="screen" launch-prefix="bash -c 'sleep 1; $0 $@' " args="-n -l $(find agiros)/resources/plotjuggler/$(arg quad_name)plot.xml"/>
+
+</launch>
