@@ -53,6 +53,20 @@ OVERLAY_ROTOR_AREA = SOURCE_ROTOR_AREA * THRUST_SCALE / INFLOW_SENSITIVITY_RELIE
 # twice the outer-loop rate, so the controller never waits on a fresh sample.
 ODOM_PUBLISH_HZ = 200.0
 
+# Physics step.  Betaflight's Gazebo guide asks for no more than 2.5 ms and
+# Aeroloop's demo world ships 4 ms.  The floor is set by how fast gz-sim can
+# step, which is serial: measured on an i7-14700HX it saturates near 8500
+# steps/s, so 0.2 ms still holds real time while 0.1 ms only reaches a
+# real-time factor of 0.84.  A factor below 1 is not merely "slower": the whole
+# control stack is paced by the wall clock, so the reference trajectory would
+# outrun the vehicle.
+#
+# The step also caps the usable rotor speed, because LiftDrag resolves blade
+# azimuth once per step.  At 2 ms and 598.6 rad/s the rotor turns 68.6 deg per
+# step; holding that resolution allows about 1200 rad/s at 1 ms and 2400 rad/s
+# at 0.5 ms.
+PHYSICS_STEP_S = 0.002
+
 
 def _retune_rotor_blade_elements(model: ET.Element) -> int:
     """Rescale the rotor LiftDrag elements to keep static thrust but survive inflow."""
@@ -153,6 +167,16 @@ def prepare_assets(
     ET.SubElement(bf_plugin, "odometryTopic").text = ODOM_TOPIC
     ET.SubElement(bf_plugin, "odometryPublishFrequency").text = str(ODOM_PUBLISH_HZ)
 
+    # The plugin polls the motor socket with a 1 ms timeout inside the physics
+    # update, so a scheduling hiccup on the Betaflight side costs several
+    # receives in a row.  Aeroloop's count of 5 is 10 ms of tolerance at this
+    # world's 2 ms step, which a loaded machine exceeds regularly and which
+    # then zeroes every rotor mid-flight.  200 ms is still far shorter than any
+    # real link loss.
+    for stale in bf_plugin.findall("connectionTimeoutMaxCount"):
+        bf_plugin.remove(stale)
+    ET.SubElement(bf_plugin, "connectionTimeoutMaxCount").text = "100"
+
     _retune_rotor_blade_elements(model)
 
     joint_state_name = "gz::sim::systems::JointStatePublisher"
@@ -187,7 +211,7 @@ def prepare_assets(
     max_step_size = physics.find("max_step_size")
     if max_step_size is None:
         max_step_size = ET.SubElement(physics, "max_step_size")
-    max_step_size.text = "0.002"
+    max_step_size.text = repr(PHYSICS_STEP_S)
 
     source_uri = f"model://{SOURCE_MODEL_NAME}"
     overlay_uri = f"model://{OVERLAY_MODEL_NAME}"

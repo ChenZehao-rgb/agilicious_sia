@@ -53,11 +53,15 @@ min_check: 1050
 #
 # Yaw is the exception.  Yaw torque is only kappa * thrust differential, so this
 # airframe tops out near 15 rad/s^2 about z -- roughly a seventh of what a 5"
-# quadcopter delivers, while its yaw inertia is four times larger.  At the
-# default gains the yaw rate loop is unstable: a rate of 0.004 rad/s grows by a
-# factor of e every 0.12 s until it saturates and drags roll and pitch with it.
-# Scaling the yaw gains down by the same factor as the missing authority makes
-# the axis stable without touching the two axes that were already correct.
+# quadcopter delivers, while its yaw inertia is four times larger.  Measured
+# with the default gains and a correctly signed loop, yaw oscillates at several
+# rad/s in a hover.  Scaling the yaw gains down by the same factor as the
+# missing authority settles the axis to within 0.06 degrees over a minute,
+# without touching the two axes that were already correct.
+#
+# These gains are not a substitute for the yaw sign being right in the bridge:
+# with the sign inverted the loop is positive feedback at any gain, and lowering
+# the gains only slows the wind-up from seconds to tens of seconds.
 p_roll: 45
 i_roll: 80
 d_roll: 30

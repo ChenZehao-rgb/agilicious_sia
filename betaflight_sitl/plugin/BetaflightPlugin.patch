@@ -102,17 +102,30 @@
  
    // per rotor
    if (_sdf->HasElement("rotor"))
-@@ -586,6 +642,9 @@
+@@ -584,8 +640,21 @@
+     {
+       auto dt = std::chrono::duration<double>(_simTime - this->lastControllerUpdateTime).count();
        this->ApplyMotorForces(dt, _ecm);
-       this->SendState(_ecm);
+-      this->SendState(_ecm);
      }
-+    // Deliberately outside the betaflightOnline branch: the outer-loop
-+    // controller needs state before it may command anything.
++    // Both of these are deliberately outside the betaflightOnline branch.
++    //
++    // Betaflight SITL only emits a motor packet in response to an FDM packet,
++    // so gating SendState on betaflightOnline deadlocks the link: one burst of
++    // missed receives flips betaflightOnline false, this side stops sending
++    // state, Betaflight therefore never sends another motor packet, and the
++    // plugin never comes back online.  The observable failure is all four
++    // rotors stopping dead in a stable hover while the flight controller is
++    // still armed and commanding throttle.
++    //
++    // The outer-loop controller likewise needs state before it may command
++    // anything.
++    this->SendState(_ecm);
 +    this->PublishOdometry(_ecm, _simTime);
    }
  
    this->lastControllerUpdateTime = _simTime;
-@@ -634,32 +693,16 @@
+@@ -634,32 +703,16 @@
  /////////////////////////////////////////////////
  void BetaflightPluginPrivate::ReceiveMotorCommand()
  {
@@ -151,7 +164,7 @@
    {
      // didn't receive a packet
      if (recvSize != -1)
-@@ -713,10 +756,55 @@
+@@ -713,10 +766,55 @@
  }
  
  /////////////////////////////////////////////////
@@ -208,7 +221,7 @@
  
    // Get current simulation time
    // Note: We're using the last update time since we don't have direct access to UpdateInfo here
-@@ -833,27 +921,7 @@
+@@ -833,27 +931,7 @@
      pkt.velocityXYZ[2] = velGazeboWorldFrame.Z();  // Up    (m/s)
    }
  
