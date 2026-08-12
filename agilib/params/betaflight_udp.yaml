@@ -41,9 +41,9 @@ yaw_deadband: 0
 #
 # hover_throttle is the stick position that hovers; measured with
 # betaflight_sitl/calibrate_plant.py, whose trim search puts the hover motor
-# output at 0.4136 for the overlay model.
+# output at 0.4040 for the overlay model; trimmed to the observed steady hover.
 motor_idle: 0.055
-hover_throttle: 0.3795
+hover_throttle: 0.3800
 min_check: 1050
 
 # Betaflight inner-loop gains, written into the isolated EEPROM by
@@ -51,17 +51,22 @@ min_check: 1050
 # overlay airframe reaches about 420 rad/s^2 on those axes, which is what those
 # gains expect.
 #
-# Yaw is the exception.  Yaw torque is only kappa * thrust differential, so this
-# airframe tops out near 15 rad/s^2 about z -- roughly a seventh of what a 5"
-# quadcopter delivers, while its yaw inertia is four times larger.  Measured
-# with the default gains and a correctly signed loop, yaw oscillates at several
-# rad/s in a hover.  Scaling the yaw gains down by the same factor as the
-# missing authority settles the axis to within 0.06 degrees over a minute,
-# without touching the two axes that were already correct.
+# Yaw is the exception, and the reason is a modelling artifact rather than the
+# airframe.  Most of this model's yaw torque is the reaction of the rotor joint
+# servo working against the joint damping, which scales with rotor speed rather
+# than with rotor thrust.  Raising the rotor speed fourfold to fix the advance
+# ratio therefore multiplied yaw authority by 6.4 without changing thrust:
+# measured 20.5 rad/s^2 of yaw acceleration at a 0.1 motor differential, against
+# 3.2 before.  Betaflight's default gains oscillate at several rad/s in a hover
+# under that, so scale them by the same 6.4.
 #
 # These gains are not a substitute for the yaw sign being right in the bridge:
 # with the sign inverted the loop is positive feedback at any gain, and lowering
 # the gains only slows the wind-up from seconds to tens of seconds.
+#
+# The cleaner fix would be to shrink the rotor joint damping so the reaction
+# torque stays physical, which would also make kappa constant; that changes the
+# servo droop and so needs the whole plant re-identified.
 p_roll: 45
 i_roll: 80
 d_roll: 30
@@ -70,7 +75,7 @@ p_pitch: 47
 i_pitch: 84
 d_pitch: 34
 f_pitch: 125
-p_yaw: 7
-i_yaw: 14
+p_yaw: 2
+i_yaw: 4
 d_yaw: 0
-f_yaw: 20
+f_yaw: 6

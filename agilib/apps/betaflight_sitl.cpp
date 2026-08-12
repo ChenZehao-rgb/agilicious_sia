@@ -1,4 +1,5 @@
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <csignal>
@@ -358,8 +359,7 @@ agi::SetpointVector loadTrajectory(const std::vector<std::vector<double>>& rows,
 /// Reference-versus-state recorder, used by betaflight_sitl/validate.py.
 class FlightLog {
  public:
-  explicit FlightLog(const std::filesystem::path& path, const double start_time)
-    : file_(path), start_time_(start_time) {
+  explicit FlightLog(const std::filesystem::path& path) : file_(path) {
     if (!file_) {
       throw std::runtime_error("could not open log file: " + path.string());
     }
@@ -383,6 +383,7 @@ class FlightLog {
     const agi::Command& target_input =
       has_reference ? reference.front().input : command;
 
+    if (!std::isfinite(start_time_)) start_time_ = time;
     file_ << (time - start_time_) << ',' << mode;
     write(state.p);
     file_ << ',' << state.q().w() << ',' << state.q().x() << ','
@@ -416,7 +417,7 @@ class FlightLog {
   }
 
   std::ofstream file_;
-  const double start_time_;
+  double start_time_{NAN};
   double trajectory_start_{std::numeric_limits<double>::infinity()};
   double trajectory_end_{-std::numeric_limits<double>::infinity()};
 };
@@ -473,6 +474,21 @@ struct LatestRotorVelocity {
     return true;
   }
 };
+
+/// Simulated time carried by a Gazebo odometry message, or NaN if unstamped.
+///
+/// The whole control loop is driven off this rather than off the wall clock.
+/// Gazebo does not always hold a real-time factor of one -- the GUI alone costs
+/// intermittent dips to 0.3 -- and a wall-clock reference would then advance
+/// faster than the vehicle can fly, which loses the trajectory outright instead
+/// of merely simulating it slowly.
+double simulatedTime(const gz::msgs::Odometry& odometry) {
+  if (!odometry.has_header() || !odometry.header().has_stamp()) return NAN;
+  const auto& stamp = odometry.header().stamp();
+  const double seconds =
+    static_cast<double>(stamp.sec()) + 1e-9 * static_cast<double>(stamp.nsec());
+  return seconds > 0.0 ? seconds : NAN;
+}
 
 bool toQuadState(const gz::msgs::Odometry& odometry, const double time,
                  agi::QuadState* state, std::string* error) {
@@ -623,7 +639,7 @@ int main(int argc, char** argv) {
     std::unique_ptr<FlightLog> flight_log;
     if (!options.log_file.empty()) {
       flight_log =
-        std::make_unique<FlightLog>(options.log_file, agi::ChronoTime());
+        std::make_unique<FlightLog>(options.log_file);
       std::cout << "Logging reference vs. state to " << options.log_file
                 << '\n';
     }
@@ -650,13 +666,26 @@ int main(int argc, char** argv) {
       pilot_params =
         std::make_unique<agi::PilotParams>(pilot_config, params_dir, quad);
     }
+    // Shared with the Pilot's clock below; updated once per control cycle from
+    // the odometry stamp.
+    std::atomic<double> latest_sim_time{0.0};
+
     agi::BetaflightUdpBridgeParams bridge_params;
     if (!bridge_params.load(bridge_config)) {
       throw std::runtime_error("invalid Betaflight UDP bridge parameters: " +
                                bridge_config.string());
     }
 
-    pilot = std::make_unique<agi::Pilot>(*pilot_params, agi::ChronoTime);
+    // The Pilot stamps its own references -- takeoff polynomial, hover, the
+    // sampled trajectory -- with this clock, and the sampler then looks them up
+    // by the state's timestamp.  Both have to be simulated time or the lookup
+    // lands somewhere else entirely.  The bridge keeps the wall clock: its
+    // watchdog is a real safety timer, not part of the simulated dynamics.
+    const agi::TimeFunction simulated_clock =
+      [&latest_sim_time]() -> agi::Scalar {
+      return latest_sim_time.load(std::memory_order_relaxed);
+    };
+    pilot = std::make_unique<agi::Pilot>(*pilot_params, simulated_clock);
     bridge = std::make_shared<agi::BetaflightUdpBridge>(bridge_params,
                                                         agi::ChronoTime);
     if (!pilot->registerExternalBridge(bridge)) {
@@ -704,8 +733,9 @@ int main(int argc, char** argv) {
     constexpr auto startup_timeout = std::chrono::seconds(30);
     const SteadyClock::time_point wait_started = SteadyClock::now();
     SteadyClock::time_point next_cycle = wait_started;
-    SteadyClock::time_point runtime_started{};
-    SteadyClock::time_point prearm_started{};
+    double first_sim_time = NAN;
+    double armed_from_sim = NAN;
+    double prearm_from_sim = NAN;
     SteadyClock::time_point next_status = wait_started;
     bool have_valid_state = false;
     bool enabled = false;
@@ -714,12 +744,11 @@ int main(int argc, char** argv) {
     while (!stop_requested) {
       next_cycle += control_period;
       const SteadyClock::time_point steady_now = SteadyClock::now();
-      const double wall_time = agi::ChronoTime();
 
       gz::msgs::Odometry odometry;
       SteadyClock::time_point receipt_time;
       if (!latest_odometry.snapshot(&odometry, &receipt_time)) {
-        bridge->send(agi::Command(wall_time));
+        bridge->send(agi::Command(agi::ChronoTime()));
         if (steady_now >= next_status) {
           std::cout << "[WAIT] No odometry received on "
                     << options.odom_topic << "\n";
@@ -743,9 +772,23 @@ int main(int argc, char** argv) {
         break;
       }
 
+      // Simulated time, so a real-time factor below one slows the reference
+      // down with the vehicle instead of running away from it.  The loop still
+      // wakes on the wall clock, which keeps the bridge watchdog fed.
+      const double sim_time = simulatedTime(odometry);
+      if (!std::isfinite(sim_time)) {
+        std::cerr << "Odometry carries no simulated-time stamp; the overlay "
+                     "model must publish it. Stopping safely.\n";
+        exit_code = 1;
+        break;
+      }
+      if (!std::isfinite(first_sim_time)) first_sim_time = sim_time;
+      const double sim_elapsed = sim_time - first_sim_time;
+      latest_sim_time.store(sim_time, std::memory_order_relaxed);
+
       agi::QuadState state;
       std::string conversion_error;
-      if (!toQuadState(odometry, wall_time, &state, &conversion_error)) {
+      if (!toQuadState(odometry, sim_time, &state, &conversion_error)) {
         std::cerr << "Invalid Gazebo odometry: " << conversion_error
                   << "; stopping safely.\n";
         exit_code = 1;
@@ -756,12 +799,11 @@ int main(int argc, char** argv) {
       pilot->guardOdometryCallback(state);
       if (!have_valid_state) {
         have_valid_state = true;
-        runtime_started = steady_now;
+        armed_from_sim = sim_elapsed;
       }
 
       if (options.arm) {
-        const double disarmed_elapsed =
-          std::chrono::duration<double>(steady_now - runtime_started).count();
+        const double disarmed_elapsed = sim_elapsed - armed_from_sim;
         if (!enabled && disarmed_elapsed >= options.disarmed_seconds) {
           pilot->enable(true);
           if (!pilot->enabled()) {
@@ -770,13 +812,13 @@ int main(int argc, char** argv) {
             break;
           }
           enabled = true;
-          prearm_started = steady_now;
+          prearm_from_sim = sim_elapsed;
         }
 
         if (enabled) {
           // With no reference installed, Pipeline emits zero collective
           // thrust while the bridge keeps the configured ARM channel high.
-          pilot->runPipeline(wall_time);
+          pilot->runPipeline(sim_time);
           if (bridge->locked() || !bridge->active() || !pilot->enabled()) {
             std::cerr << "Betaflight UDP bridge lost its active state"
                       << (bridge->locked() ? " after watchdog lockout" : "")
@@ -787,12 +829,11 @@ int main(int argc, char** argv) {
         } else {
           // Betaflight must observe ARM low after RX starts, and its default
           // five-second power-on arming grace must expire before takeoff.
-          bridge->send(agi::Command(wall_time));
+          bridge->send(agi::Command(sim_time));
         }
 
         if (enabled && !flight_started &&
-            std::chrono::duration<double>(steady_now - prearm_started).count() >=
-              options.prearm_seconds) {
+            sim_elapsed - prearm_from_sim >= options.prearm_seconds) {
           if (!pilot->start()) {
             std::cerr << "Pilot::start() failed; stopping safely.\n";
             exit_code = 1;
@@ -804,7 +845,7 @@ int main(int argc, char** argv) {
             agi::Vector<3> trajectory_start = state.p;
             trajectory_start.z() += pilot_params->takeoff_heigth_;
             const agi::SetpointVector setpoints = loadTrajectory(
-              trajectory_rows, wall_time + takeoff_duration, trajectory_start,
+              trajectory_rows, sim_time + takeoff_duration, trajectory_start,
               source_mass, state.p.z() + options.ground_clearance);
             if (!pilot->addSampledTrajectory(setpoints)) {
               std::cerr << "Could not append sampled trajectory; stopping "
@@ -825,7 +866,7 @@ int main(int argc, char** argv) {
           std::cout << "Takeoff reference started.\n";
         }
       } else {
-        bridge->send(agi::Command(wall_time));
+        bridge->send(agi::Command(sim_time));
       }
 
       const char* mode = !options.arm
@@ -838,7 +879,7 @@ int main(int argc, char** argv) {
         // The pipeline works in the world frame; match it so the log can be
         // differenced against the reference directly.
         logged.v = state.q() * state.v;
-        flight_log->write(wall_time, mode, logged,
+        flight_log->write(sim_time, mode, logged,
                           pilot->getReferenceSetpoints(), pilot->getCommand(),
                           bridge->lastChannels());
       }
@@ -849,15 +890,14 @@ int main(int argc, char** argv) {
           latest_rotor_velocity.snapshot(&rotor_velocity);
         printStatus(mode, state,
                     options.arm ? pilot->getCommand()
-                                : agi::Command(wall_time),
+                                : agi::Command(sim_time),
                     bridge->lastChannels(),
                     odom_age, rotor_velocity, have_rotor_velocity);
         next_status = steady_now + std::chrono::seconds(1);
       }
 
       if (options.duration > 0.0 &&
-          std::chrono::duration<double>(steady_now - runtime_started).count() >=
-            options.duration) {
+          sim_elapsed - armed_from_sim >= options.duration) {
         std::cout << "Requested duration reached; stopping safely.\n";
         break;
       }

@@ -39,7 +39,7 @@
  /// \brief Rotor class
  class Rotor
  {
-@@ -310,6 +317,30 @@
+@@ -310,6 +317,44 @@
  
    /// \brief Send state to Betaflight
    public: void SendState(EntityComponentManager &_ecm) const;
@@ -67,10 +67,24 @@
 +  /// \brief Simulated time of the last published odometry message.
 +  public: std::chrono::steady_clock::duration lastOdomPubTime{
 +              std::chrono::steady_clock::duration::zero()};
++
++  /// \brief Minimum simulated interval between FDM packets.
++  ///
++  /// The FDM packet is Betaflight's sensor feed, and Betaflight answers each
++  /// one with a motor packet, so this is what sets its loop rate.  Sending one
++  /// per physics step ties that rate to the step size: shrinking the step to
++  /// resolve faster rotors quadrupled the sensor rate and Betaflight stopped
++  /// emitting motor packets altogether.  Keep the two independent.
++  public: std::chrono::steady_clock::duration fdmPubPeriod{
++              std::chrono::steady_clock::duration::zero()};
++
++  /// \brief Simulated time of the last FDM packet.
++  public: std::chrono::steady_clock::duration lastFdmPubTime{
++              std::chrono::steady_clock::duration::zero()};
  };
  
  ////////////////////////////////////////////////////////////////////////////////
-@@ -381,6 +412,31 @@
+@@ -381,6 +426,40 @@
    // Enable velocity component for the canonical link
    _ecm.CreateComponent(this->dataPtr->modelLinkEntity,
                         components::WorldLinearVelocity());
@@ -79,6 +93,15 @@
 +
 +  // Ground-truth odometry for the Agilicious outer loop.  Publishing is opt-in
 +  // so the plugin keeps behaving exactly as before for other Aeroloop worlds.
++  double fdmPublishFrequency = 0.0;
++  getSdfParam<double>(_sdf, "fdmPublishFrequency", fdmPublishFrequency, 0.0);
++  if (fdmPublishFrequency > 0.0)
++  {
++    this->dataPtr->fdmPubPeriod =
++      std::chrono::duration_cast<std::chrono::steady_clock::duration>(
++        std::chrono::duration<double>(1.0 / fdmPublishFrequency));
++  }
++
 +  std::string odometryTopic;
 +  getSdfParam<std::string>(_sdf, "odometryTopic", odometryTopic, std::string());
 +  if (!odometryTopic.empty())
@@ -102,30 +125,68 @@
  
    // per rotor
    if (_sdf->HasElement("rotor"))
-@@ -584,8 +640,21 @@
+@@ -445,6 +524,14 @@
+           << " direction multiplier ('cw' or 'ccw'). Default 'ccw'.\n";
+       }
+ 
++      // Peak rotor speed the motor command maps onto.  Aeroloop leaves this at
++      // the class default, which pins the blade-element speed near 21 m/s at
++      // hover -- about a third of a real 5" propeller.  Translational flight
++      // then reaches an advance ratio of 1 at only ~20 m/s, where the blade
++      // element model stops being meaningful.  Expose it so the overlay can
++      // raise it in step with a finer physics step.
++      getSdfParam<double>(rotorSDF, "maxRpm", rotor.maxRpm, rotor.maxRpm);
++
+       getSdfParam<double>(rotorSDF, "rotorVelocitySlowdownSim",
+           rotor.rotorVelocitySlowdownSim, 1);
+ 
+@@ -579,13 +666,44 @@
+   // Update the control surfaces and publish the new state.
+   if (_simTime > this->lastControllerUpdateTime)
+   {
+-    this->ReceiveMotorCommand();
++    // Betaflight answers one FDM packet with one motor packet, so the socket
++    // exchange runs on its own cadence rather than once per physics step.
++    // Receiving every step would block for the full socket timeout on every
++    // step Betaflight has not answered, which throttles the physics loop to a
++    // fraction of real time as soon as the step is smaller than the sensor
++    // period.  The motor command is simply held in between, exactly as a real
++    // ESC holds its last setpoint.
++    const bool fdm_tick =
++      this->fdmPubPeriod <= std::chrono::steady_clock::duration::zero() ||
++      _simTime - this->lastFdmPubTime >= this->fdmPubPeriod ||
++      _simTime < this->lastFdmPubTime;
++
++    if (fdm_tick)
++      this->ReceiveMotorCommand();
++
+     if (this->betaflightOnline)
      {
        auto dt = std::chrono::duration<double>(_simTime - this->lastControllerUpdateTime).count();
        this->ApplyMotorForces(dt, _ecm);
--      this->SendState(_ecm);
++    }
++
++    // SendState is deliberately outside the betaflightOnline branch.
++    // Betaflight only emits a motor packet in response to an FDM packet, so
++    // gating it on betaflightOnline deadlocks the link: one burst of missed
++    // receives flips betaflightOnline false, this side stops sending state,
++    // Betaflight therefore never sends another motor packet, and the plugin
++    // never comes back online.  The observable failure is all four rotors
++    // stopping dead in a stable hover while the flight controller is still
++    // armed and commanding throttle.
++    if (fdm_tick)
++    {
+       this->SendState(_ecm);
++      this->lastFdmPubTime = _simTime;
      }
-+    // Both of these are deliberately outside the betaflightOnline branch.
-+    //
-+    // Betaflight SITL only emits a motor packet in response to an FDM packet,
-+    // so gating SendState on betaflightOnline deadlocks the link: one burst of
-+    // missed receives flips betaflightOnline false, this side stops sending
-+    // state, Betaflight therefore never sends another motor packet, and the
-+    // plugin never comes back online.  The observable failure is all four
-+    // rotors stopping dead in a stable hover while the flight controller is
-+    // still armed and commanding throttle.
-+    //
++
 +    // The outer-loop controller likewise needs state before it may command
-+    // anything.
-+    this->SendState(_ecm);
++    // anything, and it wants it at the physics rate.
 +    this->PublishOdometry(_ecm, _simTime);
    }
  
    this->lastControllerUpdateTime = _simTime;
-@@ -634,32 +703,16 @@
+@@ -634,32 +752,16 @@
  /////////////////////////////////////////////////
  void BetaflightPluginPrivate::ReceiveMotorCommand()
  {
@@ -164,7 +225,7 @@
    {
      // didn't receive a packet
      if (recvSize != -1)
-@@ -713,10 +766,55 @@
+@@ -713,10 +815,55 @@
  }
  
  /////////////////////////////////////////////////
@@ -221,7 +282,7 @@
  
    // Get current simulation time
    // Note: We're using the last update time since we don't have direct access to UpdateInfo here
-@@ -833,27 +931,7 @@
+@@ -833,27 +980,7 @@
      pkt.velocityXYZ[2] = velGazeboWorldFrame.Z();  // Up    (m/s)
    }
  
