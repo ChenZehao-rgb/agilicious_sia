@@ -163,6 +163,14 @@ def main() -> int:
         help="fail a trajectory whose position RMSE exceeds this (m)",
     )
     parser.add_argument("--controller", choices=("mpc", "geo"), default="mpc")
+    parser.add_argument(
+        "--rtk-msp",
+        action="store_true",
+        help=(
+            "score the realistic state pipeline (RTK + companion IMU) instead "
+            "of the zero-latency ground-truth baseline"
+        ),
+    )
     args = parser.parse_args()
 
     trajectories = args.trajectories or sorted(TRAJECTORY_DIR.rglob("*.csv"))
@@ -176,7 +184,8 @@ def main() -> int:
         results[trajectory.name] = run_one(
             trajectory,
             args.output / f"{trajectory.stem}.csv",
-            ["--controller", args.controller],
+            ["--controller", args.controller]
+            + (["--rtk-msp"] if args.rtk_msp else []),
             args.margin,
         )
 

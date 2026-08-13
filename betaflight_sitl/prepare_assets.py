@@ -20,6 +20,36 @@ SOURCE_MODEL_NAME = "betaloop_iris_with_standoffs"
 OVERLAY_MODEL_NAME = "betaloop_iris_agilicious"
 ODOM_TOPIC = "/model/iris/odometry"
 JOINT_TOPIC = "/world/betaloop_demo/model/iris/joint_state"
+# Companion-computer IMU: the dedicated sensor the Raspberry Pi carries, as
+# opposed to the flight controller's own.  See COMPANION_IMU_* below.
+COMPANION_IMU_TOPIC = "/model/iris/companion_imu"
+
+# Companion IMU noise, modelled on an ICM-42688-P at its 1 kHz output rate.
+#
+# The vehicle carries two physically separate IMUs in the intended hardware:
+# the flight controller's, which Betaflight uses for its rate loop and
+# attitude, and one on the companion computer, which dead-reckons between RTK
+# fixes.  They are different parts with independent noise, so the overlay adds
+# a second sensor rather than sharing one.
+#
+# Getting this sensor rather than MSP_RAW_IMU to do the dead reckoning is the
+# whole point: MSP is request/response and served by Betaflight's ~100 Hz
+# serial task, which is far too slow and jittery to integrate across the
+# ~180 ms gap between RTK fixes.
+COMPANION_IMU_RATE_HZ = 1000.0
+COMPANION_GYRO_NOISE = 0.0035        # rad/s, sqrt(rate) * spectral density
+COMPANION_GYRO_BIAS_WALK = 1.0e-5    # rad/s^2, in-run bias instability
+COMPANION_ACC_NOISE = 0.030          # m/s^2
+COMPANION_ACC_BIAS_WALK = 1.0e-4     # m/s^3
+
+# Noise on the *flight controller's* IMU, which feeds Betaflight through the
+# FDM packet.  Left at zero deliberately: turning it on changes the plant the
+# inner-loop PID gains in betaflight_udp.yaml were tuned against, and the D
+# terms in particular are free of noise cost today.  Raise these to find out
+# whether that tuning survives a real gyro -- it is a worthwhile experiment,
+# but it is a different one from the state-pipeline work here.
+FC_GYRO_NOISE = 0.0
+FC_ACC_NOISE = 0.0
 
 # Betaflight QUADX packet order: rear-right, front-right, rear-left,
 # front-left.  Aeroloop's receiver indexes rotor elements by their SDF order.
@@ -116,7 +146,7 @@ ODOM_PUBLISH_HZ = 200.0
 # azimuth once per step.  At 2 ms and 598.6 rad/s the rotor turns 68.6 deg per
 # step; holding that resolution at PLUGIN_MAX_RPM's 2394 rad/s needs 0.5 ms,
 # which measures at a real-time factor of 0.999.
-PHYSICS_STEP_S = 0.0005
+PHYSICS_STEP_S = 0.001
 
 
 def _retune_rotor_blade_elements(model: ET.Element) -> int:
@@ -155,6 +185,70 @@ def _retune_rotor_blade_elements(model: ET.Element) -> int:
         a0.text = repr(OVERLAY_ROTOR_A0)
         area.text = repr(OVERLAY_ROTOR_AREA)
     return len(elements)
+
+
+def _add_imu_noise(sensor: ET.Element, gyro_noise: float, gyro_walk: float,
+                   acc_noise: float, acc_walk: float) -> None:
+    """Attach gz-sim IMU noise to `sensor`, replacing any existing block."""
+    for stale in sensor.findall("imu"):
+        sensor.remove(stale)
+    if not (gyro_noise or gyro_walk or acc_noise or acc_walk):
+        return
+    imu = ET.SubElement(sensor, "imu")
+    for group, stddev, walk in (
+        ("angular_velocity", gyro_noise, gyro_walk),
+        ("linear_acceleration", acc_noise, acc_walk),
+    ):
+        element = ET.SubElement(imu, group)
+        for axis in ("x", "y", "z"):
+            noise = ET.SubElement(ET.SubElement(element, axis), "noise",
+                                  {"type": "gaussian"})
+            ET.SubElement(noise, "mean").text = "0"
+            ET.SubElement(noise, "stddev").text = repr(stddev)
+            ET.SubElement(noise, "bias_mean").text = "0"
+            ET.SubElement(noise, "dynamic_bias_stddev").text = repr(walk)
+
+
+def _add_companion_imu(model: ET.Element) -> None:
+    """Add the companion computer's own IMU to the airframe's base link.
+
+    Mounted on base_link with an identity pose, so it publishes directly in the
+    FLU body frame Agilicious works in.  The flight controller's imu_sensor
+    sits on iris/imu_link behind a 180 degree roll -- that flip is what puts
+    Betaflight in its own FRD frame, and it is the source of every sign trap in
+    the MSP path.  There is no reason to inherit it here.
+    """
+    base = None
+    for link in model.findall("link"):
+        if link.get("name") == "base_link":
+            base = link
+            break
+    if base is None:
+        raise RuntimeError("no base_link in the Aeroloop model")
+
+    for stale in [
+        sensor
+        for sensor in base.findall("sensor")
+        if sensor.get("name") == "companion_imu"
+    ]:
+        base.remove(stale)
+
+    sensor = ET.SubElement(base, "sensor",
+                           {"name": "companion_imu", "type": "imu"})
+    ET.SubElement(sensor, "pose").text = "0 0 0 0 0 0"
+    ET.SubElement(sensor, "always_on").text = "1"
+    ET.SubElement(sensor, "update_rate").text = repr(COMPANION_IMU_RATE_HZ)
+    ET.SubElement(sensor, "topic").text = COMPANION_IMU_TOPIC
+    _add_imu_noise(sensor, COMPANION_GYRO_NOISE, COMPANION_GYRO_BIAS_WALK,
+                   COMPANION_ACC_NOISE, COMPANION_ACC_BIAS_WALK)
+
+
+def _configure_flight_controller_imu(model: ET.Element) -> None:
+    """Apply FC_* noise to the sensor Betaflight reads through the plugin."""
+    for link in model.findall("link"):
+        for sensor in link.findall("sensor"):
+            if sensor.get("name") == "imu_sensor":
+                _add_imu_noise(sensor, FC_GYRO_NOISE, 0.0, FC_ACC_NOISE, 0.0)
 
 
 def _write_xml(tree: ET.ElementTree, path: Path) -> None:
@@ -247,6 +341,8 @@ def prepare_assets(
     )
 
     _retune_rotor_blade_elements(model)
+    _add_companion_imu(model)
+    _configure_flight_controller_imu(model)
 
     joint_state_name = "gz::sim::systems::JointStatePublisher"
     for old_joint_state in [

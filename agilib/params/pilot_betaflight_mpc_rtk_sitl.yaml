@@ -1,0 +1,57 @@
+# Betaflight SITL pilot with a realistic state pipeline.
+#
+# Differs from pilot_betaflight_mpc_sitl.yaml only in where the state comes
+# from.  That file feeds the outer loop Gazebo's ground truth through a
+# Feedthrough estimator: 200 Hz, zero latency, zero noise, exact attitude.
+# This one emulates the intended hardware instead:
+#
+#   position / velocity  <- RTK, via MockVIO's latency + noise model
+#   attitude             <- companion-computer AHRS, via MockVIO's attitude noise
+#   body rates / accel   <- companion-computer IMU at 1 kHz
+#
+# Betaflight is not in this pipeline at all; it is polled as a monitor.  The
+# controller, bridge and vehicle are unchanged, so a run against this file is
+# directly comparable to one against pilot_betaflight_mpc_sitl.yaml and the
+# difference is the cost of the real state pipeline.
+
+pipeline:
+  estimator:
+    type:               "MockVIO"
+    file:               "mock_rtk_sitl.yaml"
+
+  sampler:
+    type:               "Time"
+
+  controller:
+    type:               "MPC"
+    file:               "mpc_betaflight_sitl.yaml"
+
+  bridge:
+    type:               "External"
+    file:               "betaflight_udp.yaml"
+
+quadrotor:              "betaloop_iris.yaml"
+
+dt_min:                 0.01
+outerloop_divisor:      1
+dt_telemetry:           0.1
+
+traj_type:              "poly_min_snap"
+# RTK reports velocity in the world frame, and the adapter already rotates the
+# Gazebo body-frame twist before handing it over.  Leaving this true would
+# rotate it a second time, using the estimated attitude.
+velocity_in_bodyframe:  false
+takeoff_height:         1.0
+takeoff_threshold:      1.0
+start_land_speed:       0.5
+brake_deceleration:     3.0
+go_to_pose_mean_vel:    1.0
+stop_after_feedthrough: true
+feedthrough_timeout:    0.1
+
+viz_sampler_dt:         0.1
+sphere_size:            0.15
+pub_log_var:            false
+
+guard:
+  type:                 "None"

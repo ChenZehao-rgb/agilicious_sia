@@ -1,0 +1,57 @@
+# Companion-computer AHRS: a Mahony complementary filter on the 1 kHz IMU,
+# with tilt held by the accelerometer and heading by a dual-antenna RTK
+# baseline.  This is the attitude source the outer loop flies on; Betaflight's
+# own estimate is polled over MSP as a monitor and never reaches the
+# controller.  See agilib/apps/companion_ahrs.hpp for why.
+
+# --- Accelerometer tilt correction ---
+# acc_gain is the bandwidth of the pull towards gravity [1/s].  Raise it and
+# the filter trusts the accelerometer more, which means less gyro drift but
+# more of the vehicle's own acceleration leaking into tilt.
+#
+# Measured on LOOP10_23: raising this to 3.0 with acc_tau at 0.03 changed the
+# mean tilt error by 0.14 deg and the tracking RMSE by 3 mm, i.e. nothing.  The
+# residual is set by how good the acceleration reference is, not by how hard
+# the filter pulls towards it, so keep the gain low -- a real airframe's
+# accelerometer carries rotor vibration this would otherwise amplify.
+acc_gain:        1.0
+
+# How far the measured specific-force magnitude may sit from the PREDICTED one
+# before the correction is weighted by one half [m/s^2].  The weight rolls off
+# as 1 / (1 + (mismatch / acc_tolerance)^2).
+#
+# "Predicted" is the important word.  Betaflight compares |a| against g and
+# stops correcting outside 0.9-1.1 g; here the comparison is against
+# |a_kinematic + g|, with the acceleration differentiated from the RTK-aided
+# velocity.  That test cannot see a turn at all -- |a| is simply constant and
+# larger than g -- while the accelerometer direction is genuinely wrong, and it
+# fires constantly on a fast trajectory for reasons unrelated to whether the
+# reading is usable.  Measured on a 10 m/s loop the raw test held the weight at
+# 0.015 for thirty seconds: a free-running gyro in all but name.
+acc_tolerance:   3.0
+
+# Low pass on the differentiated velocity [s].  The one real cost of the
+# compensation above: too short and RTK velocity noise swamps the reference
+# direction, too long and the reference lags a turning acceleration vector,
+# which lands directly on the tilt as a bias.  A 10 m/s turn on a 5 m radius
+# swings the acceleration at 2 rad/s, so every 0.1 s of lag is ~11 deg of
+# reference error.
+acc_tau:         0.05
+
+# --- RTK dual-antenna heading correction ---
+# Heading has no inertial observability, so without this the yaw is an
+# unbounded gyro integration -- exactly Betaflight's failure in SITL.
+heading_gain:    1.0
+
+# --- Gyro bias ---
+# The integral half of the filter.  Keep bias_gain well below acc_gain: it has
+# to be slow enough that vehicle acceleration is not mistaken for bias.
+bias_gain:       0.02
+max_bias:        0.1
+
+# --- Heading sensor model (simulation only) ---
+# On hardware these describe the receiver; here they generate the measurement.
+# 0.4 deg suits a ~0.5 m baseline, and the fix rate matches the RTK position
+# rate in mock_rtk_sitl.yaml.
+heading_noise:   0.4
+heading_rate:    10.0

@@ -257,6 +257,8 @@ if (BUILD_BETAFLIGHT_SITL)
 
     add_executable(agilicious_betaflight_sitl
       apps/betaflight_sitl.cpp
+      apps/betaflight_msp_client.cpp
+      apps/companion_ahrs.cpp
     )
     target_link_libraries(agilicious_betaflight_sitl PRIVATE
       ${LIBRARY_NAME}

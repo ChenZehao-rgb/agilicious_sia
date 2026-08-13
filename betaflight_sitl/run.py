@@ -40,7 +40,12 @@ import time
 from pathlib import Path
 from typing import Dict, Optional
 
-from prepare_assets import JOINT_TOPIC, ODOM_TOPIC, prepare_assets
+from prepare_assets import (
+    COMPANION_IMU_TOPIC,
+    JOINT_TOPIC,
+    ODOM_TOPIC,
+    prepare_assets,
+)
 
 
 # 仓库根目录：本文件位于 <repo>/betaflight_sitl/run.py，故上溯两级。
@@ -466,6 +471,9 @@ def ensure_simulator_ports_free() -> None:
         ):
             probe = socket.socket(socket.AF_INET, socket_type)
             checks.append(probe)
+            # 与真实监听方保持一致：Betaflight / 仿真器都用 SO_REUSEADDR 绑定，
+            # 否则上一次运行留下的 TIME-WAIT 连接会让这里误报“端口被占用”。
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 probe.bind(("127.0.0.1", port))
             except OSError as exc:
@@ -643,6 +651,32 @@ def main() -> int:
         default="mpc",
         help="Agilib outer controller (default: mpc)",
     )
+    # 真实传感链路模拟：位置/速度走 MockVIO 模拟的 RTK，姿态/角速度来自机载
+    # IMU（Gazebo 里带噪声的独立传感器）。默认关闭，保持 Gazebo 真值直通行为。
+    parser.add_argument(
+        "--rtk-msp",
+        action="store_true",
+        help=(
+            "emulate the intended hardware state pipeline: RTK-like position "
+            "and velocity through MockVIO, attitude and body rates from the "
+            "companion computer's own 1 kHz IMU, and Betaflight polled over "
+            "MSP as a monitor only"
+        ),
+    )
+    parser.add_argument(
+        "--no-msp-monitor",
+        action="store_true",
+        help="skip the Betaflight MSP monitor that --rtk-msp otherwise starts",
+    )
+    parser.add_argument(
+        "--msp-rate",
+        type=float,
+        default=20.0,
+        help=(
+            "MSP monitor poll rate in Hz (default: 20); Betaflight serves MSP "
+            "from a ~100 Hz task and nothing here is in a control loop"
+        ),
+    )
     parser.add_argument("--no-build", action="store_true")
     args = parser.parse_args()
 
@@ -656,10 +690,17 @@ def main() -> int:
     # 不解锁就飞不了轨迹，提前拒绝这种自相矛盾的组合。
     if args.trajectory is not None and not args.arm:
         parser.error("--trajectory requires --arm")
+    # 这些检查必须留在这里：下面会启动 Betaflight 写隔离 EEPROM，
+    # 等到那之后再 parser.error 就已经产生了副作用。
+    if args.rtk_msp and args.controller == "geo":
+        parser.error("--rtk-msp currently only wires up the MPC pilot config")
+    if not math.isfinite(args.msp_rate) or args.msp_rate <= 0:
+        parser.error("--msp-rate must be finite and > 0")
 
     # ---- 路径与产物布局 ----
     betaloop_home = args.betaloop_home.expanduser().resolve()
     aeroloop_home, source_world, source_elf = load_betaloop_config(betaloop_home)
+    # 确保模拟器端口可用
     ensure_simulator_ports_free()
     build_root = REPO_ROOT / "build" / "betaflight_sitl"
     cmake_build = build_root / "agilib"
@@ -668,7 +709,9 @@ def main() -> int:
     params = REPO_ROOT / "agilib" / "params"
     bridge_config = params / "betaflight_udp.yaml"
     # 生成模型 / 世界文件的叠加副本，同样不改动 Aeroloop 原始资源。
+    # 把aeroloop中的世界和模型复制到runtime/assets中，并返回叠加后的世界文件路径
     overlay_world, _ = prepare_assets(aeroloop_home, source_world, runtime / "assets")
+    # 把 Betaflight ELF 复制到隔离目录并配置好其 EEPROM，返回运行用的 ELF 路径。
     runtime_elf = prepare_runtime_betaflight(
         source_elf,
         runtime / "betaflight",
@@ -677,6 +720,7 @@ def main() -> int:
     )
     binary = cmake_build / "bin" / "agilicious_betaflight_sitl"
     plugin_library = plugin_build / "libAgiliciousBetaflightPlugin.so"
+    #---- 编译产物 ----
     if not args.no_build:
         plugin_library = build_gazebo_plugin(aeroloop_home, plugin_build)
         binary = build_adapter(cmake_build)
@@ -717,18 +761,37 @@ def main() -> int:
         # 9004, and this also avoids conflicts with an existing TCP 6761
         # proxy.
         "--disable-transmitter",
-        "--disable-websockify",
     ]
+    msp_monitor = args.rtk_msp and not args.no_msp_monitor
+    if msp_monitor:
+        # websockify 会把 TCP 6761 代理到 5761。它只在有人连 6761 时才真正建立
+        # 到 5761 的连接，但适配器现在要独占 5761 跑 MSP，所以直接关掉，避免
+        # 有人打开 Configurator 时抢占串口。
+        betaloop_cmd.append("--disable-websockify")
     if args.gazebo:
         betaloop_cmd.append("--gazebo")
 
     # ---- 进程二：Agilicious 适配器（外环控制器 + UDP 桥接）----
-    pilot_config = (
-        params / "pilot_betaflight_mpc_sitl.yaml"
-        if args.controller == "mpc"
-        else params / "pilot_betaflight_sitl.yaml"
-    )
+    if args.controller == "geo":
+        pilot_config = params / "pilot_betaflight_sitl.yaml"
+    elif args.rtk_msp:
+        # 这份配置把估计器换成 MockVIO 并关掉 velocity_in_bodyframe，与适配器
+        # 交出的世界系速度匹配。
+        pilot_config = params / "pilot_betaflight_mpc_rtk_sitl.yaml"
+    else:
+        pilot_config = params / "pilot_betaflight_mpc_sitl.yaml"
     log(f"selected Agilib outer controller: {args.controller.upper()}")
+    if args.rtk_msp:
+        log(
+            "state pipeline: RTK (MockVIO) position/velocity, companion AHRS "
+            "attitude (complementary filter on the 1 kHz IMU + RTK heading), "
+            "companion IMU body rates and dead reckoning"
+        )
+        log(
+            "Betaflight over MSP: "
+            + ("monitor only (armed state / arming-disable flags / battery / "
+               "its own attitude)" if msp_monitor else "not polled")
+        )
     controller_cmd = [
         str(binary),
         "--pilot-config",
@@ -749,6 +812,13 @@ def main() -> int:
         "--prearm-seconds",
         str(args.prearm_seconds),
     ]
+    if args.rtk_msp:
+        # 状态链路：世界系速度 + 机载 IMU 航位推算。Betaflight 完全不参与。
+        controller_cmd.extend(
+            ("--rtk-state", "--imu-topic", COMPANION_IMU_TOPIC)
+        )
+    if msp_monitor:
+        controller_cmd.extend(("--msp-monitor", "--msp-rate", str(args.msp_rate)))
     if args.arm:
         controller_cmd.append("--arm")
     if args.duration > 0:

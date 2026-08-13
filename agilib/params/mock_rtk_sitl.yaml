@@ -1,0 +1,65 @@
+# MockVIO configured as an RTK receiver rather than as a visual odometry
+# front end.  The estimator's mechanism is the same one the real vehicle uses:
+# buffer ground truth, hand back the sample from `vio_latency` ago at
+# `vio_dt` intervals, add measurement noise, then dead-reckon forward to the
+# current time with the IMU.  Here the IMU samples come from Betaflight over
+# MSP, so the propagation carries the flight controller's real gyro noise,
+# quantisation and filtering rather than an analytic model of them.
+#
+# NOTE ON UNITS: the *_noise entries are standard deviations, despite the
+# "[m^2]" style comments in agilib/params/mock_vio.yaml.  MockVio::randomVector
+# feeds them straight into std::normal_distribution's stddev argument.
+
+use_imu:      true
+
+# Resolution of the ground-truth buffer the latency lookup indexes into.  Must
+# stay well below vio_dt or the delayed sample snaps to a coarse grid.  The
+# Gazebo overlay publishes odometry at 200 Hz, so 5 ms is the floor.
+image_dt:     0.005
+
+# RTK fix rate and end-to-end latency.  10 Hz and 80 ms are representative of a
+# u-blox F9P class receiver including RTCM correction transport, the serial
+# link and the driver.  These two are the highest-leverage numbers in this
+# file: sweep them before tuning anything else.
+vio_dt:       0.10
+vio_latency:  0.08
+
+# Fixed-integer RTK: roughly 1.5 cm horizontal and 3 cm vertical, with Doppler
+# velocity an order of magnitude better than differentiated position.
+vio_pos_noise:  [0.015, 0.015, 0.030]
+vio_vel_noise:  [0.050, 0.050, 0.050]
+
+# Zero, and this one is not a simplification.
+#
+# The attitude handed to the estimator is solved by the companion AHRS
+# (agilib/apps/companion_ahrs.hpp) from the noisy 1 kHz IMU plus a 10 Hz RTK
+# heading.  It therefore already carries a real filter's real error -- gyro
+# noise integrated between corrections, accelerometer correction weakening
+# under acceleration, heading quantised to the fix rate.  Adding an analytic
+# error on top would count it twice and, worse, would hide the AHRS's own
+# behaviour behind a number that cannot fail the way a filter fails.
+#
+# This entry used to be non-zero, back when attitude came from Betaflight's
+# MSP estimate.  See companion_ahrs.yaml for what replaced it.
+vio_att_noise:  [0.0, 0.0, 0.0]
+
+# Slow correlated position error from multipath and base-line changes.  RTK is
+# unbiased over long horizons, so keep this far smaller than a VIO drift.
+vio_pos_static_drift:   [1.0e-4, 1.0e-4, 1.0e-4]
+vio_pos_dynamic_drift:  [0.0, 0.0, 0.0]
+
+# Every IMU error is already modelled upstream, so MockVio must add nothing.
+#
+# The samples come from the companion computer's own 1 kHz sensor, which
+# betaflight_sitl/prepare_assets.py gives gaussian noise and a dynamic bias
+# random walk in the Gazebo sensor itself (COMPANION_GYRO_* / COMPANION_ACC_*).
+# Modelling the same effects a second time here would double-count them.
+imu_dt:             0.0
+imu_omega_noise:    [0.0, 0.0, 0.0]
+imu_acc_noise:      [0.0, 0.0, 0.0]
+imu_omega_bias:     [0.0, 0.0, 0.0]
+imu_acc_bias:       [0.0, 0.0, 0.0]
+
+# Bias uncertainty MockVio attributes to each buffered state.
+vio_omega_bias_noise:   [0.0, 0.0, 0.0]
+vio_acc_bias_noise:     [0.0, 0.0, 0.0]
