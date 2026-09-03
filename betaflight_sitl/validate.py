@@ -33,10 +33,21 @@ def trajectory_duration(path: Path) -> float:
     return float(rows[-1]["t"]) - float(rows[0]["t"])
 
 
+def trajectory_max_speed(path: Path) -> float:
+    with path.open() as handle:
+        return max(norm(row, "v_") for row in csv.DictReader(handle))
+
+
 def norm(row: Dict[str, str], prefix: str, suffix: str = "") -> float:
     return math.sqrt(
         sum(float(row[f"{prefix}{axis}{suffix}"]) ** 2 for axis in ("x", "y", "z"))
     )
+
+
+def command_collective_acceleration(row: Dict[str, str]) -> float:
+    """Read unit-explicit logs while retaining compatibility with old logs."""
+    key = "cmd_thrust_mps2" if "cmd_thrust_mps2" in row else "cmd_thrust"
+    return float(row[key])
 
 
 def score(log_path: Path) -> Optional[dict]:
@@ -61,7 +72,7 @@ def score(log_path: Path) -> Optional[dict]:
     ]
     speeds = [norm(row, "v_") for row in tracked]
     reference_speeds = [norm(row, "ref_v_") for row in tracked]
-    thrusts = [float(row["cmd_thrust"]) for row in tracked]
+    thrusts = [command_collective_acceleration(row) for row in tracked]
     saturated = sum(1 for row in tracked if int(row["rc_t"]) >= 1999)
     return {
         "samples": len(tracked),
@@ -164,6 +175,12 @@ def main() -> int:
     )
     parser.add_argument("--controller", choices=("mpc", "geo"), default="mpc")
     parser.add_argument(
+        "--skip-reference-speed-at-least",
+        type=float,
+        metavar="MPS",
+        help="skip trajectories whose CSV reference speed reaches MPS",
+    )
+    parser.add_argument(
         "--rtk-msp",
         action="store_true",
         help=(
@@ -176,6 +193,25 @@ def main() -> int:
     trajectories = args.trajectories or sorted(TRAJECTORY_DIR.rglob("*.csv"))
     if not trajectories:
         parser.error(f"no trajectories found under {TRAJECTORY_DIR}")
+    if args.skip_reference_speed_at_least is not None:
+        if (
+            not math.isfinite(args.skip_reference_speed_at_least)
+            or args.skip_reference_speed_at_least <= 0.0
+        ):
+            parser.error("--skip-reference-speed-at-least must be finite and > 0")
+        selected = []
+        for trajectory in trajectories:
+            max_speed = trajectory_max_speed(trajectory)
+            if max_speed >= args.skip_reference_speed_at_least - 1e-9:
+                log(
+                    f"{trajectory.name}: skipped (reference speed "
+                    f"{max_speed:.2f} m/s)"
+                )
+            else:
+                selected.append(trajectory)
+        trajectories = selected
+        if not trajectories:
+            parser.error("all trajectories were excluded by the speed limit")
     args.output.mkdir(parents=True, exist_ok=True)
 
     results: Dict[str, Optional[dict]] = {}

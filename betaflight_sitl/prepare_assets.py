@@ -65,6 +65,12 @@ BETAFLIGHT_QUADX_JOINT_ORDER = (
 AIR_DENSITY = 1.2041
 GRAVITY = 9.8066
 MODEL_MASS_KG = 0.700
+# Base-link inertia aligned with Agilib's matching quadrotor model.  The
+# source Iris SDF has a much smaller base-link inertia (most notably 0.002 vs
+# 0.0065 kg m^2 in roll).  Leaving it untouched makes the simulated vehicle
+# rotate far faster than both MPC and the Betaflight rate tune expect once a
+# trajectory asks for appreciable differential thrust.
+MODEL_BASE_INERTIA_KGM2 = (0.0065, 0.0060, 0.0115)
 PROP_RADIUS_M = 5.1 * 0.0254 / 2.0
 PROP_PITCH_M = 3.6 * 0.0254
 PROP_MASS_KG = 0.0043
@@ -171,6 +177,14 @@ def _configure_mark5_airframe(model: ET.Element) -> None:
     base.find("inertial/mass").text = repr(
         MODEL_MASS_KG - other_mass - 4.0 * PROP_MASS_KG
     )
+    base_inertia = base.find("inertial/inertia")
+    if base_inertia is None:
+        raise RuntimeError("base_link has no inertia tensor")
+    for axis, value in zip(("ixx", "iyy", "izz"), MODEL_BASE_INERTIA_KGM2):
+        component = base_inertia.find(axis)
+        if component is None:
+            raise RuntimeError(f"base_link inertia is missing {axis}")
+        component.text = repr(value)
     collision_size = base.find("collision/geometry/box/size")
     if collision_size is not None:
         collision_size.text = " ".join(map(str, FRAME_SIZE_M))

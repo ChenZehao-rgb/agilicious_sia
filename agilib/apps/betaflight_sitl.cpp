@@ -620,14 +620,20 @@ class FlightLog {
     double msp_tilt_error_deg{NAN};
   };
 
-  explicit FlightLog(const std::filesystem::path& path) : file_(path) {
+  FlightLog(const std::filesystem::path& path, const double vehicle_mass)
+    : file_(path), vehicle_mass_(vehicle_mass) {
     if (!file_) {
       throw std::runtime_error("could not open log file: " + path.string());
     }
+    if (!std::isfinite(vehicle_mass_) || vehicle_mass_ <= 0.0) {
+      throw std::runtime_error("vehicle mass for flight log must be positive");
+    }
     file_ << "t,mode,p_x,p_y,p_z,q_w,q_x,q_y,q_z,v_x,v_y,v_z,w_x,w_y,w_z,"
              "ref_p_x,ref_p_y,ref_p_z,ref_v_x,ref_v_y,ref_v_z,"
-             "ref_w_x,ref_w_y,ref_w_z,ref_thrust,"
-             "cmd_thrust,cmd_w_x,cmd_w_y,cmd_w_z,"
+             "ref_w_x,ref_w_y,ref_w_z,ref_thrust_mps2,"
+             "cmd_thrust_mps2,ref_thrust_N,cmd_thrust_N,"
+             "rotor_thrust_sum_N,thrust_error_N,"
+             "cmd_w_x,cmd_w_y,cmd_w_z,"
              "rc_a,rc_e,rc_t,rc_r,rc_aux1,has_reference,in_trajectory,"
              "est_p_x,est_p_y,est_p_z,"
              "ahrs_tilt_err_deg,ahrs_yaw_err_deg,ahrs_acc_weight,"
@@ -674,10 +680,22 @@ class FlightLog {
     write(target.p);
     write(target.v);
     write(target.w);
-    file_ << ',' << (target_input.isRatesThrust() ? target_input.collective_thrust
-                                                  : 0.0);
-    file_ << ','
-          << (command.isRatesThrust() ? command.collective_thrust : 0.0);
+    const double reference_acceleration =
+      target_input.isRatesThrust() ? target_input.collective_thrust : 0.0;
+    const double command_acceleration =
+      command.isRatesThrust() ? command.collective_thrust : 0.0;
+    double rotor_thrust_sum = NAN;
+    if (aerodynamics.valid) {
+      rotor_thrust_sum = 0.0;
+      for (const auto& rotor : aerodynamics.rotors)
+        rotor_thrust_sum += rotor.thrust;
+    }
+    const double command_force = vehicle_mass_ * command_acceleration;
+    file_ << ',' << reference_acceleration << ',' << command_acceleration
+          << ',' << vehicle_mass_ * reference_acceleration
+          << ',' << command_force << ',' << rotor_thrust_sum
+          << ',' << (aerodynamics.valid ? rotor_thrust_sum - command_force
+                                        : NAN);
     write(command.isRatesThrust() ? command.omega : agi::Vector<3>::Zero());
     for (std::size_t i = 0; i < 5; ++i) file_ << ',' << channels[i];
     file_ << ',' << (has_reference ? 1 : 0) << ','
@@ -718,6 +736,7 @@ class FlightLog {
   }
 
   std::ofstream file_;
+  double vehicle_mass_;
   double start_time_{NAN};
   double trajectory_start_{std::numeric_limits<double>::infinity()};
   double trajectory_end_{-std::numeric_limits<double>::infinity()};
@@ -964,8 +983,8 @@ void printStatus(const char* mode, const agi::QuadState& state,
             << "w=[" << state.w.transpose() << "] ";
 
   if (command.valid()) {
-    std::cout << "thrust=" << command.collective_thrust << " omega_cmd=["
-              << command.omega.transpose() << "] ";
+    std::cout << "collective_accel=" << command.collective_thrust
+              << "m/s^2 omega_cmd=[" << command.omega.transpose() << "] ";
   } else {
     std::cout << "command=unavailable ";
   }
@@ -1039,14 +1058,6 @@ int main(int argc, char** argv) {
       }
     }
 
-    std::unique_ptr<FlightLog> flight_log;
-    if (!options.log_file.empty()) {
-      flight_log =
-        std::make_unique<FlightLog>(options.log_file);
-      std::cout << "Logging reference vs. state to " << options.log_file
-                << '\n';
-    }
-
     std::unique_ptr<agi::PilotParams> pilot_params;
     std::string yaml_quad;
     const agi::Yaml pilot_yaml(pilot_config);
@@ -1068,6 +1079,14 @@ int main(int argc, char** argv) {
     } else {
       pilot_params =
         std::make_unique<agi::PilotParams>(pilot_config, params_dir, quad);
+    }
+
+    std::unique_ptr<FlightLog> flight_log;
+    if (!options.log_file.empty()) {
+      flight_log = std::make_unique<FlightLog>(options.log_file,
+                                               pilot_params->quad_.m_);
+      std::cout << "Logging reference vs. state to " << options.log_file
+                << " (collective command in m/s^2 and N)\n";
     }
     // Shared with the Pilot's clock below; updated once per control cycle from
     // the odometry stamp.

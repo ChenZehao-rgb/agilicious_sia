@@ -25,6 +25,14 @@ thrust_min:         0.0
 thrust_max:         16.912
 rotors_config:      "cross"
 
-aero_coeff_1:       [0.0, 0.0, 0.0]
-aero_coeff_3:       [0.0, 0.0, 0.0]
-aero_coeff_h:       0.0
+# Effective body-frame drag seen by the translational MPC.  This includes the
+# frame drag and the four rotors' in-plane H-force from the Gazebo BEM model.
+# Coefficients were identified from the sub-50 m/s SITL trajectory logs using
+#   F_drag_xy = c1 * v + c3 * v^3
+# and the existing induced-lift term in the MPC model.  Leaving these at zero
+# made MPC predict vacuum dynamics while Gazebo applied 4-5 N of rotor drag at
+# 10-11 m/s, producing a repeatable metre-scale position lag even though
+# Betaflight tracked collective thrust and roll/pitch body rates.
+aero_coeff_1:       [0.4002, 0.3833, 0.4314]
+aero_coeff_3:       [0.000307, 0.000745, 0.001283]
+aero_coeff_h:       0.01728

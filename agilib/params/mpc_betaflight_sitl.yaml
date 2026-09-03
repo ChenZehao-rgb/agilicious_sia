@@ -20,10 +20,10 @@ Q_pos_y:                            300
 Q_pos_z:                            650
 Q_att_x:                            5
 Q_att_y:                            5
-Q_att_z:                            200
+Q_att_z:                            5
 Q_vel:                              3.0
 Q_omega_xy:                         10.0
-Q_omega_z:                          1.0
+Q_omega_z:                          10.0
 R:                                  6.0
 exp_decay:                          1.0
 max_wait_time_before_preparation:   0.1

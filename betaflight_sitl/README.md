@@ -52,6 +52,11 @@ python3 betaflight_sitl/run.py --gazebo --arm \
 - 轨迹整体会被抬高，保证最低点距起飞点不低于 `--ground-clearance`（默认 0.8 m）。
 - `--log FILE` 记录参考与实际状态的逐周期 CSV，供 `validate.py` 评分。
 
+日志中的 `ref_thrust_mps2` / `cmd_thrust_mps2` 是 Agilicious 统一使用的质量归一化
+总推力（单位 m/s²），不是牛顿。日志同时给出 `ref_thrust_N`、`cmd_thrust_N`、
+`rotor_thrust_sum_N` 和 `thrust_error_N`，便于在相同单位下检查 Betaflight/Gazebo 的
+推力执行误差；其中 `cmd_thrust_N = vehicle_mass × cmd_thrust_mps2`。
+
 同一个 CSV 还记录 `/model/iris/aerodynamics` 的最新样本：机体系空速、机体阻力、
 总气动力/力矩，以及每个旋翼的转速、推力、反扭矩、盘内阻力、诱导速度、前进比、
 桨尖 Mach 数和入流求解状态。`aero_age_s` 是该气动样本相对当前控制周期的仿真时间
@@ -62,6 +67,9 @@ python3 betaflight_sitl/run.py --gazebo --arm \
 ```bash
 python3 betaflight_sitl/validate.py            # 跑 miscellaneous/datasets 下全部轨迹
 python3 betaflight_sitl/validate.py <某个.csv> # 只跑指定轨迹
+python3 betaflight_sitl/validate.py --rtk-msp \
+  --skip-reference-speed-at-least 50 \
+  miscellaneous/datasets/ref_trajs/open_source/*.csv
 ```
 
 只统计 CSV 轨迹真正作为参考的区间，起飞和收尾悬停不计入。旧 `LiftDrag` 模型的
@@ -133,7 +141,10 @@ maximum static T/W  ≈ 9.85
 Aeroloop 原始 Iris 的两个 `LiftDrag` 点既不是完整 BEM，也没有机体阻力；其几何和
 转速也不对应 5.1 英寸三叶桨。`prepare_assets.py` 会删掉八个原始叶素插件，加载本
 仓库的 `AgiliciousAerodynamicsPlugin`，同时把质量、轴距、桨半径、桨惯量和机体碰撞
-外廓改成 MK5 数据。原始 `~/aeroloop_gazebo` 不会被修改。
+外廓改成 MK5 数据，并把基座转动惯量改成与 Agilib `betaloop_iris.yaml` 一致的
+`[0.0065, 0.0060, 0.0115] kg·m²`。原始 `~/aeroloop_gazebo` 不会被修改。若继续沿用
+源 Iris 的 `[0.002, 0.004, 0.0045] kg·m²`，滚转和偏航响应会比控制器模型快数倍，
+高动态轨迹中会导致角速度过冲和电机差动振荡。
 
 同一份覆盖层还把里程计换成插件直接发布的真值：`gz-sim` 的 `OdometryPublisher`
 用位姿差分估速度，而且三维模式下发的是**欧拉角速率**而非机体角速度，只在悬停
