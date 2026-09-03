@@ -39,34 +39,19 @@ yaw_deadband: 0
 # it biases the feed-forward by about 5% of full throttle at both ends of the
 # range, which matters once a trajectory asks for sustained high collective.
 #
-# hover_throttle is the stick position that hovers; measured with
-# betaflight_sitl/calibrate_plant.py, whose trim search puts the hover motor
-# output at 0.4040 for the overlay model; trimmed to the observed steady hover.
+# hover_throttle is the active-range stick position that hovers. The static
+# rotor needs about 1006 rad/s; aerodynamic reaction torque plus joint damping
+# make the velocity servo request motor output about 0.361. With Betaflight's
+# 5.5% idle this corresponds to a stick fraction of about 0.324.
 motor_idle: 0.055
-hover_throttle: 0.3800
+hover_throttle: 0.3240
 min_check: 1050
 
-# Betaflight inner-loop gains, written into the isolated EEPROM by
-# betaflight_sitl/run.py.  Roll and pitch keep the Betaflight defaults: the
-# overlay airframe reaches about 420 rad/s^2 on those axes, which is what those
-# gains expect.
-#
-# Yaw is the exception, and the reason is a modelling artifact rather than the
-# airframe.  Most of this model's yaw torque is the reaction of the rotor joint
-# servo working against the joint damping, which scales with rotor speed rather
-# than with rotor thrust.  Raising the rotor speed fourfold to fix the advance
-# ratio therefore multiplied yaw authority by 6.4 without changing thrust:
-# measured 20.5 rad/s^2 of yaw acceleration at a 0.1 motor differential, against
-# 3.2 before.  Betaflight's default gains oscillate at several rad/s in a hover
-# under that, so scale them by the same 6.4.
-#
-# These gains are not a substitute for the yaw sign being right in the bridge:
-# with the sign inverted the loop is positive feedback at any gain, and lowering
-# the gains only slows the wind-up from seconds to tens of seconds.
-#
-# The cleaner fix would be to shrink the rotor joint damping so the reaction
-# torque stays physical, which would also make kappa constant; that changes the
-# servo droop and so needs the whole plant re-identified.
+# Betaflight inner-loop gains, written into the isolated EEPROM by run.py.
+# Roll and pitch retain the existing tune. Yaw remains deliberately mild; the
+# new aerodynamic plugin applies the measured power/omega reaction torque at
+# each rotor instead of relying on joint-damping torque. A 15 s closed-loop
+# hover test is stable, but these gains have not been flight-identified.
 p_roll: 45
 i_roll: 80
 d_roll: 30

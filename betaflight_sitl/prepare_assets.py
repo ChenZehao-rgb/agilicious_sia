@@ -20,6 +20,7 @@ SOURCE_MODEL_NAME = "betaloop_iris_with_standoffs"
 OVERLAY_MODEL_NAME = "betaloop_iris_agilicious"
 ODOM_TOPIC = "/model/iris/odometry"
 JOINT_TOPIC = "/world/betaloop_demo/model/iris/joint_state"
+AERODYNAMICS_TOPIC = "/model/iris/aerodynamics"
 # Companion-computer IMU: the dedicated sensor the Raspberry Pi carries, as
 # opposed to the flight controller's own.  See COMPANION_IMU_* below.
 COMPANION_IMU_TOPIC = "/model/iris/companion_imu"
@@ -60,69 +61,25 @@ BETAFLIGHT_QUADX_JOINT_ORDER = (
     "rotor_2_joint",
 )
 
-# Rotor plant targets.
-#
-# Aeroloop models each rotor as two gz-sim LiftDrag blade elements whose lift
-# coefficient is cla * alpha, with alpha = a0 - atan(axial inflow / (cp *
-# rotor_speed)).  Two groups follow from that:
-#
-#   thrust    = rho * area * cla * a0 * cp^2 * rotor_speed^2
-#   zero-lift axial inflow = a0 * cp * rotor_speed
-#
-# so `a0` is exactly the blade's effective angle of attack at hover, which for
-# a real propeller is its geometric pitch angle minus the induced inflow angle.
-# Aeroloop ships a0 = 0.025 rad (1.4 deg); every real propeller sits between
-# 0.09 rad (10" cruise) and 0.23 rad (5" freestyle), and at 1.4 deg thrust
-# collapses under 0.8 m/s of climb, which makes the airframe uncontrollable.
-#
-# The other half of the fidelity problem is rotor speed.  The blade-element
-# speed at hover sets the advance ratio, i.e. how far into the envelope the
-# rotor is at a given airspeed.  Aeroloop's stock speed puts it at 21 m/s
-# against 60 m/s for a real 5" prop, so the model reaches an advance ratio of 1
-# at only 20 m/s -- past that the rotor generates lift from translation alone
-# and the vertical axis stops being controllable.  Raising maxRpm fixes that,
-# but only as far as the physics step can resolve blade azimuth (see
-# PHYSICS_STEP_S).
-SOURCE_ROTOR_A0 = 0.025
-SOURCE_ROTOR_AREA = 0.2
-SOURCE_ROTOR_CP = 0.084
-SOURCE_ROTOR_CLA = 0.25
-
+# Qianfeng 5136 three-blade / GEPRC Mark5 airframe supplied by the user.
 AIR_DENSITY = 1.2041
 GRAVITY = 9.8066
-# Link masses in the Aeroloop model sum to this.
-MODEL_MASS_KG = 0.54
-
-# The plugin drives each rotor joint with a velocity servo, so the reachable
-# speed is vel_p_gain / (vel_p_gain + joint damping) of the commanded one.
-ROTOR_SERVO_DROOP = 0.01 / (0.01 + 0.004)
-# 3352 * 0.714 = 2394 rad/s reachable, four times Aeroloop's stock value and
-# 68 deg of blade azimuth per 0.5 ms step -- the same azimuth resolution the
-# stock model had at 2 ms.  Hover then lands near 1000 rad/s, giving a blade
-# speed of 84 m/s against 60 m/s for a real 5" propeller.
-PLUGIN_MAX_RPM = 3352.0
-# Effective blade angle of attack at hover, matched to a 5" freestyle prop.
-OVERLAY_ROTOR_A0 = 0.23
-# Static thrust at full motor output, relative to the model's weight.  Real
-# freestyle quadcopters run 4:1 to 8:1; the reference trajectories in
-# miscellaneous/datasets need up to 3.8:1 as pure feed-forward (LOOP14_38) plus
-# headroom for the tracking controller to correct on top of it.
-TARGET_THRUST_TO_WEIGHT = 5.75
-
-
-def _overlay_rotor_area() -> float:
-    """Blade-element area that hits TARGET_THRUST_TO_WEIGHT at the chosen a0."""
-    rotor_speed_max = ROTOR_SERVO_DROOP * PLUGIN_MAX_RPM
-    thrust_per_rotor = (
-        TARGET_THRUST_TO_WEIGHT * MODEL_MASS_KG * GRAVITY / len(BETAFLIGHT_QUADX_JOINT_ORDER)
-    )
-    thrust_coefficient = thrust_per_rotor / rotor_speed_max**2
-    return thrust_coefficient / (
-        AIR_DENSITY * SOURCE_ROTOR_CLA * OVERLAY_ROTOR_A0 * SOURCE_ROTOR_CP**2
-    )
-
-
-OVERLAY_ROTOR_AREA = _overlay_rotor_area()
+MODEL_MASS_KG = 0.700
+PROP_RADIUS_M = 5.1 * 0.0254 / 2.0
+PROP_PITCH_M = 3.6 * 0.0254
+PROP_MASS_KG = 0.0043
+PROP_MAX_RAD_S = 29280.0 * 2.0 * math.pi / 60.0
+MOTOR_AXIS_M = 0.225 / (2.0 * math.sqrt(2.0))
+FRAME_SIZE_M = (0.214, 0.168, 0.042)
+# Cd=1.04 times the x/y/z projected rectangular areas. These values are kept
+# explicit in the generated SDF so they can later be replaced by coast-down or
+# wind-tunnel identification without recompiling the plugin.
+BODY_CD_AREA = (
+    1.04 * FRAME_SIZE_M[1] * FRAME_SIZE_M[2],
+    1.04 * FRAME_SIZE_M[0] * FRAME_SIZE_M[2],
+    1.04 * FRAME_SIZE_M[0] * FRAME_SIZE_M[1],
+)
+PLUGIN_MAX_RPM = PROP_MAX_RAD_S  # Aeroloop's historical name; units are rad/s.
 
 # Rate at which the plugin feeds Betaflight its simulated sensors.  Betaflight
 # answers every FDM packet with a motor packet, so this is effectively its loop
@@ -142,15 +99,14 @@ ODOM_PUBLISH_HZ = 200.0
 # adapter drives its clock from the odometry's simulated-time stamp rather than
 # from the wall clock.
 #
-# The step also caps the usable rotor speed, because LiftDrag resolves blade
-# azimuth once per step.  At 2 ms and 598.6 rad/s the rotor turns 68.6 deg per
-# step; holding that resolution at PLUGIN_MAX_RPM's 2394 rad/s needs 0.5 ms,
-# which measures at a real-time factor of 0.999.
+# The disk-averaged BEM integrates blade azimuth internally, so the physics
+# step no longer has to resolve the visual propeller rotation.  One millisecond
+# retains the 1 kHz rigid-body/contact dynamics needed by the rate loop.
 PHYSICS_STEP_S = 0.001
 
 
-def _retune_rotor_blade_elements(model: ET.Element) -> int:
-    """Rescale the rotor LiftDrag elements to keep static thrust but survive inflow."""
+def _replace_rotor_aerodynamics(model: ET.Element) -> int:
+    """Replace point LiftDrag elements with the calibrated three-blade BEM."""
     elements = [
         plugin
         for plugin in model.findall("plugin")
@@ -161,30 +117,88 @@ def _retune_rotor_blade_elements(model: ET.Element) -> int:
         raise RuntimeError("no rotor LiftDrag elements found in the Aeroloop model")
 
     for element in elements:
-        a0 = element.find("a0")
-        area = element.find("area")
-        if a0 is None or area is None:
-            raise RuntimeError("a rotor LiftDrag element is missing <a0> or <area>")
-        if not math.isclose(float(a0.text or "nan"), SOURCE_ROTOR_A0, rel_tol=1e-6):
-            raise RuntimeError(
-                f"unexpected rotor a0 {a0.text!r}; refusing to rescale blindly"
-            )
-        if not math.isclose(float(area.text or "nan"), SOURCE_ROTOR_AREA, rel_tol=1e-6):
-            raise RuntimeError(
-                f"unexpected rotor area {area.text!r}; refusing to rescale blindly"
-            )
-        # cp and cla are load-bearing in the thrust and inflow expressions
-        # above, so refuse to rescale if the source model moved them.
-        cp = (element.findtext("cp") or "").split()
-        if not cp or not math.isclose(abs(float(cp[0])), SOURCE_ROTOR_CP, rel_tol=1e-6):
-            raise RuntimeError(f"unexpected rotor cp {element.findtext('cp')!r}")
-        if not math.isclose(
-            float(element.findtext("cla") or "nan"), SOURCE_ROTOR_CLA, rel_tol=1e-6
-        ):
-            raise RuntimeError(f"unexpected rotor cla {element.findtext('cla')!r}")
-        a0.text = repr(OVERLAY_ROTOR_A0)
-        area.text = repr(OVERLAY_ROTOR_AREA)
+        model.remove(element)
+
+    plugin = ET.SubElement(
+        model, "plugin",
+        {"filename": "AgiliciousAerodynamicsPlugin",
+         "name": "agilicious::aero::AgiliciousAerodynamicsPlugin"},
+    )
+    values = {
+        "air_density": AIR_DENSITY,
+        "speed_of_sound": 343.0,
+        "propeller_radius": PROP_RADIUS_M,
+        "propeller_pitch": PROP_PITCH_M,
+        "hub_radius": 0.008,
+        "chord_root": 0.017,
+        "chord_tip": 0.008,
+        "num_blades": 3,
+        "h_force_scale": 3.0,
+        "body_cd_area": " ".join(map(str, BODY_CD_AREA)),
+        "wind_velocity": "0 0 0",
+        "telemetry_rate": 100.0,
+        "aerodynamics_rate": 200.0,
+        "telemetry_topic": AERODYNAMICS_TOPIC,
+    }
+    for name, value in values.items():
+        ET.SubElement(plugin, name).text = str(value)
+    positions = {
+        "rotor_0_joint": (MOTOR_AXIS_M, -MOTOR_AXIS_M, "ccw"),
+        "rotor_1_joint": (-MOTOR_AXIS_M, MOTOR_AXIS_M, "ccw"),
+        "rotor_2_joint": (MOTOR_AXIS_M, MOTOR_AXIS_M, "cw"),
+        "rotor_3_joint": (-MOTOR_AXIS_M, -MOTOR_AXIS_M, "cw"),
+    }
+    for joint, (x, y, direction) in positions.items():
+        rotor = ET.SubElement(plugin, "rotor")
+        ET.SubElement(rotor, "joint_name").text = joint
+        ET.SubElement(rotor, "link_name").text = joint.removesuffix("_joint")
+        ET.SubElement(rotor, "position").text = f"{x} {y} 0"
+        ET.SubElement(rotor, "direction").text = direction
     return len(elements)
+
+
+def _configure_mark5_airframe(model: ET.Element) -> None:
+    """Apply the supplied 700 g, 225 mm Mark5 geometry to the copied model."""
+    links = {link.get("name"): link for link in model.findall("link")}
+    base = links.get("base_link")
+    if base is None:
+        raise RuntimeError("no base_link in Aeroloop model")
+    other_mass = 0.0
+    for name, link in links.items():
+        if name == "base_link" or name.startswith("rotor_"):
+            continue
+        other_mass += float(link.findtext("inertial/mass") or 0.0)
+    base.find("inertial/mass").text = repr(
+        MODEL_MASS_KG - other_mass - 4.0 * PROP_MASS_KG
+    )
+    collision_size = base.find("collision/geometry/box/size")
+    if collision_size is not None:
+        collision_size.text = " ".join(map(str, FRAME_SIZE_M))
+
+    positions = {
+        "rotor_0": (MOTOR_AXIS_M, -MOTOR_AXIS_M),
+        "rotor_1": (-MOTOR_AXIS_M, MOTOR_AXIS_M),
+        "rotor_2": (MOTOR_AXIS_M, MOTOR_AXIS_M),
+        "rotor_3": (-MOTOR_AXIS_M, -MOTOR_AXIS_M),
+    }
+    izz = PROP_MASS_KG * PROP_RADIUS_M**2 / 3.0
+    for name, (x, y) in positions.items():
+        link = links.get(name)
+        if link is None:
+            raise RuntimeError(f"missing {name} in Aeroloop model")
+        pose = (link.findtext("pose") or "").split()
+        pose[:2] = [repr(x), repr(y)]
+        link.find("pose").text = " ".join(pose)
+        link.find("inertial/mass").text = repr(PROP_MASS_KG)
+        inertia = link.find("inertial/inertia")
+        inertia.find("ixx").text = repr(0.5 * izz)
+        inertia.find("iyy").text = repr(0.5 * izz)
+        inertia.find("izz").text = repr(izz)
+        radius = link.find("collision/geometry/cylinder/radius")
+        if radius is not None:
+            radius.text = repr(PROP_RADIUS_M)
+        joint = model.find(f"joint[@name='{name}_joint']")
+        joint.find("axis/dynamics/damping").text = "1e-5"
 
 
 def _add_imu_noise(sensor: ET.Element, gyro_noise: float, gyro_walk: float,
@@ -302,6 +316,18 @@ def prepare_assets(
     for motor_index, joint in enumerate(BETAFLIGHT_QUADX_JOINT_ORDER):
         rotor = rotor_by_joint[joint]
         rotor.set("id", str(motor_index))
+        # With the measured 4.3 g propeller inertia and negligible joint
+        # damping this gives an approximately 12 ms first-order speed response.
+        vel_p_gain = rotor.find("vel_p_gain")
+        if vel_p_gain is not None:
+            vel_p_gain.text = "0.0005"
+        # Full-throttle bench power is 907.6 W at 3066 rad/s: 0.296 N m.
+        # Limit the ideal joint servo so excessive aerodynamic torque produces
+        # rotor droop instead of free, non-physical power.
+        for name, value in (("vel_cmd_max", "0.35"), ("vel_cmd_min", "-0.35")):
+            element = rotor.find(name)
+            if element is not None:
+                element.text = value
         for stale in rotor.findall("maxRpm"):
             rotor.remove(stale)
         ET.SubElement(rotor, "maxRpm").text = repr(PLUGIN_MAX_RPM)
@@ -340,7 +366,8 @@ def prepare_assets(
         round(0.200 * FDM_PUBLISH_HZ)
     )
 
-    _retune_rotor_blade_elements(model)
+    _configure_mark5_airframe(model)
+    _replace_rotor_aerodynamics(model)
     _add_companion_imu(model)
     _configure_flight_controller_imu(model)
 

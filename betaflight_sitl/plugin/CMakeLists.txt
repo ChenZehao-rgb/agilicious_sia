@@ -49,3 +49,19 @@ target_link_libraries(AgiliciousBetaflightPlugin PRIVATE
   gz-math7::gz-math7
   gz-msgs10::gz-msgs10
   gz-transport13::gz-transport13)
+
+add_library(AgiliciousAerodynamicsPlugin SHARED
+  AgiliciousAerodynamicsPlugin.cc
+  AerodynamicsModel.cc)
+target_link_libraries(AgiliciousAerodynamicsPlugin PRIVATE
+  gz-sim8::gz-sim8
+  gz-plugin2::gz-plugin2
+  gz-math7::gz-math7
+  gz-msgs10::gz-msgs10
+  gz-transport13::gz-transport13)
+
+enable_testing()
+add_executable(aero_model_test aero_model_test.cc AerodynamicsModel.cc)
+add_test(NAME aero_model_test COMMAND aero_model_test)
+
+add_executable(aero_envelope aero_envelope.cc AerodynamicsModel.cc)

@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cmath>
 #include <csignal>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -19,6 +20,7 @@
 #include <gz/msgs/imu.pb.h>
 #include <gz/msgs/model.pb.h>
 #include <gz/msgs/odometry.pb.h>
+#include <gz/msgs/stringmsg.pb.h>
 #include <gz/transport/Node.hh>
 
 #include "agilib/bridge/betaflight_udp/betaflight_udp_bridge.hpp"
@@ -49,6 +51,7 @@ struct Options {
   std::string bridge_config;
   std::string odom_topic{"/model/iris/odometry"};
   std::string joint_topic{"/world/betaloop_demo/model/iris/joint_state"};
+  std::string aero_topic{"/model/iris/aerodynamics"};
   /// Companion-computer IMU topic.  This sensor is what dead-reckons between
   /// RTK fixes and what supplies body rates; --rtk-state requires it.
   std::string imu_topic;
@@ -93,6 +96,8 @@ void printUsage(const char* executable) {
     << "  --odom-topic TOPIC    Gazebo odometry topic"
        " (default: /model/iris/odometry)\n"
     << "  --joint-topic TOPIC   Gazebo joint-state diagnostic topic\n"
+    << "  --aero-topic TOPIC    Gazebo rotor/body aerodynamics topic"
+       " (default: /model/iris/aerodynamics)\n"
     << "  --imu-topic TOPIC     Companion-computer IMU; dead-reckons between\n"
        "                        RTK fixes and supplies body rates\n"
     << "  --rtk-state           Hand the estimator a world-frame velocity, as\n"
@@ -106,7 +111,7 @@ void printUsage(const char* executable) {
        " (default: estimate it from the file)\n"
     << "  --ground-clearance M  Minimum trajectory altitude above the takeoff"
        " point (default: 0.8)\n"
-    << "  --log FILE            Write a reference-vs-state CSV for analysis\n"
+    << "  --log FILE            Write state, reference and aerodynamics CSV\n"
     << "  --arm                 Arm after odometry becomes valid, then take off\n"
     << "  --disarmed-seconds SEC Keep AUX1 low before arming (default: 6.0)\n"
     << "  --prearm-seconds SEC  Armed low-throttle time before takeoff"
@@ -171,6 +176,8 @@ Options parseOptions(int argc, char** argv) {
       options.odom_topic = valueAfter(i, argument);
     } else if (argument == "--joint-topic") {
       options.joint_topic = valueAfter(i, argument);
+    } else if (argument == "--aero-topic") {
+      options.aero_topic = valueAfter(i, argument);
     } else if (argument == "--imu-topic") {
       options.imu_topic = valueAfter(i, argument);
     } else if (argument == "--trajectory") {
@@ -224,6 +231,8 @@ Options parseOptions(int argc, char** argv) {
     throw std::runtime_error("--odom-topic must not be empty");
   if (options.joint_topic.empty())
     throw std::runtime_error("--joint-topic must not be empty");
+  if (options.aero_topic.empty())
+    throw std::runtime_error("--aero-topic must not be empty");
   if (options.prearm_seconds < 0.0)
     throw std::runtime_error("--prearm-seconds must be >= 0");
   if (options.disarmed_seconds < 0.0)
@@ -475,6 +484,121 @@ agi::SetpointVector loadTrajectory(const std::vector<std::vector<double>>& rows,
   return setpoints;
 }
 
+struct AerodynamicsSample {
+  struct Rotor {
+    double omega{NAN};
+    double thrust{NAN};
+    double torque{NAN};
+    double h_force{NAN};
+    double inflow{NAN};
+    double mu{NAN};
+    double tip_mach{NAN};
+    double converged{NAN};
+  };
+
+  double time{NAN};
+  std::array<double, 3> air_velocity_body{NAN, NAN, NAN};
+  std::array<double, 3> body_drag_body{NAN, NAN, NAN};
+  std::array<double, 3> force_body{NAN, NAN, NAN};
+  std::array<double, 3> torque_body{NAN, NAN, NAN};
+  std::array<Rotor, 4> rotors{};
+  bool valid{false};
+};
+
+bool parseJsonNumber(const std::string& text, const std::string& key,
+                     std::size_t* cursor, double* value) {
+  const std::string token = "\"" + key + "\":";
+  const std::size_t position = text.find(token, *cursor);
+  if (position == std::string::npos) return false;
+  const char* begin = text.c_str() + position + token.size();
+  char* end = nullptr;
+  *value = std::strtod(begin, &end);
+  if (end == begin || !std::isfinite(*value)) return false;
+  *cursor = static_cast<std::size_t>(end - text.c_str());
+  return true;
+}
+
+bool parseJsonVector3(const std::string& text, const std::string& key,
+                      std::size_t* cursor, std::array<double, 3>* value) {
+  const std::string token = "\"" + key + "\":[";
+  const std::size_t position = text.find(token, *cursor);
+  if (position == std::string::npos) return false;
+  std::size_t number_cursor = position + token.size();
+  for (double& component : *value) {
+    const char* begin = text.c_str() + number_cursor;
+    char* end = nullptr;
+    component = std::strtod(begin, &end);
+    if (end == begin || !std::isfinite(component)) return false;
+    number_cursor = static_cast<std::size_t>(end - text.c_str());
+    if (&component != &value->back()) {
+      if (number_cursor >= text.size() || text[number_cursor] != ',') return false;
+      ++number_cursor;
+    }
+  }
+  *cursor = number_cursor;
+  return true;
+}
+
+bool parseAerodynamics(const gz::msgs::StringMsg& message,
+                       AerodynamicsSample* sample) {
+  const std::string& text = message.data();
+  AerodynamicsSample parsed;
+  std::size_t cursor = 0;
+  if (!parseJsonNumber(text, "time", &cursor, &parsed.time) ||
+      !parseJsonVector3(text, "air_velocity_body", &cursor,
+                        &parsed.air_velocity_body) ||
+      !parseJsonVector3(text, "body_drag_body", &cursor,
+                        &parsed.body_drag_body) ||
+      !parseJsonVector3(text, "force_body", &cursor, &parsed.force_body) ||
+      !parseJsonVector3(text, "torque_body", &cursor, &parsed.torque_body)) {
+    return false;
+  }
+  for (auto& rotor : parsed.rotors) {
+    if (!parseJsonNumber(text, "omega", &cursor, &rotor.omega) ||
+        !parseJsonNumber(text, "thrust", &cursor, &rotor.thrust) ||
+        !parseJsonNumber(text, "torque", &cursor, &rotor.torque) ||
+        !parseJsonNumber(text, "h_force", &cursor, &rotor.h_force) ||
+        !parseJsonNumber(text, "inflow", &cursor, &rotor.inflow) ||
+        !parseJsonNumber(text, "mu", &cursor, &rotor.mu) ||
+        !parseJsonNumber(text, "tip_mach", &cursor, &rotor.tip_mach)) {
+      return false;
+    }
+    const std::string token = "\"converged\":";
+    const std::size_t position = text.find(token, cursor);
+    if (position == std::string::npos) return false;
+    cursor = position + token.size();
+    if (text.compare(cursor, 4, "true") == 0) {
+      rotor.converged = 1.0;
+      cursor += 4;
+    } else if (text.compare(cursor, 5, "false") == 0) {
+      rotor.converged = 0.0;
+      cursor += 5;
+    } else {
+      return false;
+    }
+  }
+  parsed.valid = true;
+  *sample = parsed;
+  return true;
+}
+
+struct LatestAerodynamics {
+  std::mutex mutex;
+  AerodynamicsSample sample;
+
+  void update(const gz::msgs::StringMsg& message) {
+    AerodynamicsSample parsed;
+    if (!parseAerodynamics(message, &parsed)) return;
+    const std::lock_guard<std::mutex> lock(mutex);
+    sample = parsed;
+  }
+
+  AerodynamicsSample snapshot() {
+    const std::lock_guard<std::mutex> lock(mutex);
+    return sample;
+  }
+};
+
 /// Reference-versus-state recorder, used by betaflight_sitl/validate.py.
 class FlightLog {
  public:
@@ -507,7 +631,22 @@ class FlightLog {
              "rc_a,rc_e,rc_t,rc_r,rc_aux1,has_reference,in_trajectory,"
              "est_p_x,est_p_y,est_p_z,"
              "ahrs_tilt_err_deg,ahrs_yaw_err_deg,ahrs_acc_weight,"
-             "msp_tilt_err_deg\n";
+             "msp_tilt_err_deg,"
+             "aero_valid,aero_age_s,air_v_body_x,air_v_body_y,air_v_body_z,"
+             "body_drag_x,body_drag_y,body_drag_z,"
+             "aero_force_x,aero_force_y,aero_force_z,"
+             "aero_torque_x,aero_torque_y,aero_torque_z";
+    for (std::size_t i = 0; i < 4; ++i) {
+      file_ << ",rotor_" << i << "_omega_rad_s"
+            << ",rotor_" << i << "_thrust_N"
+            << ",rotor_" << i << "_torque_Nm"
+            << ",rotor_" << i << "_h_force_N"
+            << ",rotor_" << i << "_inflow_mps"
+            << ",rotor_" << i << "_mu"
+            << ",rotor_" << i << "_tip_mach"
+            << ",rotor_" << i << "_inflow_converged";
+    }
+    file_ << '\n';
     file_ << std::setprecision(9);
   }
 
@@ -517,7 +656,8 @@ class FlightLog {
   void write(const double time, const char* mode, const agi::QuadState& state,
              const agi::SetpointVector& reference, const agi::Command& command,
              const agi::BetaflightUdpBridge::Channels& channels,
-             const Diagnostics& diagnostics) {
+             const Diagnostics& diagnostics,
+             const AerodynamicsSample& aerodynamics) {
     const bool has_reference = !reference.empty();
     const agi::QuadState& target =
       has_reference ? reference.front().state : state;
@@ -546,7 +686,19 @@ class FlightLog {
     file_ << ',' << diagnostics.ahrs_tilt_error_deg << ','
           << diagnostics.ahrs_yaw_error_deg << ','
           << diagnostics.ahrs_acc_weight << ','
-          << diagnostics.msp_tilt_error_deg << '\n';
+          << diagnostics.msp_tilt_error_deg << ','
+          << (aerodynamics.valid ? 1 : 0) << ','
+          << (aerodynamics.valid ? time - aerodynamics.time : NAN);
+    write(aerodynamics.air_velocity_body);
+    write(aerodynamics.body_drag_body);
+    write(aerodynamics.force_body);
+    write(aerodynamics.torque_body);
+    for (const auto& rotor : aerodynamics.rotors) {
+      file_ << ',' << rotor.omega << ',' << rotor.thrust << ',' << rotor.torque
+            << ',' << rotor.h_force << ',' << rotor.inflow << ',' << rotor.mu
+            << ',' << rotor.tip_mach << ',' << rotor.converged;
+    }
+    file_ << '\n';
   }
 
   /// Mark the window in which the sampled CSV trajectory is the reference, so
@@ -559,6 +711,10 @@ class FlightLog {
  private:
   void write(const agi::Vector<3>& vector) {
     file_ << ',' << vector.x() << ',' << vector.y() << ',' << vector.z();
+  }
+
+  void write(const std::array<double, 3>& vector) {
+    file_ << ',' << vector[0] << ',' << vector[1] << ',' << vector[2];
   }
 
   std::ofstream file_;
@@ -941,6 +1097,7 @@ int main(int argc, char** argv) {
 
     LatestOdometry latest_odometry;
     LatestRotorVelocity latest_rotor_velocity;
+    LatestAerodynamics latest_aerodynamics;
     gz::transport::Node node;
     const bool subscribed = node.Subscribe<gz::msgs::Odometry>(
       options.odom_topic, [&latest_odometry](const gz::msgs::Odometry& msg) {
@@ -959,6 +1116,17 @@ int main(int argc, char** argv) {
       throw std::runtime_error("failed to subscribe to Gazebo topic: " +
                                options.joint_topic);
     }
+    const bool subscribed_aerodynamics = node.Subscribe<gz::msgs::StringMsg>(
+      options.aero_topic,
+      [&latest_aerodynamics](const gz::msgs::StringMsg& msg) {
+        latest_aerodynamics.update(msg);
+      });
+    if (!subscribed_aerodynamics) {
+      throw std::runtime_error("failed to subscribe to Gazebo topic: " +
+                               options.aero_topic);
+    }
+    std::cout << "Aerodynamics telemetry on " << options.aero_topic
+              << " (included in --log CSV).\n";
 
     CompanionImu companion_imu;
     if (!options.imu_topic.empty()) {
@@ -1336,7 +1504,8 @@ int main(int argc, char** argv) {
         diagnostics.msp_tilt_error_deg = (180.0 / M_PI) * msp_monitor.lastTilt();
         flight_log->write(sim_time, mode, logged,
                           pilot->getReferenceSetpoints(), pilot->getCommand(),
-                          bridge->lastChannels(), diagnostics);
+                          bridge->lastChannels(), diagnostics,
+                          latest_aerodynamics.snapshot());
       }
 
       if (steady_now >= next_status) {

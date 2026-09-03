@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Dict, Optional
 
 from prepare_assets import (
+    AERODYNAMICS_TOPIC,
     COMPANION_IMU_TOPIC,
     JOINT_TOPIC,
     ODOM_TOPIC,
@@ -147,6 +148,7 @@ def build_gazebo_plugin(aeroloop: Path, build_dir: Path) -> Path:
     if not source.is_file():
         raise FileNotFoundError(f"Aeroloop Betaflight plugin source not found: {source}")
     library = build_dir / "libAgiliciousBetaflightPlugin.so"
+    aero_library = build_dir / "libAgiliciousAerodynamicsPlugin.so"
     log("configuring non-blocking Gazebo Betaflight plugin")
     subprocess.run(
         [
@@ -170,6 +172,10 @@ def build_gazebo_plugin(aeroloop: Path, build_dir: Path) -> Path:
     )
     if not library.is_file():
         raise RuntimeError(f"Gazebo plugin build completed but is missing: {library}")
+    if not aero_library.is_file():
+        raise RuntimeError(
+            f"Gazebo aerodynamics plugin build completed but is missing: {aero_library}"
+        )
     return library
 
 
@@ -720,13 +726,14 @@ def main() -> int:
     )
     binary = cmake_build / "bin" / "agilicious_betaflight_sitl"
     plugin_library = plugin_build / "libAgiliciousBetaflightPlugin.so"
+    aero_plugin_library = plugin_build / "libAgiliciousAerodynamicsPlugin.so"
     #---- 编译产物 ----
     if not args.no_build:
         plugin_library = build_gazebo_plugin(aeroloop_home, plugin_build)
         binary = build_adapter(cmake_build)
     else:
         # 跳过编译时，至少确认上次构建的产物还在。
-        for artifact in (binary, plugin_library):
+        for artifact in (binary, plugin_library, aero_plugin_library):
             if not artifact.is_file():
                 raise FileNotFoundError(
                     f"--no-build requested but artifact is absent: {artifact}"
@@ -807,6 +814,8 @@ def main() -> int:
         ODOM_TOPIC,
         "--joint-topic",
         JOINT_TOPIC,
+        "--aero-topic",
+        AERODYNAMICS_TOPIC,
         "--disarmed-seconds",
         str(args.disarmed_seconds),
         "--prearm-seconds",

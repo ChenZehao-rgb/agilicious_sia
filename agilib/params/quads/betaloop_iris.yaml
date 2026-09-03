@@ -1,40 +1,28 @@
-# Aeroloop betaloop_iris_with_standoffs model.  The model links sum to 0.54 kg.
-mass:               0.54
-tbm_fr:             [ 0.13, -0.22, 0.0]
-tbm_bl:             [-0.13,  0.20, 0.0]
-tbm_br:             [-0.13, -0.20, 0.0]
-tbm_fl:             [ 0.13,  0.22, 0.0]
+# GEPRC Mark5, 225 mm motor-to-motor, 700 g all-up mass.
+mass:               0.700
+tbm_fr:             [ 0.07955, -0.07955, 0.0]
+tbm_bl:             [-0.07955,  0.07955, 0.0]
+tbm_br:             [-0.07955, -0.07955, 0.0]
+tbm_fl:             [ 0.07955,  0.07955, 0.0]
 inertia:            [0.0065, 0.0060, 0.0115]
 
-# Rotor plant identified with betaflight_sitl/calibrate_plant.py against the
-# generated overlay model.  The Gazebo rotor is a velocity servo whose steady
-# state is set by the plugin's vel_p_gain against the joint damping, so the
-# reachable rotor speed is 0.01 / (0.01 + 0.004) * maxRpm.  The overlay raises
-# maxRpm to 3352 so the blade-element speed at hover is 84 m/s rather than
-# 21 m/s, which is what keeps the rotor inside a sane advance ratio at the
-# speeds these trajectories fly; that needs the 0.5 ms physics step the overlay
-# also sets.  Measured: 56.6 m/s^2 of collective thrust at full motor output,
-# hover at motor output 0.404.
+# Qianfeng 5136 three-blade bench envelope: 29280 rpm and 16.91 N per rotor.
+# The quadratic coefficient is the least-squares fit of all ten supplied
+# rpm/thrust points; the Gazebo aerodynamic plugin uses the full lookup curve.
 motor_omega_min:    0.0
-motor_omega_max:    2394.3
-# Rotor spin-up constant: rotor inertia 1.676e-4 kg m^2 over the
-# 0.014 N m s/rad the servo and joint damping present together.
+motor_omega_max:    3066.19
 motor_tau:          0.012
 # Matches the 1000 deg/s ACTUAL max rate written into Betaflight by
 # betaflight_sitl/run.py; the MPC must not ask for rates the inner loop
 # cannot deliver.
 omega_max:          [17.45, 17.45, 17.45]
 
-thrust_map:         [1.332e-6, 0.0, 0.0]
-# Measured, not derived.  Most of this model's yaw torque comes from the rotor
-# joint reaction rather than blade drag, so it scales with the rotor speed
-# difference instead of the thrust difference and kappa is only constant to
-# about a factor of two across the range; 0.10 is the value at large
-# differentials, where it matters.
-kappa:              0.10
+thrust_map:         [1.80762e-6, 0.0, 0.0]
+# Bench power / angular speed gives Q/T around 0.016-0.018 m over the useful
+# high-throttle range. The plugin retains the full speed-dependent curve.
+kappa:              0.0170
 thrust_min:         0.0
-# Per-rotor thrust at full motor output: 56.6 m/s^2 * 0.54 kg / 4.
-thrust_max:         7.64
+thrust_max:         16.912
 rotors_config:      "cross"
 
 aero_coeff_1:       [0.0, 0.0, 0.0]
