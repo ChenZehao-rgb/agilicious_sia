@@ -74,7 +74,7 @@ MODEL_BASE_INERTIA_KGM2 = (0.0065, 0.0060, 0.0115)
 PROP_RADIUS_M = 5.1 * 0.0254 / 2.0
 PROP_PITCH_M = 3.6 * 0.0254
 PROP_MASS_KG = 0.0043
-PROP_MAX_RAD_S = 29280.0 * 2.0 * math.pi / 60.0
+PROP_MAX_RAD_S = 3108.6  # Requested loaded full-throttle speed [rad/s].
 MOTOR_AXIS_M = 0.225 / (2.0 * math.sqrt(2.0))
 FRAME_SIZE_M = (0.214, 0.168, 0.042)
 # Cd=1.04 times the x/y/z projected rectangular areas. These values are kept
@@ -330,18 +330,19 @@ def prepare_assets(
     for motor_index, joint in enumerate(BETAFLIGHT_QUADX_JOINT_ORDER):
         rotor = rotor_by_joint[joint]
         rotor.set("id", str(motor_index))
-        # With the measured 4.3 g propeller inertia and negligible joint
-        # damping this gives an approximately 12 ms first-order speed response.
-        vel_p_gain = rotor.find("vel_p_gain")
-        if vel_p_gain is not None:
-            vel_p_gain.text = "0.0005"
-        # Full-throttle bench power is 907.6 W at 3066 rad/s: 0.296 N m.
-        # Limit the ideal joint servo so excessive aerodynamic torque produces
-        # rotor droop instead of free, non-physical power.
-        for name, value in (("vel_cmd_max", "0.35"), ("vel_cmd_min", "-0.35")):
+        # PI speed control removes the steady load-dependent error of the old
+        # P-only servo. Integral limits are torque contributions (N m), not
+        # accumulated speed error. Keep finite motor torque under heavy load.
+        for name, value in (
+            ("vel_p_gain", "0.0005"), ("vel_i_gain", "0.005"),
+            ("vel_d_gain", "0"), ("vel_i_max", "0.35"),
+            ("vel_i_min", "-0.35"),
+            ("vel_cmd_max", "0.35"), ("vel_cmd_min", "-0.35"),
+        ):
             element = rotor.find(name)
-            if element is not None:
-                element.text = value
+            if element is None:
+                element = ET.SubElement(rotor, name)
+            element.text = value
         for stale in rotor.findall("maxRpm"):
             rotor.remove(stale)
         ET.SubElement(rotor, "maxRpm").text = repr(PLUGIN_MAX_RPM)

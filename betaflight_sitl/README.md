@@ -64,6 +64,52 @@ python3 betaflight_sitl/run.py --gazebo --arm \
 
 ## 全部参考轨迹的验证
 
+### 前飞螺旋：20 m/s 和 50 m/s
+
+新增 `HELIX_FWD20_20mps.csv`、`HELIX_FWD20_50mps.csv`，沿参考 X 轴前进
+20 m，同时在 YZ 平面绕轴 3 圈，起止速度、加速度、jerk 和 snap 均为零。
+最大速度指三维合速度；不是 X 轴分速度。启动器会将参考 X 轴对齐起飞朝向。
+
+| 最大速度 | 螺旋直径 | 轨迹时长 |
+| --- | --- | --- |
+| 20 m/s | 7.682299 m | 9.242724 s |
+| 50 m/s | 51.430836 m | 23.877819 s |
+
+```bash
+python3 betaflight_sitl/run.py --gazebo --arm \
+  --trajectory miscellaneous/datasets/ref_trajs/open_source/HELIX_FWD20_20mps.csv \
+  --log build/helix20.csv --rtk-msp
+
+python3 betaflight_sitl/run.py --gazebo --arm \
+  --trajectory miscellaneous/datasets/ref_trajs/open_source/HELIX_FWD20_50mps.csv \
+  --log build/helix50.csv --rtk-msp
+```
+
+直径是**指定轨迹族、静态刚体模型下的数值最小值**。几何为
+`p(s) = [20s, R sin(6πs), R(1−cos(6πs))]`，使用九次时间映射
+`s(u)=126u⁵−420u⁶+540u⁷−315u⁸+70u⁹`，`u=t/T`，时长由最大合速度确定。
+限定切线与前进轴夹角至少 45°，排除直径趋于零的近直线解。
+姿态使机体 Z 轴对齐 `a+[0,0,g]`，机体 X 轴对齐前进轴在推力法平面上的投影。
+从 `betaloop_iris.yaml` 读取质量、惯量、力臂、反扭矩系数、各桨推力和机体角速度限制，
+通过刚体逆动力学计算四桨推力，按半径递增扫描、二分寻找首个可行边界。
+搜索并非全局优化证明；0.1 mm 半径余量用于数值误差，不能当作控制裕量。
+
+CSV 包含全部 30 列参考量；同名 JSON 保存计算条件和稠密采样检查结果。
+重新生成及检查：
+
+```bash
+python3 betaflight_sitl/generate_helix.py
+python3 -m unittest betaflight_sitl.test_generate_helix
+```
+
+可用 `--speeds`、`--distance`、`--turns`、`--min-helix-angle`、`--dt`、`--quad`、
+`--output` 修改条件。默认 CSV 采样间隔不大于 5 ms，并保留精确的峰值速度采样点。
+该直径计算没有包含气动阻力、电机滞后和闭环跟踪裕量，尚未做 Gazebo 跟踪验证。
+当前气动模型在 40 m/s 起没有稳态平飞解，因此 50 m/s 文件用于压力测试，不能据此
+认定实际模型能以该速度完成螺旋；20 m/s 的静态边界也需要闭环验证。
+
+### 批量验证
+
 ```bash
 python3 betaflight_sitl/validate.py            # 跑 miscellaneous/datasets 下全部轨迹
 python3 betaflight_sitl/validate.py <某个.csv> # 只跑指定轨迹
@@ -83,7 +129,12 @@ python3 betaflight_sitl/validate.py --rtk-msp \
 不参与气动力计算，因此无需把可视网格重画成三叶。
 
 静态绝对推力和功率由用户提供的十个 RPM 台架点插值；BEM 只给出前飞/轴向入流相对
-静态的变化。转速上限是 29280 rpm，超过台架范围不外推电机能力。机体阻力为
+静态的变化。满电机输出的目标转速为 3108.6 rad/s（约 29685 rpm）。Gazebo
+电机采用 PI 转速控制（P=0.0005、I=0.005，积分力矩与输出力矩均限幅 ±0.35 N·m），
+消除旧纯 P 控制器在气动负载下的稳态掉速；负载超过力矩能力时仍会掉速。
+该目标略高于台架最高点 29280 rpm，气动模型保持原有处理：超过台架范围后
+静态推力和功率取末端测量值，不外推，单桨推力上限仍为 16.912 N。
+悬停油门映射同步为 0.284093；旧模型的闭环验证结果需要重新评估。机体阻力为
 `0.5*rho*CdA*v*|v|`，MK5 外廓按 `Cd=1.04` 得到三个机体系方向的
 `CdA=[0.007338, 0.009348, 0.037390] m^2`。
 

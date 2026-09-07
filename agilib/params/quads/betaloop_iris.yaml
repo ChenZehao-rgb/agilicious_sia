@@ -10,7 +10,7 @@ inertia:            [0.0065, 0.0060, 0.0115]
 # The quadratic coefficient is the least-squares fit of all ten supplied
 # rpm/thrust points; the Gazebo aerodynamic plugin uses the full lookup curve.
 motor_omega_min:    0.0
-motor_omega_max:    3066.19
+motor_omega_max:    3108.6
 motor_tau:          0.012
 # Matches the 1000 deg/s ACTUAL max rate written into Betaflight by
 # betaflight_sitl/run.py; the MPC must not ask for rates the inner loop

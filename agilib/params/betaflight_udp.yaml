@@ -40,11 +40,11 @@ yaw_deadband: 0
 # range, which matters once a trajectory asks for sustained high collective.
 #
 # hover_throttle is the active-range stick position that hovers. The static
-# rotor needs about 1006 rad/s; aerodynamic reaction torque plus joint damping
-# make the velocity servo request motor output about 0.361. With Betaflight's
-# 5.5% idle this corresponds to a stick fraction of about 0.324.
+# rotor needs about 1006 rad/s. The PI velocity servo tracks that speed under
+# load: motor output = 1005.53 / 3108.6. With 5.5% idle this gives the
+# active-range stick fraction (1005.53 / 3108.6 - 0.055) / 0.945.
 motor_idle: 0.055
-hover_throttle: 0.3240
+hover_throttle: 0.284093
 min_check: 1050
 
 # Betaflight inner-loop gains, written into the isolated EEPROM by run.py.

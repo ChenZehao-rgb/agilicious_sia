@@ -26,8 +26,8 @@ vio_latency:  0.08
 
 # Fixed-integer RTK: roughly 1.5 cm horizontal and 3 cm vertical, with Doppler
 # velocity an order of magnitude better than differentiated position.
-vio_pos_noise:  [0.015, 0.015, 0.030]
-vio_vel_noise:  [0.050, 0.050, 0.050]
+vio_pos_noise:  [0.0, 0.0, 0.0]
+vio_vel_noise:  [0.0, 0.0, 0.0]
 
 # Zero, and this one is not a simplification.
 #

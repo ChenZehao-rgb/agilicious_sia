@@ -13,7 +13,7 @@ namespace {
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kMass = 0.700;
 constexpr double kGravity = 9.80665;
-constexpr double kMaxOmega = 29280.0 * 2.0 * kPi / 60.0;
+constexpr double kMaxOmega = 3108.6;
 
 struct Trim {
   double pitch{0.0};
