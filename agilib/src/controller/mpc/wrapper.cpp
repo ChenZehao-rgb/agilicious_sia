@@ -157,8 +157,20 @@ int MpcWrapper::update(const Vector<NX>& state) {
   int rti_phase = 0;  // 1-> preparation, 2-> feedback, 0->both
   ocp_nlp_solver_opts_set(p_nlp_config_, p_nlp_opts_, "rti_phase", &rti_phase);
 
-  // Set next state
-  setInitialState(state);
+  // q and -q represent the same attitude, but switching between them is a
+  // large jump for the RTI linearization around the solver's warm start.
+  // Align with the actual solver iterate (also on the first solve/reset),
+  // rather than forcing a positive scalar component across inverted flight.
+  Vector<NX> warm_start;
+  ocp_nlp_out_get(p_nlp_config_, p_nlp_dims_, p_nlp_out_, 0, "x",
+                  warm_start.data());
+  Vector<NX> aligned_state = state;
+  const Vector<4> warm_attitude = warm_start.segment<4>(STATEATT);
+  if (warm_attitude.allFinite() &&
+      warm_attitude.dot(aligned_state.segment<4>(STATEATT)) < 0.0) {
+    aligned_state.segment<4>(STATEATT) *= -1.0;
+  }
+  setInitialState(aligned_state);
 
   // solve
   const int status = drone_model_acados_solve(p_acados_ocp_capsule_);

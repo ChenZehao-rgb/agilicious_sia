@@ -282,7 +282,8 @@ endif ()
 
 # Build tests
 if (BUILD_TESTS)
-    add_executable(tests ${TEST_SOURCES})
+    add_executable(tests ${TEST_SOURCES} apps/companion_ahrs.cpp)
+    target_include_directories(tests PRIVATE apps)
     target_compile_options(tests PRIVATE
       -fno-finite-math-only
       -Wall

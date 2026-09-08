@@ -683,6 +683,15 @@ def main() -> int:
             "from a ~100 Hz task and nothing here is in a control loop"
         ),
     )
+    parser.add_argument(
+        "--state-ablation",
+        choices=("none", "truth-attitude", "truth-pv"),
+        default="none",
+        help="simulation-only estimator counterfactual; requires --rtk-msp",
+    )
+    parser.add_argument(
+        "--ahrs-config", type=Path, help="override companion AHRS parameters"
+    )
     parser.add_argument("--no-build", action="store_true")
     args = parser.parse_args()
 
@@ -698,6 +707,12 @@ def main() -> int:
         parser.error("--trajectory requires --arm")
     # 这些检查必须留在这里：下面会启动 Betaflight 写隔离 EEPROM，
     # 等到那之后再 parser.error 就已经产生了副作用。
+    if args.ahrs_config is not None:
+        args.ahrs_config = args.ahrs_config.expanduser().resolve()
+        if not args.rtk_msp or not args.ahrs_config.is_file():
+            parser.error("--ahrs-config requires --rtk-msp and an existing file")
+    if args.state_ablation != "none" and not args.rtk_msp:
+        parser.error("--state-ablation requires --rtk-msp")
     if args.rtk_msp and args.controller == "geo":
         parser.error("--rtk-msp currently only wires up the MPC pilot config")
     if not math.isfinite(args.msp_rate) or args.msp_rate <= 0:
@@ -826,6 +841,10 @@ def main() -> int:
         controller_cmd.extend(
             ("--rtk-state", "--imu-topic", COMPANION_IMU_TOPIC)
         )
+    if args.state_ablation != "none":
+        controller_cmd.extend(("--state-ablation", args.state_ablation))
+    if args.ahrs_config is not None:
+        controller_cmd.extend(("--ahrs-config", str(args.ahrs_config.resolve())))
     if msp_monitor:
         controller_cmd.extend(("--msp-monitor", "--msp-rate", str(args.msp_rate)))
     if args.arm:

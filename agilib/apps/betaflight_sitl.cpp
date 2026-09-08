@@ -25,6 +25,7 @@
 
 #include "agilib/bridge/betaflight_udp/betaflight_udp_bridge.hpp"
 #include "agilib/bridge/betaflight_udp/betaflight_udp_bridge_params.hpp"
+#include "agilib/estimator/mock_vio/mock_vio.hpp"
 #include "agilib/math/gravity.hpp"
 #include "agilib/pilot/pilot.hpp"
 #include "agilib/pilot/pilot_params.hpp"
@@ -43,6 +44,39 @@ using SteadyClock = std::chrono::steady_clock;
 volatile std::sig_atomic_t stop_requested = 0;
 
 void signalHandler(int) { stop_requested = 1; }
+
+// Simulation-only counterfactuals, kept outside the production estimator.
+class SitlEstimatorAblation : public agi::MockVio {
+ public:
+  SitlEstimatorAblation(const agi::Quadrotor& quad,
+                       const std::shared_ptr<agi::MockVioParams>& params,
+                       bool truth_attitude)
+    : MockVio(quad, params), truth_attitude_(truth_attitude) {}
+  void setTruth(const agi::QuadState& truth) {
+    truth_ = truth;
+    truth_.v = truth.q() * truth.v;
+  }
+  bool addState(const agi::QuadState& state) override {
+    latest_ = state;
+    return MockVio::addState(state);
+  }
+  bool getAt(const agi::Scalar t, agi::QuadState* const state) override {
+    if (!state) return false;
+    if (truth_attitude_) {
+      if (!MockVio::getAt(t, state)) return false;
+      state->q(truth_.q());
+      state->w = truth_.w;
+    } else {
+      *state = latest_;
+      state->p = truth_.p;
+      state->v = truth_.v;
+    }
+    return state->valid();
+  }
+ private:
+  bool truth_attitude_;
+  agi::QuadState truth_, latest_;
+};
 
 struct Options {
   std::string pilot_config;
@@ -71,6 +105,7 @@ struct Options {
   /// the simulator.  This is what selects the realistic state pipeline; the
   /// pilot config has to agree.
   bool rtk_state{false};
+  std::string state_ablation{"none"};
   /// Companion AHRS configuration; empty means <params-dir>/companion_ahrs.yaml.
   std::string ahrs_config;
 
@@ -104,6 +139,7 @@ void printUsage(const char* executable) {
        "                        an RTK receiver measures it, and an attitude\n"
        "                        solved by the companion AHRS (needs a pilot\n"
        "                        config with velocity_in_bodyframe: false)\n"
+    << "  --state-ablation MODE Simulation only: truth-attitude or truth-pv\n"
     << "  --ahrs-config FILE    Companion AHRS parameters"
        " (default: <params-dir>/companion_ahrs.yaml)\n"
     << "  --trajectory FILE     CSV trajectory to run after takeoff\n"
@@ -201,6 +237,8 @@ Options parseOptions(int argc, char** argv) {
       options.arm = true;
     } else if (argument == "--rtk-state") {
       options.rtk_state = true;
+    } else if (argument == "--state-ablation") {
+      options.state_ablation = valueAfter(i, argument);
     } else if (argument == "--ahrs-config") {
       options.ahrs_config = valueAfter(i, argument);
     } else if (argument == "--msp-monitor") {
@@ -257,6 +295,14 @@ Options parseOptions(int argc, char** argv) {
 
   // The RTK pipeline has no other inertial source: MockVio dead-reckons across
   // the fix interval, and body rates come from the same sensor.
+  if (options.state_ablation != "none" &&
+      options.state_ablation != "truth-attitude" &&
+      options.state_ablation != "truth-pv") {
+    throw std::runtime_error("invalid --state-ablation");
+  }
+  if (options.state_ablation != "none" && !options.rtk_state) {
+    throw std::runtime_error("--state-ablation requires --rtk-state");
+  }
   if (options.rtk_state && options.imu_topic.empty()) {
     throw std::runtime_error(
       "--rtk-state needs --imu-topic: something has to dead-reckon between "
@@ -609,7 +655,7 @@ class FlightLog {
     /// against p_* gives the estimation error the controller actually flew on.
     agi::Vector<3> estimated_position{NAN, NAN, NAN};
     /// Companion AHRS error against ground truth [deg].  This one *is* the
-    /// attitude the controller flew on.
+    /// upstream AHRS attitude; est_q_* is the estimator output used by MPC.
     double ahrs_tilt_error_deg{NAN};
     double ahrs_yaw_error_deg{NAN};
     /// Accelerometer weight the AHRS applied, in [0, 1].  Dips below one are
@@ -618,6 +664,7 @@ class FlightLog {
     /// Angle between Betaflight's own attitude and ground truth, heading
     /// excluded [deg].  Diagnostic: this signal does not fly the vehicle.
     double msp_tilt_error_deg{NAN};
+    agi::QuadState estimated_state;
   };
 
   FlightLog(const std::filesystem::path& path, const double vehicle_mass)
@@ -652,7 +699,8 @@ class FlightLog {
             << ",rotor_" << i << "_tip_mach"
             << ",rotor_" << i << "_inflow_converged";
     }
-    file_ << '\n';
+    file_ << ",est_v_x,est_v_y,est_v_z,est_q_w,est_q_x,est_q_y,est_q_z,"
+             "est_w_x,est_w_y,est_w_z,est_t\n";
     file_ << std::setprecision(9);
   }
 
@@ -716,7 +764,11 @@ class FlightLog {
             << ',' << rotor.h_force << ',' << rotor.inflow << ',' << rotor.mu
             << ',' << rotor.tip_mach << ',' << rotor.converged;
     }
-    file_ << '\n';
+    write(diagnostics.estimated_state.v);
+    const auto eq = diagnostics.estimated_state.q();
+    file_ << ',' << eq.w() << ',' << eq.x() << ',' << eq.y() << ',' << eq.z();
+    write(diagnostics.estimated_state.w);
+    file_ << ',' << diagnostics.estimated_state.t << '\n';
   }
 
   /// Mark the window in which the sampled CSV trajectory is the reference, so
@@ -1114,6 +1166,18 @@ int main(int argc, char** argv) {
       throw std::runtime_error("failed to register Betaflight UDP bridge");
     }
 
+    std::shared_ptr<SitlEstimatorAblation> ablation;
+    if (options.state_ablation != "none") {
+      auto params = std::make_shared<agi::MockVioParams>();
+      if (!params->load(params_dir / "mock_rtk_sitl.yaml"))
+        throw std::runtime_error("invalid RTK parameters");
+      ablation = std::make_shared<SitlEstimatorAblation>(
+        pilot_params->quad_, params,
+        options.state_ablation == "truth-attitude");
+      if (!pilot->registerExternalEstimator(ablation))
+        throw std::runtime_error("cannot register ablation estimator");
+      std::cout << "SIMULATION ABLATION: " << options.state_ablation << "\n";
+    }
     LatestOdometry latest_odometry;
     LatestRotorVelocity latest_rotor_velocity;
     LatestAerodynamics latest_aerodynamics;
@@ -1313,6 +1377,7 @@ int main(int argc, char** argv) {
       // IMU plus an RTK heading, so nothing on that channel is ground truth
       // and the AHRS's own error is what the controller has to fly through.
       agi::QuadState state = truth;
+      if (ablation) ablation->setTruth(truth);
 
       if (!options.imu_topic.empty()) {
         if (!companion_imu.healthy() &&
@@ -1377,7 +1442,9 @@ int main(int argc, char** argv) {
         // first accelerometer sample there is nothing to hand over, and the
         // vehicle is disarmed anyway.
         if (ahrs->initialized()) {
-          state.q(ahrs->attitude());
+          state.q(options.state_ablation == "truth-attitude"
+                    ? truth.q() : ahrs->attitude());
+          if (options.state_ablation == "truth-attitude") state.w = truth.w;
           ahrs_monitor.update(ahrs->attitude(), truth.q());
         }
         if (!state.valid()) {
@@ -1512,7 +1579,10 @@ int main(int argc, char** argv) {
 
         FlightLog::Diagnostics diagnostics;
         const agi::QuadState estimated = pilot->getRecentState();
-        if (estimated.valid()) diagnostics.estimated_position = estimated.p;
+        if (estimated.valid()) {
+          diagnostics.estimated_position = estimated.p;
+          diagnostics.estimated_state = estimated;
+        }
         if (ahrs && ahrs->initialized()) {
           diagnostics.ahrs_tilt_error_deg =
             (180.0 / M_PI) * ahrs_monitor.lastTilt();

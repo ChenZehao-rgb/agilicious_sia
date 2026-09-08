@@ -21,6 +21,46 @@ TEST(MPC, ConstrutorTest) {
   MpcController mpc(quad, params);
 }
 
+TEST(MPC, QuaternionSignInvariantCommands) {
+  const Quadrotor quad(M, L);
+  auto params = std::make_shared<MpcParameters>();
+  MpcController continuous(quad, params);
+  MpcController sign_flipped(quad, params);
+
+  // A full heading rotation crosses q.w() == 0. Alternate the measurement
+  // representation, including the first measurement and a controller reset.
+  for (int i = 0; i <= 160; ++i) {
+    QuadState state;
+    state.setZero();
+    state.t = 0.01 * i;
+    state.p.z() = 1.0;
+    state.q(Quaternion(Eigen::AngleAxis<Scalar>(
+      2.0 * M_PI * i / 160.0, Vector<3>::UnitZ())));
+    QuadState flipped = state;
+    if (i % 2 == 0) flipped.qx *= -1.0;
+
+    if (i == 0 || i == 80) {
+      ASSERT_TRUE(continuous.reset(state));
+      ASSERT_TRUE(sign_flipped.reset(flipped));
+    }
+
+    Command input;
+    input.t = state.t;
+    input.collective_thrust = G;
+    input.omega.setZero();
+    SetpointVector references(acados::MpcWrapper::N + 1,
+                              Setpoint(state, input));
+    SetpointVector expected, actual;
+    ASSERT_TRUE(continuous.getCommand(state, references, &expected)) << i;
+    ASSERT_TRUE(sign_flipped.getCommand(flipped, references, &actual)) << i;
+    ASSERT_EQ(expected.size(), actual.size());
+    EXPECT_NEAR(expected.front().input.collective_thrust,
+                actual.front().input.collective_thrust, 1e-6) << i;
+    EXPECT_LT((expected.front().input.omega - actual.front().input.omega).norm(),
+              1e-6) << i;
+  }
+}
+
 TEST(MPC, StaticTest) {
   Quadrotor quad(M, L);
   std::shared_ptr<MpcParameters> params = std::make_shared<MpcParameters>();

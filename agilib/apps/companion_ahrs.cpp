@@ -13,6 +13,7 @@ bool CompanionAhrs::Params::load(const std::filesystem::path& file) {
 
   node["acc_gain"].getIfDefined(acc_gain);
   node["acc_tolerance"].getIfDefined(acc_tolerance);
+  node["acc_dynamic_tolerance"].getIfDefined(acc_dynamic_tolerance);
   node["heading_gain"].getIfDefined(heading_gain);
   node["bias_gain"].getIfDefined(bias_gain);
   node["max_bias"].getIfDefined(max_bias);
@@ -24,7 +25,9 @@ bool CompanionAhrs::Params::load(const std::filesystem::path& file) {
 }
 
 bool CompanionAhrs::Params::valid() const {
-  return acc_gain >= 0.0 && acc_tolerance > 0.0 && heading_gain >= 0.0 &&
+  return acc_gain >= 0.0 && acc_tolerance > 0.0 &&
+         std::isfinite(acc_dynamic_tolerance) && acc_dynamic_tolerance >= 0.0 &&
+         heading_gain >= 0.0 &&
          bias_gain >= 0.0 && max_bias >= 0.0 && acc_tau >= 0.0 &&
          heading_noise_deg >= 0.0 &&
          heading_rate_hz > 0.0;
@@ -41,6 +44,9 @@ void CompanionAhrs::setVelocity(const Vector<3>& velocity_world,
   if (!velocity_world.allFinite() || !std::isfinite(t)) return;
 
   const Scalar dt = t - previous_velocity_time_;
+  // Do not move the differentiation baseline backwards, or discard a
+  // sub-millisecond increment that should belong to the next difference.
+  if (std::isfinite(previous_velocity_time_) && dt <= 1e-3) return;
   if (std::isfinite(previous_velocity_time_) && dt > 1e-3) {
     const Vector<3> raw = (velocity_world - previous_velocity_) / dt;
     // First-order low pass; see Params::acc_tau for the trade this makes.
@@ -81,10 +87,11 @@ void CompanionAhrs::addImu(const ImuSample& imu) {
   }
 
   const Scalar dt = imu.t - t_last_;
-  t_last_ = imu.t;
   // Out of order or absurdly stale: propagating over it would be worse than
   // skipping it.  0.1 s is one RTK period, far beyond any 1 kHz sample gap.
-  if (!(dt > 0.0) || dt > 0.1) return;
+  if (!(dt > 0.0)) return;
+  t_last_ = imu.t;
+  if (dt > 0.1) return;
 
   // Correction expressed as a body-frame rotation rate, accumulated from every
   // available observation before it is applied.
@@ -107,6 +114,17 @@ void CompanionAhrs::addImu(const ImuSample& imu) {
     const Scalar mismatch =
       std::abs(acc_norm - expected_norm) / params_.acc_tolerance;
     last_acc_weight_ = 1.0 / (1.0 + mismatch * mismatch);
+    // The velocity derivative is filtered and contains RTK reset increments.
+    // In a fast turn its magnitude may be right while its direction is late.
+    // Trust the gyro during those manoeuvres, and restore tilt correction as
+    // motion subsides. The measured-force term also catches manoeuvre onset
+    // before the filtered kinematic acceleration has caught up.
+    if (params_.acc_dynamic_tolerance > 0.0) {
+      const Scalar motion = std::max(kinematic_acc_.norm(),
+                                     std::abs(acc_norm - G));
+      const Scalar ratio = motion / params_.acc_dynamic_tolerance;
+      last_acc_weight_ /= 1.0 + ratio * ratio;
+    }
 
     // Measured direction against where the estimate puts it.  The cross
     // product of the two unit vectors is the rotation error, to first order.

@@ -306,3 +306,58 @@ cmake --build build/betaflight_sitl/agilib --parallel
 
 Gazebo 仅链接到这个 SITL 可执行程序，`agilib` 核心和以后 CM4 上的控制进程仍
 不依赖 Gazebo 或 ROS。
+
+### Estimator ablation tests
+
+`--state-ablation` is a simulation-only diagnostic and requires `--rtk-msp`:
+
+| Options | Position / velocity | Attitude / body rates |
+| --- | --- | --- |
+| no `--rtk-msp` | Gazebo truth | Gazebo truth |
+| `--rtk-msp --state-ablation truth-attitude` | RTK/IMU propagation | Gazebo truth |
+| `--rtk-msp --state-ablation truth-pv` | Gazebo truth | Latest companion AHRS / IMU |
+| `--rtk-msp` | RTK/IMU propagation | AHRS sampled through MockVIO / IMU |
+
+The truth-attitude case also seeds the delayed estimator with truth attitude;
+IMU samples still drive position/velocity propagation. The truth-pv case bypasses
+MockVIO propagation and supplies the current AHRS attitude. Its perfect velocity
+also enters AHRS acceleration compensation. These are coupled counterfactuals,
+not additive estimates of each component's error contribution. Truth injection
+is restricted to the explicitly selected SITL diagnostic path.
+
+For each row, run the following with the corresponding options and a distinct log:
+
+```bash
+python3 betaflight_sitl/run.py --arm --duration 24 \
+  --trajectory miscellaneous/datasets/ref_trajs/open_source/HELIX_FWD20_20mps.csv \
+  --log build/estimator_matrix/example.csv
+```
+
+Use `--ahrs-config FILE` to compare parameters without editing the default YAML.
+Set `acc_dynamic_tolerance: 0.0` in a copied AHRS config to disable the new dynamic
+gate, reproducing the previous correction policy (timestamp handling remains
+fixed). The default is 3 m/s²: correction weight is multiplied by
+`1 / (1 + (motion / acc_dynamic_tolerance)^2)`, where `motion` is the larger of
+estimated kinematic acceleration magnitude and measured specific-force magnitude
+departure from gravity. This also attenuates the tilt correction entering bias
+learning. Gyro propagation and heading correction remain active; stationary
+accelerometer leveling is retained. This is a bounded short-manoeuvre improvement,
+not a replacement for a jointly observable RTK/IMU estimator during indefinitely
+sustained acceleration.
+
+CSV logs now append `est_v_*`, `est_q_*`, `est_w_*`, and `est_t`, the state used by
+the controller. `est_t` is the absolute simulator timestamp; the existing `t`
+column is relative to logging start. `ahrs_tilt_err_deg` measures the upstream
+AHRS, including when that AHRS is diagnostic-only in truth-attitude ablation;
+it is not a measurement of the attitude override's error.
+
+After completed runs, score trajectory samples only:
+
+```bash
+python3 betaflight_sitl/score_estimator_matrix.py build/estimator_matrix
+```
+
+The scorer writes `scores.json` with source hashes, sample and time-weighted
+RMSE, maxima, and estimation errors. Check the recorded trajectory end against
+the reference duration before treating a run as complete. Recorded results for
+the September 2026 HELIX test are in `build/estimator_matrix/RESULTS.md`.

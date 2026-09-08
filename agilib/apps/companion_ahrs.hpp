@@ -35,16 +35,11 @@ namespace agi {
 ///     compares the reading against the specific force it *should* see,
 ///     `R^T (a_world + g z)`, rather than against gravity alone.
 ///
-/// Step 1 on its own is not enough, and the reason is worth stating because it
-/// is the trap the whole "is the accelerometer healthy" question hides.  In a
-/// sustained coordinated turn the specific force is constant and larger than
-/// g, so a magnitude test cannot detect the turn at all -- yet the direction
-/// is genuinely wrong, and trusting it tilts the estimate.  Measured on a
-/// 10 m/s loop the weight sat at 0.015 for thirty seconds, i.e. the filter had
-/// silently degenerated to a free-running gyro.  Step 2 is what makes the
-/// correction valid at 2 g, and it is available precisely because this runs on
-/// the companion computer next to the RTK rather than on the flight
-/// controller.
+/// Acceleration compensation has finite bandwidth. During aggressive motion
+/// the expected force can have the correct magnitude but a lagging direction.
+/// A separate dynamic gate therefore reduces tilt correction and its bias
+/// contribution until the motion subsides; gyro propagation and RTK heading
+/// remain active throughout.
 ///
 /// The velocity is differentiated rather than using the `omega x v_body`
 /// centripetal term that fixed-wing AHRS implementations use, and the reason
@@ -67,6 +62,10 @@ class CompanionAhrs {
     /// 0.9-1.1 g gate with a soft edge, and against the *predicted* magnitude
     /// rather than against g, so a compensated manoeuvre does not trip it.
     Scalar acc_tolerance{3.0};
+    /// Motion acceleration at which tilt correction gets half weight [m/s^2].
+    /// Compensated force magnitude alone cannot detect a lagging direction.
+    /// Zero disables this gate for simulation ablation.
+    Scalar acc_dynamic_tolerance{3.0};
     /// Proportional gain on the RTK heading correction [1/s].
     Scalar heading_gain{1.0};
     /// Integral gain that drives the gyro bias estimate [1/s].
