@@ -159,7 +159,7 @@ def plot(data, output, elev, azim):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("csv", nargs="?", type=Path, default=ROOT.parent/"build/helix20_35.csv")
+    parser.add_argument("csv", nargs="?", type=Path, default=ROOT.parent/"build/loop100.csv")
     parser.add_argument("--output", type=Path, help="Output base path without extension")
     parser.add_argument("--start", type=float, help="Start log time (s)")
     parser.add_argument("--end", type=float, help="End log time (s)")
