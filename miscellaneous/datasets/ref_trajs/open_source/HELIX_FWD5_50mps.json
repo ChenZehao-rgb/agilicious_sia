@@ -1,0 +1,78 @@
+{
+  "file": "HELIX_FWD5_50mps.csv",
+  "max_speed_mps": 50.0,
+  "forward_distance_m": 5.0,
+  "turns": 1,
+  "diameter_m": 75.27079209174784,
+  "duration_s": 11.641367506236804,
+  "samples": 2401,
+  "max_dt_s": 0.004850569794266235,
+  "verification_samples": 24001,
+  "min_rotor_thrust_N": 1.3201611366340822,
+  "max_rotor_thrust_N": 7.639976203785106,
+  "max_abs_body_rate_rad_s": [
+    1.7669914681113545,
+    0.010675495622263812,
+    0.009341320959038427
+  ],
+  "model": "ideal rigid body, static rotor limits; no aerodynamic drag or motor lag",
+  "diameter_definition": "first feasible radius bracket, 8% scan + bisection, 12001 samples; verified at >=24001 samples; 0.1 mm radius cushion",
+  "min_helix_angle_deg": 45,
+  "gazebo_tracking_validated": false,
+  "quad_parameters": {
+    "mass": 0.54,
+    "tbm_fr": [
+      0.13,
+      -0.22,
+      0.0
+    ],
+    "tbm_bl": [
+      -0.13,
+      0.2,
+      0.0
+    ],
+    "tbm_br": [
+      -0.13,
+      -0.2,
+      0.0
+    ],
+    "tbm_fl": [
+      0.13,
+      0.22,
+      0.0
+    ],
+    "inertia": [
+      0.0065,
+      0.006,
+      0.0115
+    ],
+    "motor_omega_min": 0.0,
+    "motor_omega_max": 2394.3,
+    "motor_tau": 0.012,
+    "omega_max": [
+      17.45,
+      17.45,
+      17.45
+    ],
+    "thrust_map": [
+      1.332e-06,
+      0.0,
+      0.0
+    ],
+    "kappa": 0.1,
+    "thrust_min": 0.0,
+    "thrust_max": 7.64,
+    "rotors_config": "cross",
+    "aero_coeff_1": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "aero_coeff_3": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "aero_coeff_h": 0.0
+  }
+}

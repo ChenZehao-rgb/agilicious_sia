@@ -30,6 +30,13 @@ acc_gain:        1.0
 # 0.015 for thirty seconds: a free-running gyro in all but name.
 acc_tolerance:   3.0
 
+# Suppress tilt correction when the filtered acceleration direction cannot
+# keep up with a manoeuvre. Magnitude agreement alone does not imply a valid
+# direction. The same weighted correction drives bias learning, so dynamic
+# compensation error is not integrated into the gyro bias. Zero disables the
+# gate for controlled comparisons; retain gyro propagation and RTK heading.
+acc_dynamic_tolerance: 3.0
+
 # Low pass on the differentiated velocity [s].  The one real cost of the
 # compensation above: too short and RTK velocity noise swamps the reference
 # direction, too long and the reference lags a turning acceleration vector,
