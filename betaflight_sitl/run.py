@@ -678,6 +678,8 @@ def main() -> int:
         ),
     )
     parser.add_argument("--no-build", action="store_true")
+    parser.add_argument("--ros2", action="store_true",
+                        help="use shared ROS 2 control; ARM/AUTO are explicit ROS receiver inputs")
     args = parser.parse_args()
 
     # argparse 的 type=float 不拦截 nan/inf 和负数，这里补齐校验。
@@ -688,7 +690,7 @@ def main() -> int:
     if args.ground_clearance < 0 or not math.isfinite(args.ground_clearance):
         parser.error("--ground-clearance must be finite and >= 0")
     # 不解锁就飞不了轨迹，提前拒绝这种自相矛盾的组合。
-    if args.trajectory is not None and not args.arm:
+    if args.trajectory is not None and not args.arm and not args.ros2:
         parser.error("--trajectory requires --arm")
     # 这些检查必须留在这里：下面会启动 Betaflight 写隔离 EEPROM，
     # 等到那之后再 parser.error 就已经产生了副作用。
@@ -696,6 +698,9 @@ def main() -> int:
         parser.error("--rtk-msp currently only wires up the MPC pilot config")
     if not math.isfinite(args.msp_rate) or args.msp_rate <= 0:
         parser.error("--msp-rate must be finite and > 0")
+
+    if args.ros2 and (args.controller != "mpc" or args.log is not None or args.trajectory_source_mass != 0):
+        parser.error("--ros2 supports MPC, ROS topics/bag logging and automatic CSV source-mass detection")
 
     # ---- 路径与产物布局 ----
     betaloop_home = args.betaloop_home.expanduser().resolve()
@@ -716,14 +721,17 @@ def main() -> int:
         source_elf,
         runtime / "betaflight",
         # 只有真要解锁时才写入并强制校验桥接配置。
-        bridge_config if args.arm else None,
+        bridge_config if args.arm or args.ros2 else None,
     )
-    binary = cmake_build / "bin" / "agilicious_betaflight_sitl"
+    binary = (REPO_ROOT / "install/agi_ros2/lib/agi_ros2/control_node") if args.ros2 else cmake_build / "bin" / "agilicious_betaflight_sitl"
     plugin_library = plugin_build / "libAgiliciousBetaflightPlugin.so"
     #---- 编译产物 ----
     if not args.no_build:
         plugin_library = build_gazebo_plugin(aeroloop_home, plugin_build)
-        binary = build_adapter(cmake_build)
+        if args.ros2:
+            subprocess.run([str(REPO_ROOT / "agi_ros2/scripts/build.sh")], cwd=REPO_ROOT, check=True)
+        else:
+            binary = build_adapter(cmake_build)
     else:
         # 跳过编译时，至少确认上次构建的产物还在。
         for artifact in (binary, plugin_library):
@@ -846,6 +854,15 @@ def main() -> int:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         controller_cmd.extend(("--log", str(log_path)))
 
+    if args.ros2:
+        # Use the installed environment even on the first build in this shell.
+        controller_cmd = [str(REPO_ROOT / "agi_ros2/scripts/launch.sh"), "mode:=sitl",
+                          "sitl_config_verified:=true"]
+        if args.trajectory is not None:
+            controller_cmd.append("trajectory:=" + str(trajectory))
+        if args.arm:
+            log("ROS 2 does not auto-arm: use sim_rc ARM/AUTO/KILL parameters")
+
     betaloop_process: Optional[subprocess.Popen] = None
     controller_process: Optional[subprocess.Popen] = None
     # 让 SIGTERM 也走下面的 finally 清理流程。
@@ -874,8 +891,11 @@ def main() -> int:
             env=env,
             start_new_session=True,
         )
+        ros2_started = time.monotonic()
         # 守护循环：任一进程退出即结束，并把其退出码作为本脚本的退出码。
         while True:
+            if args.ros2 and args.duration > 0 and time.monotonic() - ros2_started >= args.duration:
+                return 0
             controller_status = controller_process.poll()
             betaloop_status = betaloop_process.poll()
             if controller_status is not None:

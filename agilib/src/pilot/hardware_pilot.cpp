@@ -2,6 +2,7 @@
 #include "agilib/estimator/feedthrough/feedthrough_estimator.hpp"
 #include "agilib/reference/hover_reference.hpp"
 #include <chrono>
+#include "agilib/reference/trajectory_reference/sampled_trajectory.hpp"
 #include <algorithm>
 #include <stdexcept>
 
@@ -19,8 +20,8 @@ class CommandSink final : public BridgeBase {
   }
 };
 }
-HardwarePilot::HardwarePilot(const PilotParams& params, TimeFunction clock)
-  : clock_(std::move(clock)), owner_(std::this_thread::get_id()) {
+HardwarePilot::HardwarePilot(const PilotParams& params, TimeFunction clock, TimeFunction steady_clock)
+  : clock_(std::move(clock)), steady_clock_(steady_clock ? std::move(steady_clock) : clock_), owner_(std::this_thread::get_id()) {
   const auto& cfg = params.pipeline_cfg_;
   // Check before constructing Pilot: its constructor may open physical
   // bridges based on YAML. Only the supervisor's serial worker may do that.
@@ -42,6 +43,17 @@ HardwarePilot::HardwarePilot(const PilotParams& params, TimeFunction clock)
     throw std::runtime_error("could not register command sink");
   pilot_->enable(false); // computations enabled; physical bridge never enabled
 }
+bool HardwarePilot::setTrajectory(const SetpointVector& points) {
+  checkOwner();
+  if (points.size() < 2 || points.front().state.t != 0) return false;
+  double previous = -1;
+  for (const auto& p : points) {
+    if (!p.state.valid() || !p.input.valid() || p.state.t <= previous) return false;
+    previous = p.state.t;
+  }
+  trajectory_ = points;
+  return true;
+}
 void HardwarePilot::checkOwner() const {
   if (owner_ != std::this_thread::get_id())
     throw std::logic_error("HardwarePilot must have one control-thread owner");
@@ -56,8 +68,10 @@ bool HardwarePilot::resetHover(const QuadState& state, double now) {
 void HardwarePilot::reportOutputFault() {
   checkOwner();
   Evidence failed;
-  failed.now = clock_();
+  failed.now = steady_clock_();
   gate_.update(failed);
+  pilot_->off();
+  previous_auto_ = true;
   warm_cycles_ = 0;
   reference_ready_ = false;
 }
@@ -65,7 +79,7 @@ ControlDecision HardwarePilot::tick(const QuadState& state, Evidence evidence) {
   checkOwner();
   ControlDecision result;
   const double now = clock_();
-  evidence.now = now;
+  evidence.now = steady_clock_();
   // Producer-provided command evidence is ignored. Only this tick can create it.
   evidence.command_valid = false;
   evidence.command_time = NAN;
@@ -87,15 +101,30 @@ ControlDecision HardwarePilot::tick(const QuadState& state, Evidence evidence) {
       // Shadow MPC runs in manual. On the physical rising edge capture the
       // current location once, then hold it fixed throughout AUTO.
       // Never call Pilot::start(): that API may generate an automatic takeoff.
-      if (!reference_ready_ || (evidence.auto_switch && !previous_auto_))
+      if (!reference_ready_ || (evidence.auto_switch && !previous_auto_)) {
         reference_ready_ = resetHover(state, now);
+        if (reference_ready_ && evidence.auto_switch && !previous_auto_ && !trajectory_.empty()) {
+          auto points = trajectory_;
+          const Quaternion alignment(Eigen::AngleAxisd(state.getYaw(), Vector<3>::UnitZ()));
+          for (auto& point : points) {
+            point.state.t += now; point.input.t += now;
+            point.state.p = state.p + alignment * point.state.p;
+            point.state.v = alignment * point.state.v;
+            point.state.a = alignment * point.state.a;
+            point.state.j = alignment * point.state.j;
+            point.state.s = alignment * point.state.s;
+            point.state.q(alignment * point.state.q());
+          }
+          reference_ready_ = pilot_->addReference(std::make_shared<SampledTrajectory>(points));
+        }
+      }
       if (reference_ready_ && pilot_->runPipelineChecked(now)) {
         const Command command = pilot_->getCommand();
         if (command.isRatesThrust() && command.collective_thrust >= 0 &&
             SafetyGate::fresh(now, command.t, 0.010)) {
           result.command = command;
           evidence.command_valid = true;
-          evidence.command_time = command.t;
+          evidence.command_time = steady_clock_();
         }
       }
     } catch (const std::exception&) {
@@ -116,7 +145,7 @@ ControlDecision HardwarePilot::tick(const QuadState& state, Evidence evidence) {
   evidence.controller_warm = warm_cycles_ >= 50;
   // Freshness is checked AFTER solving; a long solve cannot make old sensors
   // or RC appear fresh by using a timestamp captured before the solve.
-  evidence.now = clock_();
+  evidence.now = steady_clock_();
   result.permit_override = gate_.update(evidence);
   if (!SafetyGate::inputsHealthy(evidence)) warm_cycles_ = 0;
   result.evidence = evidence;

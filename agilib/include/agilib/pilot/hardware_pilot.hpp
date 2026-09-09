@@ -18,7 +18,9 @@ struct ControlDecision {
 class HardwarePilot {
  public:
   explicit HardwarePilot(const PilotParams& params,
-                         TimeFunction clock);
+                         TimeFunction clock, TimeFunction steady_clock = {});
+  // Relative SI setpoints, executed only after a new authorized AUTO edge.
+  bool setTrajectory(const SetpointVector& relative_setpoints);
   ControlDecision tick(const QuadState& fused_state, Evidence evidence);
   // Latch an output/transport/mapping fault into the SAME FSM before the next
   // tick. Recovery requires healthy warmup and a new physical AUTO low->high.
@@ -31,6 +33,8 @@ class HardwarePilot {
   bool resetHover(const QuadState& state, double now);
   void checkOwner() const;
   const TimeFunction clock_;
+  const TimeFunction steady_clock_;
+  SetpointVector trajectory_;
   const std::thread::id owner_;
   std::unique_ptr<Pilot> pilot_;
   std::shared_ptr<BridgeBase> sink_;
