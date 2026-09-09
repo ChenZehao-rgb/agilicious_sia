@@ -5,7 +5,8 @@
 只发送 AETR，不写 ARM/AUTO/KILL AUX。ROS 1 `agiros`、旧 `run.py` 默认路径、
 `betaflight_hw` 诊断工具保留。
 
-本次仅编译，未运行闭环、故障注入、实机或飞行验证。本机是 ROS 2 Humble；
+已进行 ROS 2 SITL 轨迹调试；每次执行结果与 bag 位于仓库 `bags/cpc33_z1_ros2_attempt*`，
+最终结果见本次 bag 目录中的测试报告。尚未进行实机或真实飞行验证。本机是 ROS 2 Humble；
 Jazzy/ARM64 需要在目标平台重新编译，不能复用本机 acados 二进制。
 
 ## 编译
@@ -61,9 +62,10 @@ source install/agi_ros2/local_setup.bash
 ros2 topic echo /status
 # 在另一个已 source 的终端执行以下参数命令：
 ros2 param set /sim_rc kill false
+# 等待 Betaflight 启动校准完成，建议仿真时间超过 12 秒，再低油门 ARM。
 ros2 param set /sim_rc armed true
-# AUTO 保持 false；需要起飞时，逐步调整人工油门，例如：
-ros2 param set /sim_rc throttle 1300
+# AUTO 保持 false；需要起飞时，逐步调整人工油门，例如（当前模型悬停油门约 1411）：
+ros2 param set /sim_rc throttle 1450
 # 确认状态为 AUTO_STANDBY 且机体到达预期位置后再切 AUTO：
 ros2 param set /sim_rc auto_switch true
 # 撤销接管：先将人工油门设为需要的值，再把 auto_switch 设为 false。
@@ -71,7 +73,7 @@ ros2 param set /sim_rc auto_switch true
 ros2 param set /sim_rc kill true
 ```
 
-1300 仅为模拟输入示例，不保证起飞高度或稳定悬停。AUTO 无轨迹时捕获当前位置并悬停；
+1450 仅为模拟输入示例，不保证起飞高度或稳定悬停。AUTO 无轨迹时捕获当前位置并悬停；
 启动高电平或故障后保持高电平不允许恢复，必须先观察健康的 AUTO low，再切 high。
 
 使用原有 30 列 CSV：
@@ -140,3 +142,26 @@ Health 中的 converged 必须来自真实估计质量判断；AHRS 初始化不
 SITL 手动模式透传模拟 AETR；AUTO 故障时模拟通道撤销 ARM。
 硬件故障停止 MSP Override，交还实体接收机。两者失效语义不同，
 此迁移不代表 UDP 已实现实体接收机授权或 MSP 陈旧回退的等价仿真。
+
+## 轨迹调试话题
+
+`/reference` (`nav_msgs/msg/Odometry`) 记录控制器实际采样的参考位置和姿态。
+`/control_diagnostics` (`std_msgs/msg/Float64MultiArray`) 每个控制周期记录：
+
+| 索引 | 含义 |
+|---|---|
+| 0 | ROS 控制时间，秒 |
+| 1 | 完成本周期的单调时间，秒 |
+| 2 | IMU 接收年龄，秒 |
+| 3 | 状态采样年龄（ROS 时间），秒 |
+| 4 | RTK 采集年龄（ROS 时间），秒 |
+| 5 | 遥控采集年龄映射到单调时间，秒 |
+| 6 | 本周期控制计算耗时，秒；未计算为 NaN |
+| 7 | 连续健康 MPC 周期数（最多 50） |
+| 8 | 本周期是否授权输出（0/1） |
+| 9 | 模式枚举：Boot=0、SensorCheck=1、ReadyManual=2、AutoStandby=3、AutoActive=4、ManualFallback=5 |
+
+控制周期先取得消息快照，再等待最多 3 ms 对齐可能滞后的仿真 `/clock`。
+输出线程由新控制结果唤醒，避免独立周期相位把刚计算的命令拖成陈旧命令；
+串口及安全门限保持不变。CSV 接管替换悬停参考列表，避免同一开始时间的
+无限悬停参考遮挡轨迹。

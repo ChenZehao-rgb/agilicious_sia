@@ -42,3 +42,6 @@ __pycache__/
 **/.DS_Store
 
 /install/
+
+bags/
+log/

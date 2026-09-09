@@ -377,6 +377,15 @@ def prepare_assets(
     if max_step_size is None:
         max_step_size = ET.SubElement(physics, "max_step_size")
     max_step_size.text = repr(PHYSICS_STEP_S)
+    # Cap the sim at real time.  The source world's <real_time_factor> tag is
+    # gz-sim 9+ syntax and is silently ignored by gz-sim 8 (Harmonic), letting
+    # the sim run faster than real time on light scenes.  The ROS 2 control
+    # loop runs on ROS/sim time at 100 Hz, so an uncapped sim demands more than
+    # 100 solve cycles per wall second and trips the warm-cycle gate.
+    real_time_update_rate = physics.find("real_time_update_rate")
+    if real_time_update_rate is None:
+        real_time_update_rate = ET.SubElement(physics, "real_time_update_rate")
+    real_time_update_rate.text = repr(round(1.0 / PHYSICS_STEP_S))
 
     source_uri = f"model://{SOURCE_MODEL_NAME}"
     overlay_uri = f"model://{OVERLAY_MODEL_NAME}"

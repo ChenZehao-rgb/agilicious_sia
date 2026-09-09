@@ -115,10 +115,17 @@ ControlDecision HardwarePilot::tick(const QuadState& state, Evidence evidence) {
             point.state.s = alignment * point.state.s;
             point.state.q(alignment * point.state.q());
           }
+          // resetHover() starts at exactly `now`. Appending at that same
+          // instant cannot truncate an infinite hover (truncate requires >),
+          // so replace the in-memory reference list before starting the CSV.
+          pilot_->off();
+          pilot_->enable(false);
           reference_ready_ = pilot_->addReference(std::make_shared<SampledTrajectory>(points));
         }
       }
       if (reference_ready_ && pilot_->runPipelineChecked(now)) {
+        const auto references = pilot_->getReferenceSetpoints();
+        if (!references.empty()) result.reference = references.front().state;
         const Command command = pilot_->getCommand();
         if (command.isRatesThrust() && command.collective_thrust >= 0 &&
             SafetyGate::fresh(now, command.t, 0.010)) {
@@ -151,6 +158,11 @@ ControlDecision HardwarePilot::tick(const QuadState& state, Evidence evidence) {
   result.evidence = evidence;
   result.mode = gate_.mode();
   result.reason = gate_.reason();
+  if (!cadence_ok) result.reason += "; cadence";
+  if (!state_ok) result.reason += "; state age/validity";
+  if (!SafetyGate::fresh(evidence.now, evidence.imu_time, 0.010)) result.reason += "; imu age";
+  if (!evidence.command_valid) result.reason += "; no command";
+  if (!evidence.controller_warm) result.reason += "; MPC warming";
   return result;
 }
 }

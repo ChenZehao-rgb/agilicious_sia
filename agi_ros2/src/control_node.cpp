@@ -2,6 +2,7 @@
 #include <sensor_msgs/msg/imu.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <std_msgs/msg/string.hpp>
+#include <std_msgs/msg/float64_multi_array.hpp>
 #include <agi_ros2/msg/rtk.hpp>
 #include <agi_ros2/msg/authority.hpp>
 #include <agi_ros2/msg/health.hpp>
@@ -15,6 +16,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <atomic>
+#include <condition_variable>
 #include <deque>
 #include <fstream>
 #include <sstream>
@@ -49,6 +51,8 @@ class ControlNode : public rclcpp::Node {
     rtk_sub_ = create_subscription<Rtk>("sensors/rtk", 10, [this](Rtk::ConstSharedPtr p) { std::lock_guard<std::mutex> l(mutex_); rtk_ = *p; rtk_rx_ = monotonicSeconds(); });
     rc_sub_ = create_subscription<Authority>("authority", 1, [this](Authority::ConstSharedPtr p) { std::lock_guard<std::mutex> l(mutex_); rc_ = *p; rc_rx_ = monotonicSeconds(); });
     health_sub_ = create_subscription<Health>("health", 1, [this](Health::ConstSharedPtr p) { std::lock_guard<std::mutex> l(mutex_); health_ = *p; health_rx_ = monotonicSeconds(); });
+    reference_pub_ = create_publisher<nav_msgs::msg::Odometry>("reference", 1);
+    diagnostic_pub_ = create_publisher<std_msgs::msg::Float64MultiArray>("control_diagnostics", 10);
     state_pub_ = create_publisher<nav_msgs::msg::Odometry>("state", 1);
     status_pub_ = create_publisher<std_msgs::msg::String>("status", 1);
     // Fail configuration synchronously before starting either worker.
@@ -66,6 +70,7 @@ class ControlNode : public rclcpp::Node {
   }
   ~ControlNode() override {
     stop_ = true;
+    output_cv_.notify_all();
     if (control_thread_.joinable()) control_thread_.join();
     if (output_thread_.joinable()) output_thread_.join();
   }
@@ -93,7 +98,8 @@ class ControlNode : public rclcpp::Node {
 
   void controlLoop() {
     try {
-      agi::hardware::HardwarePilot pilot(*params_, [this]{return now().seconds();}, monotonicSeconds);
+      double control_time=now().seconds();
+      agi::hardware::HardwarePilot pilot(*params_, [&control_time]{return control_time;}, monotonicSeconds);
       if (!points_.empty() && !pilot.setTrajectory(points_)) throw std::runtime_error("invalid trajectory timestamps/states");
       auto ahrs = std::make_unique<agi::CompanionAhrs>(agi::CompanionAhrs::Params{});
       agi::QuadState state; state.setZero(); state.t=NAN;
@@ -101,10 +107,23 @@ class ControlNode : public rclcpp::Node {
       auto next=std::chrono::steady_clock::now();
       while (!stop_ && rclcpp::ok()) {
         next += std::chrono::milliseconds(10);
-        const double t=now().seconds(), wall=monotonicSeconds();
+        double t=now().seconds(), wall=monotonicSeconds();
         std::deque<std::pair<sensor_msgs::msg::Imu,double>> samples;
         Rtk rtk; Authority rc; Health health; double rr, cr, hr; bool overflow;
         { std::lock_guard<std::mutex> l(mutex_); samples.swap(imus_); rtk=rtk_; rc=rc_; health=health_; rr=rtk_rx_; cr=rc_rx_; hr=health_rx_; overflow=overflow_; overflow_=false; }
+        // /clock and stamped data are independent DDS streams. Take a coherent
+        // time snapshot AFTER the mailboxes, briefly waiting for an in-flight
+        // clock update rather than declaring fresh data to be from the future.
+        t=now().seconds();
+        double newest=std::max(stamp(rc.header.stamp),stamp(health.header.stamp));
+        if(!samples.empty()) newest=std::max(newest,stamp(samples.back().first.header.stamp));
+        if(mode_=="sitl" && newest>t && newest-t<=0.010) {
+          const double deadline=monotonicSeconds()+0.003;
+          while(t<newest && monotonicSeconds()<deadline) {
+            std::this_thread::sleep_for(std::chrono::microseconds(100)); t=now().seconds();
+          }
+        }
+        wall=monotonicSeconds(); control_time=t;
         const bool jump=std::isfinite(last_clock) && (t<last_clock || t-last_clock>0.25);
         last_clock=t;
         if(jump || overflow) {
@@ -146,7 +165,21 @@ class ControlNode : public rclcpp::Node {
         e.geofence_ok=h&&health.geofence_ok; e.msp_healthy=h&&health.transport_healthy&&transport_ok_;
         if(output_fault_.exchange(false)) pilot.reportOutputFault();
         auto decision=pilot.tick(state,e);
-        { std::lock_guard<std::mutex> l(output_mutex_); decision_=decision; output_rc_=rc; voltage_=health.battery_voltage; status_=std::string(SafetyGate::name(decision.mode))+": "+decision.reason; }
+        { std::lock_guard<std::mutex> l(output_mutex_); decision_=decision; output_rc_=rc; voltage_=health.battery_voltage; status_=std::string(SafetyGate::name(decision.mode))+": "+decision.reason; ++output_sequence_; }
+        output_cv_.notify_one();
+        std_msgs::msg::Float64MultiArray diagnostics;
+        diagnostics.data={t,decision.evidence.now,decision.evidence.now-e.imu_time,
+          t-state.t,t-last_rtk,decision.evidence.now-e.rc_time,
+          decision.evidence.solve_seconds,static_cast<double>(pilot.warmCycles()),
+          decision.permit_override?1.0:0.0,static_cast<double>(decision.mode)};
+        diagnostic_pub_->publish(diagnostics);
+        if(decision.reference.valid()) {
+          const auto& r=decision.reference; nav_msgs::msg::Odometry msg;
+          msg.header.stamp=rclcpp::Time(static_cast<int64_t>(r.t*1e9)); msg.header.frame_id="odom";
+          msg.pose.pose.position.x=r.p.x(); msg.pose.pose.position.y=r.p.y(); msg.pose.pose.position.z=r.p.z();
+          msg.pose.pose.orientation.w=r.q().w(); msg.pose.pose.orientation.x=r.q().x(); msg.pose.pose.orientation.y=r.q().y(); msg.pose.pose.orientation.z=r.q().z();
+          reference_pub_->publish(msg);
+        }
         if(state.valid()) {
           nav_msgs::msg::Odometry msg; msg.header.stamp=rclcpp::Time(static_cast<int64_t>(state.t*1e9)); msg.header.frame_id="odom"; msg.child_frame_id="base_link";
           msg.pose.pose.position.x=state.p.x(); msg.pose.pose.position.y=state.p.y(); msg.pose.pose.position.z=state.p.z();
@@ -172,11 +205,15 @@ class ControlNode : public rclcpp::Node {
       }
       transport_ok_=true;
       agi::BetaflightRcMapper mapper(bridge_params_);
-      auto next=std::chrono::steady_clock::now();
+      uint64_t consumed=0;
       while(!stop_ && rclcpp::ok()) {
-        next+=std::chrono::milliseconds(10);
         agi::hardware::ControlDecision d; Authority rc; double voltage;
-        { std::lock_guard<std::mutex> l(output_mutex_); d=decision_; rc=output_rc_; voltage=voltage_; }
+        {
+          std::unique_lock<std::mutex> l(output_mutex_);
+          output_cv_.wait_for(l,std::chrono::milliseconds(25),[&]{return stop_ || output_sequence_!=consumed;});
+          if(stop_) break;
+          consumed=output_sequence_; d=decision_; rc=output_rc_; voltage=voltage_;
+        }
         d.evidence.now=monotonicSeconds();
         bool active=d.permit_override && SafetyGate::inputsHealthy(d.evidence) && SafetyGate::fresh(d.evidence.now,d.evidence.command_time,0.025);
         std::array<uint16_t,4> channels{1500,1500,1000,1500};
@@ -204,8 +241,6 @@ class ControlNode : public rclcpp::Node {
           const bool arm=rc_ok&&rc.armed&&(!rc.auto_switch||active);
           sendUdp(fd,destination,channels,arm);
         }
-        std::this_thread::sleep_until(next);
-        if(std::chrono::steady_clock::now()>next+std::chrono::milliseconds(10)) next=std::chrono::steady_clock::now();
       }
     } catch(const std::exception& e) { transport_ok_=false; RCLCPP_ERROR(get_logger(),"output stopped: %s",e.what()); stop_=true; rclcpp::shutdown(); }
     if(fd>=0) { sendUdp(fd,destination,{1500,1500,1000,1500},false); close(fd); }
@@ -219,6 +254,7 @@ class ControlNode : public rclcpp::Node {
   std::string mode_,params_dir_,pilot_file_,bridge_file_,device_,trajectory_,thrust_file_; int baud_;
   std::unique_ptr<agi::PilotParams> params_; agi::BetaflightUdpBridgeParams bridge_params_;
   std::unique_ptr<agi::hardware::ThrustTable> thrust_; agi::SetpointVector points_;
+  std::condition_variable output_cv_; uint64_t output_sequence_{0};
   std::mutex mutex_,output_mutex_; std::deque<std::pair<sensor_msgs::msg::Imu,double>> imus_;
   Rtk rtk_; Authority rc_,output_rc_; Health health_;
   double rtk_rx_{NAN},rc_rx_{NAN},health_rx_{NAN},voltage_{NAN}; bool overflow_{false};
@@ -227,6 +263,8 @@ class ControlNode : public rclcpp::Node {
   std::thread control_thread_,output_thread_;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
   rclcpp::Subscription<Rtk>::SharedPtr rtk_sub_; rclcpp::Subscription<Authority>::SharedPtr rc_sub_; rclcpp::Subscription<Health>::SharedPtr health_sub_;
+  rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr reference_pub_;
+  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr diagnostic_pub_;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr state_pub_; rclcpp::Publisher<std_msgs::msg::String>::SharedPtr status_pub_;
   rclcpp::TimerBase::SharedPtr diagnostics_;
 };

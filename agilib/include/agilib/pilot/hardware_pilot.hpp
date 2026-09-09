@@ -6,6 +6,7 @@
 namespace agi::hardware {
 struct ControlDecision {
   Command command; // Invalid unless this tick completed successfully.
+  QuadState reference;
   Evidence evidence;
   Mode mode{Mode::Boot};
   std::string reason{"boot"};

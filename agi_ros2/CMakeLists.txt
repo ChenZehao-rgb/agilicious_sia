@@ -18,6 +18,13 @@ add_subdirectory(${AGILIB_ROOT} ${CMAKE_CURRENT_BINARY_DIR}/agilib)
 add_executable(control_node src/control_node.cpp ${AGILIB_ROOT}/apps/companion_ahrs.cpp)
 target_include_directories(control_node PRIVATE ${AGILIB_ROOT}/include ${AGILIB_ROOT}/apps ${EIGEN3_INCLUDE_DIRS})
 find_package(Eigen3 REQUIRED)
+# agilib is compiled with -march=native on x86_64, which switches Eigen to
+# 32-byte vector alignment. control_node lives outside agilib's directory scope
+# and must use the same flag, otherwise its Command/QuadState stack layouts
+# disagree with libagilib's and the node segfaults on startup.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64)$" AND NOT DEFINED CATKIN_DEVEL_PREFIX)
+  target_compile_options(control_node PRIVATE -march=native)
+endif()
 target_link_libraries(control_node agilib acados_mpc agilib Eigen3::Eigen "${typesupport}")
 ament_target_dependencies(control_node rclcpp sensor_msgs nav_msgs std_msgs)
 set_target_properties(control_node PROPERTIES INSTALL_RPATH "$ORIGIN/..;${ACADOS_ROOT}/lib" LINK_FLAGS "-Wl,--disable-new-dtags")
