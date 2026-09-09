@@ -6,6 +6,7 @@
 
 #include <netinet/in.h>
 
+#include "agilib/bridge/betaflight/betaflight_rc_mapper.hpp"
 #include "agilib/bridge/betaflight_udp/betaflight_udp_bridge_params.hpp"
 #include "agilib/bridge/bridge_base.hpp"
 
@@ -45,15 +46,12 @@ class BetaflightUdpBridge : public BridgeBase {
 
   Channels safeChannels() const;
   Channels commandChannels(const Command& command) const;
-  Scalar inverseActualRate(const Scalar rate_deg_s, const size_t axis) const;
-  uint16_t rateToPwm(const Scalar normalized_stick,
-                     const int deadband) const;
-
   bool sendPacketLocked(const Channels& channels);
   static std::array<uint8_t, PACKET_SIZE> encodePacket(
     const Scalar timestamp, const Channels& channels);
 
   const BetaflightUdpBridgeParams params_;
+  const BetaflightRcMapper mapper_;
   int socket_fd_{-1};
   sockaddr_in destination_{};
 

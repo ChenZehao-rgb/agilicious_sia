@@ -55,8 +55,13 @@ void Pilot::launchPipeline() {
 void Pilot::runPipeline() { runPipeline(time_()); }
 
 void Pilot::runPipeline(const Scalar t) {
+  (void)runPipelineChecked(t);
+}
+
+bool Pilot::runPipelineChecked(const Scalar t) {
+  if (!std::isfinite(t)) return false;
   if (guard_ && guard_->triggered()) {
-    safety_pipeline_.run(time_());
+    return safety_pipeline_.run(t);
   } else if (guard_ &&
              guard_->update(safety_pipeline_.estimator_->getRecent())) {
     logger_.warn("Guard in control!");
@@ -65,13 +70,13 @@ void Pilot::runPipeline(const Scalar t) {
     if (!curr_state.valid()) {
       logger_.error("Could not get valid state for force hover!");
       off();
-      return;
+      return false;
     }
     safety_pipeline_.insertReference(
       std::make_shared<HoverReference>(curr_state));
-    safety_pipeline_.run(time_());
+    return safety_pipeline_.run(t);
   } else {
-    pipeline_.run(time_());
+    return pipeline_.run(t);
   }
 }
 

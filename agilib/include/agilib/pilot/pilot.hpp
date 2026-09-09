@@ -19,6 +19,9 @@ class Pilot {
   void launchPipeline();
   void runPipeline();
   void runPipeline(const Scalar t);
+  // Synchronous execution with failure propagation for hardware supervisors.
+  // Callers must not reuse getCommand() when this returns false.
+  bool runPipelineChecked(const Scalar t);
 
 
   bool getReference(const int idx, ReferenceBase* const reference) const;

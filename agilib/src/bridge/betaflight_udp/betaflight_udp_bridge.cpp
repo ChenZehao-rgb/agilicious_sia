@@ -8,7 +8,6 @@
 #include <cerrno>
 #include <cmath>
 #include <cstring>
-#include <limits>
 
 #include "agilib/math/gravity.hpp"
 
@@ -29,6 +28,7 @@ BetaflightUdpBridge::BetaflightUdpBridge(
   : BridgeBase("Betaflight UDP Bridge", time_function, params.timeout,
                params.n_timeouts_for_lock, false),
     params_(params),
+    mapper_(params),
     last_channels_(safeChannels()) {
   voltage_watchdog_.disable();
 
@@ -115,12 +115,12 @@ BetaflightUdpBridge::Channels BetaflightUdpBridge::commandChannels(
   const Vector<3> rate_deg_s{command.omega.x() * RAD_TO_DEG,
                              command.omega.y() * RAD_TO_DEG,
                              command.omega.z() * RAD_TO_DEG};
-  channels[CHANNEL_ROLL] =
-    rateToPwm(inverseActualRate(rate_deg_s.x(), 0), params_.deadband);
-  channels[CHANNEL_PITCH] =
-    rateToPwm(inverseActualRate(rate_deg_s.y(), 1), params_.deadband);
-  channels[CHANNEL_YAW] =
-    rateToPwm(inverseActualRate(rate_deg_s.z(), 2), params_.yaw_deadband);
+  channels[CHANNEL_ROLL] = mapper_.rateToPwm(
+    mapper_.inverseActualRate(rate_deg_s.x(), 0), params_.deadband);
+  channels[CHANNEL_PITCH] = mapper_.rateToPwm(
+    mapper_.inverseActualRate(rate_deg_s.y(), 1), params_.deadband);
+  channels[CHANNEL_YAW] = mapper_.rateToPwm(
+    mapper_.inverseActualRate(rate_deg_s.z(), 2), params_.yaw_deadband);
 
   if (command.collective_thrust <= 0.0) {
     // Raw throttle must be strictly below min_check while AUX1 transitions
@@ -146,49 +146,6 @@ BetaflightUdpBridge::Channels BetaflightUdpBridge::commandChannels(
   }
   channels[CHANNEL_AUX1] = PWM_HIGH;
   return channels;
-}
-
-Scalar BetaflightUdpBridge::inverseActualRate(const Scalar rate_deg_s,
-                                              const size_t axis) const {
-  const Scalar sign = std::signbit(rate_deg_s) ? -1.0 : 1.0;
-  const Scalar target =
-    std::clamp(std::abs(rate_deg_s), 0.0, params_.max_rate_deg_s(axis));
-  if (target <= std::numeric_limits<Scalar>::epsilon()) return 0.0;
-
-  const Scalar center = params_.center_rate_deg_s(axis);
-  const Scalar movement = params_.max_rate_deg_s(axis) - center;
-  const Scalar expo = params_.expo_percent(axis) / 100.0;
-
-  // Betaflight 2026.6 ACTUAL rates for a positive normalized stick x:
-  // center*x + (max-center)*((1-expo)*x^2 + expo*x^6).
-  Scalar lower = 0.0;
-  Scalar upper = 1.0;
-  for (int i = 0; i < 48; ++i) {
-    const Scalar x = 0.5 * (lower + upper);
-    const Scalar x2 = x * x;
-    const Scalar x6 = x2 * x2 * x2;
-    const Scalar value =
-      center * x + movement * ((1.0 - expo) * x2 + expo * x6);
-    if (value < target)
-      lower = x;
-    else
-      upper = x;
-  }
-  return sign * 0.5 * (lower + upper);
-}
-
-uint16_t BetaflightUdpBridge::rateToPwm(const Scalar normalized_stick,
-                                        const int deadband) const {
-  const Scalar x = std::clamp(normalized_stick, -1.0, 1.0);
-  if (std::abs(x) <= std::numeric_limits<Scalar>::epsilon()) return PWM_MID;
-
-  // Undo Betaflight's fapplyDeadband() and subsequent division by
-  // (500-deadband), so the ACTUAL-rate inverse receives precisely x.
-  const Scalar magnitude = deadband + std::abs(x) * (500.0 - deadband);
-  const Scalar pwm = PWM_MID + std::copysign(magnitude, x);
-  return static_cast<uint16_t>(std::clamp(
-    std::lround(pwm), static_cast<long>(PWM_LOW),
-    static_cast<long>(PWM_HIGH)));
 }
 
 bool BetaflightUdpBridge::sendPacketLocked(const Channels& channels) {

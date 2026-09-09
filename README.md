@@ -124,6 +124,11 @@ For the standalone Betaflight 2026.6 + Gazebo Harmonic UDP closed loop used in
 this workspace, see [betaflight_sitl/README.md](betaflight_sitl/README.md). It
 does not require ROS.
 
+For CM5 / GEPRC F722 hardware bring-up, see the Chinese
+[hardware deployment guide](betaflight_hw/README.zh-CN.md). The new hardware
+entry point currently supports read-only MSP diagnostics; real sensor drivers
+and the flight control integration are pending.
+
 It is highly recommended to run agilicious inside a docker container, instructions are available [here](miscellaneous/documentation/how_to_docker.md).
 
 ## Launch your first simulation:
