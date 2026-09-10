@@ -734,7 +734,12 @@ def main() -> int:
             binary = build_adapter(cmake_build)
     else:
         # 跳过编译时，至少确认上次构建的产物还在。
-        for artifact in (binary, plugin_library):
+        artifacts = [binary, plugin_library]
+        if args.ros2:
+            artifacts.extend(binary.parent / name for name in
+                             ("state_fusion_node", "command_output_node",
+                              "gazebo_sensors"))
+        for artifact in artifacts:
             if not artifact.is_file():
                 raise FileNotFoundError(
                     f"--no-build requested but artifact is absent: {artifact}"

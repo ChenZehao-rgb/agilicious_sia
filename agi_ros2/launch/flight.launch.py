@@ -13,12 +13,18 @@ def nodes(context):
     mode = arg('mode')
     if mode not in ('sitl', 'hardware'):
         raise ValueError('mode must be sitl or hardware')
-    control = Node(package='agi_ros2', executable='control_node', output='screen', parameters=[{
-        'mode': mode, 'use_sim_time': mode == 'sitl', 'params_dir': arg('params_dir'),
-        'pilot_config': arg('pilot_config'), 'bridge_config': arg('bridge_config'),
-        'device': arg('device'), 'baud': int(arg('baud')), 'trajectory': arg('trajectory'),
-        'thrust_table': arg('thrust_table')}])
-    result = [control]
+    common = {'mode': mode, 'use_sim_time': mode == 'sitl',
+              'params_dir': arg('params_dir'), 'pilot_config': arg('pilot_config')}
+    fusion = Node(package='agi_ros2', executable='state_fusion_node',
+                  output='screen', parameters=[{'use_sim_time': mode == 'sitl'}])
+    control = Node(package='agi_ros2', executable='control_node', output='screen',
+                   parameters=[{**common, 'trajectory': arg('trajectory')}])
+    output = Node(package='agi_ros2', executable='command_output_node',
+                  output='screen', parameters=[{
+                      **common, 'bridge_config': arg('bridge_config'),
+                      'device': arg('device'), 'baud': int(arg('baud')),
+                      'thrust_table': arg('thrust_table')}])
+    result = [fusion, control, output]
     if mode == 'sitl' and arg('start_sensors').lower() == 'true':
         result.append(Node(package='agi_ros2', executable='gazebo_sensors', output='screen',
                            parameters=[{'config_verified': arg('sitl_config_verified').lower() == 'true'}]))

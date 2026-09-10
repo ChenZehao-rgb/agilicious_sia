@@ -1,4 +1,4 @@
-# Shared supervisor; sensor fusion is owned by the ROS 2 control thread.
+# Shared supervisor; sensor fusion is owned by the ROS 2 state_fusion node.
 pipeline:
   estimator:
     type:               "External"

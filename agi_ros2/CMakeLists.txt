@@ -3,10 +3,14 @@ project(agi_ros2 LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
 find_package(ament_cmake REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
-foreach(dep rclcpp sensor_msgs geometry_msgs nav_msgs std_msgs rosgraph_msgs)
+foreach(dep rclcpp sensor_msgs geometry_msgs nav_msgs std_msgs rosgraph_msgs builtin_interfaces)
   find_package(${dep} REQUIRED)
 endforeach()
-rosidl_generate_interfaces(${PROJECT_NAME} "msg/Rtk.msg" "msg/Authority.msg" "msg/Health.msg" DEPENDENCIES std_msgs geometry_msgs)
+rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/Rtk.msg" "msg/Authority.msg" "msg/Health.msg"
+  "msg/FusedState.msg" "msg/SafetyEvidence.msg"
+  "msg/ControlCommand.msg" "msg/OutputStatus.msg"
+  DEPENDENCIES std_msgs geometry_msgs builtin_interfaces)
 rosidl_get_typesupport_target(typesupport ${PROJECT_NAME} rosidl_typesupport_cpp)
 set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(BUILD_BENCH OFF CACHE BOOL "" FORCE)
@@ -15,20 +19,32 @@ set(BUILD_BETAFLIGHT_HW OFF CACHE BOOL "" FORCE)
 set(UNSAFE_MATH OFF CACHE BOOL "" FORCE)
 set(AGILIB_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../agilib")
 add_subdirectory(${AGILIB_ROOT} ${CMAKE_CURRENT_BINARY_DIR}/agilib)
-add_executable(control_node src/control_node.cpp ${AGILIB_ROOT}/apps/companion_ahrs.cpp)
-target_include_directories(control_node PRIVATE ${AGILIB_ROOT}/include ${AGILIB_ROOT}/apps ${EIGEN3_INCLUDE_DIRS})
 find_package(Eigen3 REQUIRED)
-# agilib is compiled with -march=native on x86_64, which switches Eigen to
-# 32-byte vector alignment. control_node lives outside agilib's directory scope
-# and must use the same flag, otherwise its Command/QuadState stack layouts
-# disagree with libagilib's and the node segfaults on startup.
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64)$" AND NOT DEFINED CATKIN_DEVEL_PREFIX)
-  target_compile_options(control_node PRIVATE -march=native)
-endif()
-target_link_libraries(control_node agilib acados_mpc agilib Eigen3::Eigen "${typesupport}")
-ament_target_dependencies(control_node rclcpp sensor_msgs nav_msgs std_msgs)
-set_target_properties(control_node PROPERTIES INSTALL_RPATH "$ORIGIN/..;${ACADOS_ROOT}/lib" LINK_FLAGS "-Wl,--disable-new-dtags")
-install(TARGETS control_node DESTINATION lib/${PROJECT_NAME})
+add_library(ros2_node_common STATIC src/node_common.cc)
+target_include_directories(ros2_node_common PUBLIC include ${AGILIB_ROOT}/include
+  ${AGILIB_ROOT}/apps ${EIGEN3_INCLUDE_DIRS})
+target_link_libraries(ros2_node_common agilib Eigen3::Eigen "${typesupport}")
+ament_target_dependencies(ros2_node_common rclcpp builtin_interfaces)
+add_executable(state_fusion_node src/state_fusion_main.cc
+  src/state_fusion_node.cc ${AGILIB_ROOT}/apps/companion_ahrs.cpp)
+add_executable(control_node src/control_main.cc src/control_node.cc)
+add_executable(command_output_node src/command_output_main.cc
+  src/command_output_node.cc)
+foreach(target ros2_node_common state_fusion_node control_node command_output_node)
+  # Match agilib's Eigen alignment across the ABI boundary.
+  if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64)$" AND NOT DEFINED CATKIN_DEVEL_PREFIX)
+    target_compile_options(${target} PRIVATE -march=native)
+  endif()
+endforeach()
+foreach(target state_fusion_node control_node command_output_node)
+  target_link_libraries(${target} ros2_node_common agilib acados_mpc agilib
+    Eigen3::Eigen "${typesupport}")
+  ament_target_dependencies(${target} rclcpp sensor_msgs nav_msgs std_msgs)
+  set_target_properties(${target} PROPERTIES
+    INSTALL_RPATH "$ORIGIN/..;${ACADOS_ROOT}/lib"
+    LINK_FLAGS "-Wl,--disable-new-dtags")
+  install(TARGETS ${target} DESTINATION lib/${PROJECT_NAME})
+endforeach()
 set_target_properties(agilib acados_mpc PROPERTIES INSTALL_RPATH "$ORIGIN;${ACADOS_ROOT}/lib" LINK_FLAGS "-Wl,--disable-new-dtags")
 install(TARGETS agilib acados_mpc LIBRARY DESTINATION lib ARCHIVE DESTINATION lib)
 option(AGI_ROS2_GAZEBO "Build Gazebo Harmonic sensor adapter (disable on CM5)" ON)
