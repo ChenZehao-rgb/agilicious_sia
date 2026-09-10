@@ -41,6 +41,7 @@ private:
 	const double _session_start;
 	std::string _mode;
 	bool _simulation_time = false;
+	bool _timing_checks = true;
 	double _mass = 0.0;
 	int _socket_fd = -1;
 	sockaddr_in _destination{};

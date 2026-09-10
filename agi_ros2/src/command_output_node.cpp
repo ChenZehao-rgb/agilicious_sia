@@ -49,6 +49,13 @@ CommandOutputNode::CommandOutputNode()
 		throw std::invalid_argument("Hardware requires use_sim_time=false");
 	}
 	_simulation_time = _mode == "sitl" && get_parameter("use_sim_time").as_bool();
+	const bool delay_test = declare_parameter<bool>("sitl_delay_test", false);
+	if (delay_test && !_simulation_time) {
+		throw std::invalid_argument("sitl_delay_test requires mode=sitl and use_sim_time=true");
+	}
+	_timing_checks = !delay_test;
+	if (delay_test) RCLCPP_INFO(get_logger(), "SITL delay test: timing limits disabled");
+
 	const auto params_dir = declare_parameter<std::string>("params_dir", "");
 	const auto pilot_file = declare_parameter<std::string>("pilot_config", "pilot_ros2.yaml");
 	const auto bridge_file = declare_parameter<std::string>("bridge_config", "betaflight_udp.yaml");
@@ -146,7 +153,7 @@ void CommandOutputNode::loadThrustTable(const std::string& filename) {
 
 void CommandOutputNode::onCommand(msg::ControlCommand::ConstSharedPtr message) {
 	if (message->clock_id != evidenceClockId(_clock_id, _simulation_time) || !std::isfinite(message->evidence.now) ||
-	    (_simulation_time && message->evidence.now > now().seconds() + 0.010) ||
+	    (_timing_checks && _simulation_time && message->evidence.now > now().seconds() + 0.010) ||
 	    (std::isfinite(_previous_command_time) && message->evidence.now <= _previous_command_time)) {
 		return;
 	}
@@ -189,20 +196,24 @@ void CommandOutputNode::reportFault(const std::string& reason) {
 }
 
 void CommandOutputNode::processOutput() {
+	const auto timely = [this](double now, double sample, double limit) {
+		return SafetyGate::fresh(now, sample, limit, _timing_checks);
+	};
 	const double ros_time = alignedRosTime(*this, std::max({stampSeconds(_authority.header.stamp), stampSeconds(_health.header.stamp),
 	                                                        stampSeconds(_command.header.stamp)}));
 	auto evidence = decodeEvidence(_command.evidence);
+	evidence.timing_checks = _timing_checks;
 	const double wall = monotonicSeconds();
 	evidence.now = _simulation_time ? ros_time : wall;
 	const bool command_fresh = _command.clock_id == evidenceClockId(_clock_id, _simulation_time) &&
 	                           _command.header.frame_id == "base_link" &&
-	                           SafetyGate::fresh(wall, _command_receive_time, _simulation_time ? kSitlWallTimeout : 0.025) &&
-	                           SafetyGate::fresh(evidence.now, _command.evidence.now, 0.025) &&
-	                           SafetyGate::fresh(ros_time, stampSeconds(_command.header.stamp), 0.025);
-	const bool rc_fresh = SafetyGate::fresh(wall, _authority_receive_time, _simulation_time ? kSitlWallTimeout : 0.1) &&
-	                      SafetyGate::fresh(ros_time, stampSeconds(_authority.header.stamp), 0.1) && _authority.rc_link;
-	const bool health_fresh = SafetyGate::fresh(wall, _health_receive_time, _simulation_time ? kSitlWallTimeout : 0.2) &&
-	                          SafetyGate::fresh(ros_time, stampSeconds(_health.header.stamp), 0.2);
+	                           timely(wall, _command_receive_time, _simulation_time ? kSitlWallTimeout : 0.025) &&
+	                           timely(evidence.now, _command.evidence.now, 0.025) &&
+	                           timely(ros_time, stampSeconds(_command.header.stamp), 0.025);
+	const bool rc_fresh = timely(wall, _authority_receive_time, _simulation_time ? kSitlWallTimeout : 0.1) &&
+	                      timely(ros_time, stampSeconds(_authority.header.stamp), 0.1) && _authority.rc_link;
+	const bool health_fresh = timely(wall, _health_receive_time, _simulation_time ? kSitlWallTimeout : 0.2) &&
+	                          timely(ros_time, stampSeconds(_health.header.stamp), 0.2);
 	// New authority can revoke old commands immediately, but never authorize a
 	// command computed under a different ARM/AUTO state.
 	const bool authority_matches = evidence.armed == _authority.armed && evidence.auto_switch == _authority.auto_switch;
@@ -283,6 +294,9 @@ void CommandOutputNode::processOutput() {
 }
 
 void CommandOutputNode::watchdog() {
+	const auto timely = [this](double now, double sample, double limit) {
+		return SafetyGate::fresh(now, sample, limit, _timing_checks);
+	};
 	// Short SITL stalls freeze acquisition/command age, not the independent
 	// wall liveness deadline. Hardware keeps its original 25 ms deadline.
 	const double wall = monotonicSeconds();
@@ -296,8 +310,8 @@ void CommandOutputNode::watchdog() {
 	}
 	_previous_ros_time = ros_time;
 	const double safety_now = _simulation_time ? ros_time : wall;
-	if (!SafetyGate::fresh(wall, _command_receive_time, _simulation_time ? kSitlWallTimeout : 0.025) ||
-	    !SafetyGate::fresh(safety_now, _command.evidence.now, 0.025)) {
+	if (!_timing_checks || !timely(wall, _command_receive_time, _simulation_time ? kSitlWallTimeout : 0.025) ||
+	    !timely(safety_now, _command.evidence.now, 0.025)) {
 		processOutput();
 	} else {
 		publishStatus();

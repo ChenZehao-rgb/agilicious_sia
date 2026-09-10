@@ -78,6 +78,8 @@ class Harness:
         self.imu_enabled = True
         self.last_health = 0.0
         self.last_imu = 0.0
+        self.delay_test = False
+        self.solve_seconds = 0.001
         self.simulation = False
         self.sim_time_ns = 10_000_000_000
 
@@ -86,6 +88,8 @@ class Harness:
                 '-p', 'params_dir:=' + str(PARAMS)]
         if self.simulation:
             args += ['-p', 'use_sim_time:=true', '-r', '/clock:=' + self.namespace + '/clock']
+        if self.delay_test:
+            args += ['-p', 'sitl_delay_test:=true']
         if executable != 'state_fusion_node':
             args += ['-p', 'mode:=' + ('hardware' if hardware else 'sitl')]
         if executable == 'command_output_node':
@@ -173,7 +177,7 @@ class Harness:
             evidence = command.evidence
             for field in ('now', 'imu_time', 'rtk_time', 'rc_time', 'command_time'):
                 setattr(evidence, field, wall - self.command_age)
-            evidence.solve_seconds = 0.001
+            evidence.solve_seconds = self.solve_seconds
             for field in ('rtk_fixed', 'heading_valid', 'accuracy_ok', 'imu_calibrated',
                           'synchronized', 'converged', 'config_verified',
                           'thrust_calibrated', 'geofence_ok', 'msp_healthy',
@@ -417,6 +421,48 @@ class NodePipelineTest(unittest.TestCase):
         h.run(0.15, sensors=True)
         self.assertTrue(h.received['output_status'][-1].override_active,
                         [s.data for s in h.received['status'][-5:]])
+
+    def test_delay_mode_accepts_late_commands_and_preserves_kill(self):
+        h = self.h
+        h.simulation = True
+        h.delay_test = True
+        h.command_age = 0.15
+        h.solve_seconds = 0.02
+        h.subscribe('output_status', OutputStatus)
+        h.start('command_output_node')
+        h.run(0.8, commands=True)
+        h.auto = True
+        h.run(0.15, commands=True)
+        self.assertTrue(h.received['output_status'][-1].override_active)
+        h.clear()
+        h.run(0.4, commands=False)
+        self.assertTrue(h.received['output_status'][-1].override_active)
+        self.assertGreater(len(h.packets), 20)
+        self.assertTrue(all(p[5] == 2000 for p in h.packets))
+        h.kill = True
+        h.run(0.06, commands=False)
+        self.assertFalse(h.received['output_status'][-1].override_active)
+        self.assertEqual(h.packets[-1][5], 1000)
+
+    def test_delay_mode_control_uses_old_state(self):
+        self.h.delay_test = True
+        h = self.start_simulated_pipeline()
+        h.run(0.35, sensors=False)
+        self.assertTrue(h.received['control_command'][-1].permit_override)
+        self.assertTrue(h.received['control_command'][-1].evidence.controller_warm)
+        self.assertTrue(h.received['output_status'][-1].override_active)
+        h.kill = True
+        h.run(0.06, sensors=False)
+        self.assertFalse(h.received['output_status'][-1].override_active)
+
+    def test_hardware_rejects_delay_mode(self):
+        for executable in ('control_node', 'command_output_node', 'state_fusion_node'):
+            result = subprocess.run(
+                [str(BIN / executable), '--ros-args', '-r', '__ns:=' + self.h.namespace,
+                 '-p', 'mode:=hardware', '-p', 'sitl_delay_test:=true'],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=5)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('sitl_delay_test requires', result.stdout)
 
     def test_sim_rc_gap_requires_warmup_and_new_auto_edge(self):
         h = self.h

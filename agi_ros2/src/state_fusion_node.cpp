@@ -21,6 +21,12 @@ using agi::hardware::SafetyGate;
 
 StateFusionNode::StateFusionNode()
         : Node("state_fusion"), _clock_id(readClockId()), _rtk_receive_time(kUnknownTime), _last_rtk_time(kUnknownTime) {
+	const auto mode = declare_parameter<std::string>("mode", "sitl");
+	const bool delay_test = declare_parameter<bool>("sitl_delay_test", false);
+	if (delay_test && (mode != "sitl" || !get_parameter("use_sim_time").as_bool())) {
+		throw std::invalid_argument("sitl_delay_test requires mode=sitl and use_sim_time=true");
+	}
+	_timing_checks = !delay_test;
 	const auto positive = [this](const char* name, double value) {
 		const double result = declare_parameter<double>(name, value);
 		if (!std::isfinite(result) || result <= 0) throw std::invalid_argument(name);
@@ -76,7 +82,7 @@ void StateFusionNode::onImu(sensor_msgs::msg::Imu::ConstSharedPtr message) {
 		if (time == _state.t) {
 			return;
 		}
-		if (time < _state.t || time - _state.t > 0.025) {
+		if (time < _state.t || (_timing_checks && time - _state.t > 0.025)) {
 			if (time < _state.t) {
 				_rtk = msg::Rtk();
 				_rtk_receive_time = kUnknownTime;
@@ -88,7 +94,7 @@ void StateFusionNode::onImu(sensor_msgs::msg::Imu::ConstSharedPtr message) {
 	const double fix_time = stampSeconds(_rtk.header.stamp);
 	const bool valid_fix =
 	    (get_parameter("use_sim_time").as_bool() || SafetyGate::fresh(received, _rtk_receive_time, 0.3)) &&
-	    SafetyGate::fresh(time, fix_time, 0.3) && _rtk.header.frame_id == "odom" &&
+	    SafetyGate::fresh(time, fix_time, 0.3, _timing_checks) && _rtk.header.frame_id == "odom" &&
 	    _rtk.fixed && _rtk.accuracy_ok &&
 	    (!std::isfinite(_last_rtk_time) || fix_time > _last_rtk_time);
 	const agi::Vector<3> position(_rtk.position.x, _rtk.position.y, _rtk.position.z);

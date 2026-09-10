@@ -122,6 +122,25 @@ CM5 接开发机的模拟输入时，保持 launch 中 `mode='sitl'`；
 开发机只运行 `run.py`，CM5 运行 flight。外部输入应提供 IMU、RTK、health 和 /clock；
 配置验证状态通过 health topic 传递，由 run.py 完成隔离 EEPROM 回读后设置。
 
+## SITL 延迟测试
+
+当前源码 launch 的 `FLIGHT_CONFIG` 设置 `sitl_delay_test='true'`，
+用于 Jetson–本机分层仿真的延迟实验。改成 `'false'` 并重启 flight 恢复原保护。
+节点单独运行时默认仍为 false；hardware launch 始终关闭该测试开关。
+
+开启时不以状态/IMU、RTK、RC、health、命令及输出状态的年龄、
+控制周期间隔或 8 ms 求解耗时为由退出 AUTO，也不因 IMU 正向时间间隔超过
+25 ms 而主动重置融合器。实际延迟仍原样写入 `/control_diagnostics`。
+输出节点每 5 ms 重发最后有效命令，因此数据停止更新时也会保持旧输出，直到
+新命令、ARM/KILL/链路标志撤销、无效数据或节点退出改变输出。
+
+仍需先完成 50 个有效预热周期，再从 AUTO=false 切到 true；
+保留配置验证、有限数值、时钟域、时钟回退、融合器实际故障及命令有效性检查。
+估计器本身的积分/历史缓存约束没有取消；此开关不保证任意延迟下都能跟踪轨迹。
+
+同步源码到 Jetson 后执行 `./agi_ros2/scripts/build.sh`，
+再按原命令 `./agi_ros2/scripts/launch.sh` 启动，无需追加参数。
+
 ## 实机入口与驱动契约
 
 ```bash

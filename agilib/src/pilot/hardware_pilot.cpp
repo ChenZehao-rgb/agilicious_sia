@@ -86,10 +86,10 @@ ControlDecision HardwarePilot::tick(const QuadState& state, Evidence evidence) {
   evidence.solve_seconds = NAN;
   evidence.controller_warm = false;
   const bool cadence_ok = !std::isfinite(previous_tick_) ||
-    (now > previous_tick_ && now - previous_tick_ <= 0.025);
+    (now > previous_tick_ && (!evidence.timing_checks || now - previous_tick_ <= 0.025));
   previous_tick_ = now;
   const bool state_ok = state.valid() &&
-    SafetyGate::fresh(now, state.t, 0.010) &&
+    SafetyGate::fresh(now, state.t, 0.010, evidence.timing_checks) &&
     std::abs(state.q().norm() - 1.0) < 1e-3;
   if (!cadence_ok || !state_ok || !SafetyGate::inputsHealthy(evidence) || evidence.kill) {
     warm_cycles_ = 0;
@@ -128,7 +128,7 @@ ControlDecision HardwarePilot::tick(const QuadState& state, Evidence evidence) {
         if (!references.empty()) result.reference = references.front().state;
         const Command command = pilot_->getCommand();
         if (command.isRatesThrust() && command.collective_thrust >= 0 &&
-            SafetyGate::fresh(now, command.t, 0.010)) {
+            SafetyGate::fresh(now, command.t, 0.010, evidence.timing_checks)) {
           result.command = command;
           evidence.command_valid = true;
           evidence.command_time = steady_clock_();
@@ -139,7 +139,7 @@ ControlDecision HardwarePilot::tick(const QuadState& state, Evidence evidence) {
     }
     evidence.solve_seconds = std::chrono::duration<double>(
       std::chrono::steady_clock::now() - begin).count();
-    if (evidence.command_valid && evidence.solve_seconds <= 0.008)
+    if (evidence.command_valid && (!evidence.timing_checks || evidence.solve_seconds <= 0.008))
       warm_cycles_ = std::min(warm_cycles_ + 1, 50u);
     else {
       warm_cycles_ = 0;
@@ -160,8 +160,8 @@ ControlDecision HardwarePilot::tick(const QuadState& state, Evidence evidence) {
   result.reason = gate_.reason();
   if (!cadence_ok) result.reason += "; cadence";
   if (!state_ok) result.reason += "; state age/validity";
-  if (!SafetyGate::fresh(evidence.now, evidence.imu_time, 0.010)) result.reason += "; imu age";
-  if (!SafetyGate::fresh(evidence.now, evidence.rc_time, 0.10)) result.reason += "; RC timeout";
+  if (!SafetyGate::fresh(evidence.now, evidence.imu_time, 0.010, evidence.timing_checks)) result.reason += "; imu age";
+  if (!SafetyGate::fresh(evidence.now, evidence.rc_time, 0.10, evidence.timing_checks)) result.reason += "; RC timeout";
   if (!evidence.rc_link) result.reason += "; RC link unavailable";
   if (!evidence.command_valid) result.reason += "; no command";
   if (!evidence.controller_warm) result.reason += "; MPC warming";

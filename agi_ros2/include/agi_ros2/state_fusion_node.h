@@ -28,6 +28,7 @@ private:
 	void publishState(double imu_receive_time);
 
 	const std::string _clock_id;
+	bool _timing_checks = true;
 	agi::QuadState _state;
 	std::unique_ptr<agi::EkfImu> _ekf;
 	agi::Vector<3> _rtk_position_variance;

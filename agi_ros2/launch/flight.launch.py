@@ -17,9 +17,11 @@ def nodes(context):
     if mode not in ('sitl', 'hardware'):
         raise ValueError('mode must be sitl or hardware')
     common = {'mode': mode, 'use_sim_time': mode == 'sitl',
-              'params_dir': arg('params_dir'), 'pilot_config': arg('pilot_config')}
+              'params_dir': arg('params_dir'), 'pilot_config': arg('pilot_config'),
+              'sitl_delay_test': mode == 'sitl' and arg('sitl_delay_test').lower() == 'true'}
     fusion = Node(package='agi_ros2', executable='state_fusion_node',
-                  output='screen', parameters=[{'use_sim_time': mode == 'sitl'}])
+                  output='screen', parameters=[{'mode': mode, 'use_sim_time': mode == 'sitl',
+                                                'sitl_delay_test': common['sitl_delay_test']}])
     control = Node(package='agi_ros2', executable='control_node', output='screen',
                    parameters=[{**common, 'trajectory': arg('trajectory')}])
     output = Node(package='agi_ros2', executable='command_output_node',
@@ -48,10 +50,12 @@ def nodes(context):
 
 # 在这里修改 flight 参数；启动命令无需追加参数。
 # Sensor 数据由外部 ROS topic 提供，不启动或检查 gazebo_sensors 进程。
+# sitl_delay_test=true：取消 SITL 时间限制，延迟期间持续发送最后有效指令。
+# 改为 false 恢复保护；hardware 模式始终保持保护。
 FLIGHT_CONFIG = dict(mode='sitl', params_dir=get_package_share_directory('agi_ros2') + '/params',
                     pilot_config='pilot_ros2.yaml', bridge_config='betaflight_udp.yaml',
                     device='/dev/ttyAMA0', baud='921600', trajectory='/home/sia/agilicious_internal-main/miscellaneous/datasets/ref_trajs/open_source/CPC33_Z1.csv', thrust_table='',
-                    record_bag='true', bag_output='')
+                    sitl_delay_test='true', record_bag='true', bag_output='')
 
 
 def generate_launch_description():

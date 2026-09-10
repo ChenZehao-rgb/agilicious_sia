@@ -11,6 +11,8 @@ enum class Mode { Boot, SensorCheck, ReadyManual, AutoStandby, AutoActive,
 // Unknown evidence is false. A driver must not equate AHRS initialization with
 // convergence or a GPS arrival timestamp with PPS synchronization.
 struct Evidence {
+  // Local policy, never trusted from a ROS command. Enabled by default.
+  bool timing_checks{true};
   double now{NAN}, imu_time{NAN}, rtk_time{NAN}, rc_time{NAN};
   double command_time{NAN}, solve_seconds{NAN};
   bool rtk_fixed{false}, heading_valid{false}, accuracy_ok{false};
@@ -23,18 +25,18 @@ struct Evidence {
 class SafetyGate {
  public:
   static bool inputsHealthy(const Evidence& e) {
-    return fresh(e.now, e.imu_time, 0.010) &&
-      fresh(e.now, e.rtk_time, 0.300) && fresh(e.now, e.rc_time, 0.10) &&
+    return fresh(e.now, e.imu_time, 0.010, e.timing_checks) &&
+      fresh(e.now, e.rtk_time, 0.300, e.timing_checks) && fresh(e.now, e.rc_time, 0.10, e.timing_checks) &&
       e.rc_link && e.rtk_fixed && e.heading_valid && e.accuracy_ok &&
       e.imu_calibrated && e.synchronized && e.converged &&
       e.config_verified && e.thrust_calibrated && e.geofence_ok && e.msp_healthy;
   }
   bool update(const Evidence& e) {
-    const bool fresh_rc = fresh(e.now, e.rc_time, 0.10) && e.rc_link;
+    const bool fresh_rc = fresh(e.now, e.rc_time, 0.10, e.timing_checks) && e.rc_link;
     const bool healthy = inputsHealthy(e) && e.controller_warm;
-    const bool command_ok = fresh(e.now, e.command_time, 0.025) &&
+    const bool command_ok = fresh(e.now, e.command_time, 0.025, e.timing_checks) &&
       e.command_valid && std::isfinite(e.solve_seconds) &&
-      e.solve_seconds >= 0 && e.solve_seconds <= 0.008;
+      e.solve_seconds >= 0 && (!e.timing_checks || e.solve_seconds <= 0.008);
     // Require a *healthy observed low* after boot or any fault. A switch held
     // high through process restart or a sensor outage cannot re-enter AUTO.
     if (fresh_rc && !e.auto_switch && !e.kill && healthy) low_seen_ = true;
@@ -78,9 +80,9 @@ class SafetyGate {
     }
     return "UNKNOWN";
   }
-  static bool fresh(double now, double sample, double limit) {
+  static bool fresh(double now, double sample, double limit, bool timing_checks = true) {
     return std::isfinite(now) && std::isfinite(sample) &&
-           now >= sample && now - sample <= limit;
+           (!timing_checks || (now >= sample && now - sample <= limit));
   }
  private:
   Mode mode_{Mode::Boot};

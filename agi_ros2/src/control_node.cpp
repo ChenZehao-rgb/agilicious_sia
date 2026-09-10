@@ -36,6 +36,13 @@ ControlNode::ControlNode()
 		throw std::invalid_argument("Hardware requires use_sim_time=false");
 	}
 	_simulation_time = _mode == "sitl" && get_parameter("use_sim_time").as_bool();
+	const bool delay_test = declare_parameter<bool>("sitl_delay_test", false);
+	if (delay_test && !_simulation_time) {
+		throw std::invalid_argument("sitl_delay_test requires mode=sitl and use_sim_time=true");
+	}
+	_timing_checks = !delay_test;
+	if (delay_test) RCLCPP_INFO(get_logger(), "SITL delay test: timing limits disabled");
+
 	const auto params_dir = declare_parameter<std::string>("params_dir", "");
 	const auto pilot_file = declare_parameter<std::string>("pilot_config", "pilot_ros2.yaml");
 	const auto trajectory = declare_parameter<std::string>("trajectory", "");
@@ -98,12 +105,15 @@ void ControlNode::onOutputStatus(msg::OutputStatus::ConstSharedPtr message) {
 }
 
 void ControlNode::tick() {
+	const auto timely = [this](double now, double sample, double limit) {
+		return SafetyGate::fresh(now, sample, limit, _timing_checks);
+	};
 	_control_time = alignedRosTime(*this, std::max({stampSeconds(_state.header.stamp), stampSeconds(_authority.header.stamp),
 	                                                stampSeconds(_health.header.stamp)}));
 	const double wall = monotonicSeconds();
 	const double safety_now = _simulation_time ? _control_time : wall;
 	if (_output_fault ||
-	    (std::isfinite(_previous_clock) && (_control_time < _previous_clock || _control_time - _previous_clock > 0.25))) {
+	    (std::isfinite(_previous_clock) && (_control_time < _previous_clock || (_timing_checks && _control_time - _previous_clock > 0.25)))) {
 		_pilot->reportOutputFault();
 		_output_fault = false;
 	}
@@ -113,7 +123,7 @@ void ControlNode::tick() {
 	state.setZero();
 	state.t = kUnknownTime;
 	if (_state.initialized && _state.clock_id == _clock_id && _state.header.frame_id == "odom" &&
-	    SafetyGate::fresh(wall, _state.published_steady_time, _simulation_time ? kSitlWallTimeout : 0.010)) {
+	    timely(wall, _state.published_steady_time, _simulation_time ? kSitlWallTimeout : 0.010)) {
 		state.t = stampSeconds(_state.header.stamp);
 		state.p = agi::Vector<3>{_state.position.x, _state.position.y, _state.position.z};
 		state.v = agi::Vector<3>{_state.velocity.x, _state.velocity.y, _state.velocity.z};
@@ -122,23 +132,24 @@ void ControlNode::tick() {
 		state.a = agi::Vector<3>{_state.acceleration.x, _state.acceleration.y, _state.acceleration.z};
 	}
 	agi::hardware::Evidence evidence;
+	evidence.timing_checks = _timing_checks;
 	evidence.now = safety_now;
 	evidence.imu_time = _state.clock_id == _clock_id ? (_simulation_time ? state.t : _state.imu_receive_time) : kUnknownTime;
 	evidence.rtk_time = _state.initialized ? safety_now - (_control_time - stampSeconds(_state.rtk_stamp)) : kUnknownTime;
 	evidence.rc_time = safety_now - (_control_time - stampSeconds(_authority.header.stamp));
 	evidence.rc_link =
-	        _authority.rc_link && SafetyGate::fresh(wall, _authority_receive_time, _simulation_time ? kSitlWallTimeout : 0.1);
+	        _authority.rc_link && timely(wall, _authority_receive_time, _simulation_time ? kSitlWallTimeout : 0.1);
 	evidence.armed = _authority.armed;
 	evidence.auto_switch = _authority.auto_switch;
 	evidence.kill = _authority.kill;
-	evidence.rtk_fixed = _state.rtk_fixed && (_simulation_time || SafetyGate::fresh(wall, _state.rtk_receive_time, 0.3));
+	evidence.rtk_fixed = _state.rtk_fixed && (_simulation_time || timely(wall, _state.rtk_receive_time, 0.3));
 	evidence.heading_valid = _state.heading_valid;
 	evidence.accuracy_ok = _state.accuracy_ok;
 	evidence.synchronized = _state.synchronized;
-	const bool health_fresh = SafetyGate::fresh(wall, _health_receive_time, _simulation_time ? kSitlWallTimeout : 0.2) &&
-	                          SafetyGate::fresh(_control_time, stampSeconds(_health.header.stamp), 0.2);
-	const bool output_fresh = SafetyGate::fresh(wall, _output_receive_time, _simulation_time ? kSitlWallTimeout : 0.05) &&
-	                          SafetyGate::fresh(wall, _output.steady_time, _simulation_time ? kSitlWallTimeout : 0.05);
+	const bool health_fresh = timely(wall, _health_receive_time, _simulation_time ? kSitlWallTimeout : 0.2) &&
+	                          timely(_control_time, stampSeconds(_health.header.stamp), 0.2);
+	const bool output_fresh = timely(wall, _output_receive_time, _simulation_time ? kSitlWallTimeout : 0.05) &&
+	                          timely(wall, _output.steady_time, _simulation_time ? kSitlWallTimeout : 0.05);
 	evidence.imu_calibrated = health_fresh && _health.imu_calibrated;
 	evidence.converged = health_fresh && _health.converged && _state.initialized;
 	evidence.config_verified = health_fresh && _health.config_verified;

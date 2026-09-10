@@ -32,6 +32,7 @@ private:
 	const std::string _clock_id;
 	std::string _mode;
 	bool _simulation_time = false;
+	bool _timing_checks = true;
 	std::unique_ptr<agi::PilotParams> _params;
 	std::unique_ptr<agi::hardware::HardwarePilot> _pilot;
 	double _control_time = 0.0;
