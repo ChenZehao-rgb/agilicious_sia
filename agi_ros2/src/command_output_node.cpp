@@ -33,13 +33,14 @@ using agi::hardware::SafetyGate;
 }  // namespace
 
 CommandOutputNode::CommandOutputNode()
-	: Node("command_output"),
-	  _clock_id(readClockId()),
-	  _session_start(monotonicSeconds()),
-	  _command_receive_time(kUnknownTime),
-	  _authority_receive_time(kUnknownTime),
-	  _health_receive_time(kUnknownTime),
-	  _previous_command_time(kUnknownTime) {
+        : Node("command_output"),
+          _clock_id(readClockId()),
+          _session_start(monotonicSeconds()),
+          _command_receive_time(kUnknownTime),
+          _authority_receive_time(kUnknownTime),
+          _health_receive_time(kUnknownTime),
+          _previous_command_time(kUnknownTime),
+          _previous_ros_time(kUnknownTime) {
 	_mode = declare_parameter<std::string>("mode", "sitl");
 	if (_mode != "sitl" && _mode != "hardware") {
 		throw std::invalid_argument("mode must be sitl or hardware");
@@ -47,11 +48,10 @@ CommandOutputNode::CommandOutputNode()
 	if (_mode == "hardware" && get_parameter("use_sim_time").as_bool()) {
 		throw std::invalid_argument("Hardware requires use_sim_time=false");
 	}
+	_simulation_time = _mode == "sitl" && get_parameter("use_sim_time").as_bool();
 	const auto params_dir = declare_parameter<std::string>("params_dir", "");
-	const auto pilot_file =
-	        declare_parameter<std::string>("pilot_config", "pilot_ros2.yaml");
-	const auto bridge_file =
-	        declare_parameter<std::string>("bridge_config", "betaflight_udp.yaml");
+	const auto pilot_file = declare_parameter<std::string>("pilot_config", "pilot_ros2.yaml");
+	const auto bridge_file = declare_parameter<std::string>("bridge_config", "betaflight_udp.yaml");
 	const auto device = declare_parameter<std::string>("device", "/dev/ttyAMA0");
 	const int baud = declare_parameter<int>("baud", 921600);
 	const auto thrust_file = declare_parameter<std::string>("thrust_table", "");
@@ -61,8 +61,7 @@ CommandOutputNode::CommandOutputNode()
 	const agi::Yaml pilot_config(std::filesystem::path(params_dir) / pilot_file);
 	const auto quad_file = pilot_config["quadrotor"].as<std::string>();
 	agi::Quadrotor quad;
-	if (!quad.load(std::filesystem::path(params_dir) / "quads" / quad_file) ||
-	                !quad.valid()) {
+	if (!quad.load(std::filesystem::path(params_dir) / "quads" / quad_file) || !quad.valid()) {
 		throw std::invalid_argument("Invalid vehicle mass configuration");
 	}
 	_mass = quad.m_;
@@ -78,8 +77,7 @@ CommandOutputNode::CommandOutputNode()
 	} else {
 		_destination.sin_family = AF_INET;
 		_destination.sin_port = htons(_bridge_params.port);
-		if (inet_pton(AF_INET, _bridge_params.host.c_str(),
-		                &_destination.sin_addr) != 1) {
+		if (inet_pton(AF_INET, _bridge_params.host.c_str(), &_destination.sin_addr) != 1) {
 			throw std::invalid_argument("Invalid UDP destination address");
 		}
 		_socket_fd = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK, 0);
@@ -88,27 +86,21 @@ CommandOutputNode::CommandOutputNode()
 		}
 	}
 	_status_pub = create_publisher<msg::OutputStatus>("output_status", 1);
-	_command_sub = create_subscription<msg::ControlCommand>(
-	                       "control_command", 1,
-	                       std::bind(&CommandOutputNode::onCommand, this, std::placeholders::_1));
-	_authority_sub = create_subscription<msg::Authority>(
-	"authority", 1, [this](msg::Authority::ConstSharedPtr message) {
-		const bool revoke = message->kill || !message->armed ||
-		                    message->auto_switch != _authority.auto_switch ||
-		                    !message->rc_link;
+	_command_sub = create_subscription<msg::ControlCommand>("control_command", 1,
+	                                                        std::bind(&CommandOutputNode::onCommand, this, std::placeholders::_1));
+	_authority_sub = create_subscription<msg::Authority>("authority", 1, [this](msg::Authority::ConstSharedPtr message) {
+		const bool revoke = message->kill || !message->armed || message->auto_switch != _authority.auto_switch || !message->rc_link;
 		_authority = *message;
 		_authority_receive_time = monotonicSeconds();
 		if (revoke) {
 			processOutput();
 		}
 	});
-	_health_sub = create_subscription<msg::Health>(
-	"health", 1, [this](msg::Health::ConstSharedPtr message) {
+	_health_sub = create_subscription<msg::Health>("health", 1, [this](msg::Health::ConstSharedPtr message) {
 		_health = *message;
 		_health_receive_time = monotonicSeconds();
 	});
-	_watchdog = create_wall_timer(std::chrono::milliseconds(5),
-	                              std::bind(&CommandOutputNode::watchdog, this));
+	_watchdog = create_wall_timer(std::chrono::milliseconds(5), std::bind(&CommandOutputNode::watchdog, this));
 }
 
 CommandOutputNode::~CommandOutputNode() {
@@ -153,9 +145,9 @@ void CommandOutputNode::loadThrustTable(const std::string& filename) {
 }
 
 void CommandOutputNode::onCommand(msg::ControlCommand::ConstSharedPtr message) {
-	if (message->clock_id != _clock_id || !std::isfinite(message->evidence.now) ||
-	                (std::isfinite(_previous_command_time) &&
-	                 message->evidence.now <= _previous_command_time)) {
+	if (message->clock_id != evidenceClockId(_clock_id, _simulation_time) || !std::isfinite(message->evidence.now) ||
+	    (_simulation_time && message->evidence.now > now().seconds() + 0.010) ||
+	    (std::isfinite(_previous_command_time) && message->evidence.now <= _previous_command_time)) {
 		return;
 	}
 	_previous_command_time = message->evidence.now;
@@ -165,41 +157,28 @@ void CommandOutputNode::onCommand(msg::ControlCommand::ConstSharedPtr message) {
 }
 
 std::array<uint16_t, 4> CommandOutputNode::mapCommand() const {
-	if (!std::isfinite(_command.total_thrust) || _command.total_thrust < 0 ||
-	                !std::isfinite(_command.body_rates.x) ||
-	                !std::isfinite(_command.body_rates.y) ||
-	                !std::isfinite(_command.body_rates.z)) {
+	if (!std::isfinite(_command.total_thrust) || _command.total_thrust < 0 || !std::isfinite(_command.body_rates.x) ||
+	    !std::isfinite(_command.body_rates.y) || !std::isfinite(_command.body_rates.z)) {
 		throw std::invalid_argument("Nonfinite or negative thrust/rates command");
 	}
 	std::array<uint16_t, 4> channels = kIdleChannels;
 	const double sign = _mode == "hardware" ? -1.0 : 1.0;
-	channels[0] = _mapper->rateToPwm(
-	                      _mapper->inverseActualRate(_command.body_rates.x * kRadiansToDegrees, 0),
-	                      _bridge_params.deadband);
+	channels[0] = _mapper->rateToPwm(_mapper->inverseActualRate(_command.body_rates.x * kRadiansToDegrees, 0), _bridge_params.deadband);
 	// Hardware is FRD. The SITL model already flips its sensor axes.
-	channels[1] = _mapper->rateToPwm(
-	                      _mapper->inverseActualRate(
-	                              sign * _command.body_rates.y * kRadiansToDegrees, 1),
-	                      _bridge_params.deadband);
-	channels[3] = _mapper->rateToPwm(
-	                      _mapper->inverseActualRate(
-	                              sign * _command.body_rates.z * kRadiansToDegrees, 2),
-	                      _bridge_params.yaw_deadband);
+	channels[1] = _mapper->rateToPwm(_mapper->inverseActualRate(sign * _command.body_rates.y * kRadiansToDegrees, 1),
+	                                 _bridge_params.deadband);
+	channels[3] = _mapper->rateToPwm(_mapper->inverseActualRate(sign * _command.body_rates.z * kRadiansToDegrees, 2),
+	                                 _bridge_params.yaw_deadband);
 	const double acceleration = _command.total_thrust / _mass;
 	if (_msp) {
-		channels[2] = _thrust->collectiveThrustToRc(acceleration, _mass,
-		                _health.battery_voltage);
+		channels[2] = _thrust->collectiveThrustToRc(acceleration, _mass, _health.battery_voltage);
 	} else {
-		const double motor =
-		        (_bridge_params.motor_idle +
-		         (1 - _bridge_params.motor_idle) * _bridge_params.hover_throttle) *
-		        std::sqrt(acceleration / kGravity);
+		const double motor = (_bridge_params.motor_idle + (1 - _bridge_params.motor_idle) * _bridge_params.hover_throttle) *
+		                     std::sqrt(acceleration / kGravity);
 		channels[2] = static_cast<uint16_t>(
-		                      std::lround(_bridge_params.min_check +
-		                                  (2000 - _bridge_params.min_check) *
-		                                  std::clamp((motor - _bridge_params.motor_idle) /
-		                                                  (1 - _bridge_params.motor_idle),
-		                                                  0.0, 1.0)));
+		        std::lround(_bridge_params.min_check +
+			            (2000 - _bridge_params.min_check) *
+			                    std::clamp((motor - _bridge_params.motor_idle) / (1 - _bridge_params.motor_idle), 0.0, 1.0)));
 	}
 	return channels;
 }
@@ -210,35 +189,28 @@ void CommandOutputNode::reportFault(const std::string& reason) {
 }
 
 void CommandOutputNode::processOutput() {
-	const double ros_time =
-	        alignedRosTime(*this, std::max({stampSeconds(_authority.header.stamp),
-	                                        stampSeconds(_health.header.stamp),
-	                                        stampSeconds(_command.header.stamp)}));
+	const double ros_time = alignedRosTime(*this, std::max({stampSeconds(_authority.header.stamp), stampSeconds(_health.header.stamp),
+	                                                        stampSeconds(_command.header.stamp)}));
 	auto evidence = decodeEvidence(_command.evidence);
-	evidence.now = monotonicSeconds();
-	const bool command_fresh =
-	        _command.clock_id == _clock_id &&
-	        _command.header.frame_id == "base_link" &&
-	        SafetyGate::fresh(evidence.now, _command_receive_time, 0.025) &&
-	        SafetyGate::fresh(evidence.now, _command.evidence.now, 0.025) &&
-	        SafetyGate::fresh(ros_time, stampSeconds(_command.header.stamp), 0.025);
-	const bool rc_fresh =
-	        SafetyGate::fresh(evidence.now, _authority_receive_time, 0.1) &&
-	        SafetyGate::fresh(ros_time, stampSeconds(_authority.header.stamp), 0.1) &&
-	        _authority.rc_link;
-	const bool health_fresh =
-	        SafetyGate::fresh(evidence.now, _health_receive_time, 0.2) &&
-	        SafetyGate::fresh(ros_time, stampSeconds(_health.header.stamp), 0.2);
+	const double wall = monotonicSeconds();
+	evidence.now = _simulation_time ? ros_time : wall;
+	const bool command_fresh = _command.clock_id == evidenceClockId(_clock_id, _simulation_time) &&
+	                           _command.header.frame_id == "base_link" &&
+	                           SafetyGate::fresh(wall, _command_receive_time, _simulation_time ? kSitlWallTimeout : 0.025) &&
+	                           SafetyGate::fresh(evidence.now, _command.evidence.now, 0.025) &&
+	                           SafetyGate::fresh(ros_time, stampSeconds(_command.header.stamp), 0.025);
+	const bool rc_fresh = SafetyGate::fresh(wall, _authority_receive_time, _simulation_time ? kSitlWallTimeout : 0.1) &&
+	                      SafetyGate::fresh(ros_time, stampSeconds(_authority.header.stamp), 0.1) && _authority.rc_link;
+	const bool health_fresh = SafetyGate::fresh(wall, _health_receive_time, _simulation_time ? kSitlWallTimeout : 0.2) &&
+	                          SafetyGate::fresh(ros_time, stampSeconds(_health.header.stamp), 0.2);
 	// New authority can revoke old commands immediately, but never authorize a
 	// command computed under a different ARM/AUTO state.
-	const bool authority_matches = evidence.armed == _authority.armed &&
-	                               evidence.auto_switch == _authority.auto_switch;
+	const bool authority_matches = evidence.armed == _authority.armed && evidence.auto_switch == _authority.auto_switch;
 	// Authority and command travel on different DDS topics. A new AUTO edge
 	// may arrive before its matching control decision (or vice versa). Wait for
 	// that pair without consuming the healthy low edge. Never defer a revocation
 	// while output is active, and never extend the command's original deadline.
-	if (command_fresh && !authority_matches && !_override_active && rc_fresh &&
-	                _authority.armed && !_authority.kill) {
+	if (command_fresh && !authority_matches && !_override_active && rc_fresh && _authority.armed && !_authority.kill) {
 		publishStatus();
 		return;
 	}
@@ -247,16 +219,11 @@ void CommandOutputNode::processOutput() {
 	evidence.armed = evidence.armed && _authority.armed;
 	evidence.auto_switch = _authority.auto_switch;
 	evidence.command_valid =
-	        evidence.command_valid && command_fresh && authority_matches &&
-	        (!_authority.auto_switch || _command.permit_override);
-	evidence.msp_healthy = evidence.msp_healthy && _transport_healthy &&
-	                       health_fresh && _health.transport_healthy;
-	evidence.config_verified =
-	        evidence.config_verified && health_fresh && _health.config_verified;
-	evidence.geofence_ok =
-	        evidence.geofence_ok && health_fresh && _health.geofence_ok;
-	evidence.thrust_calibrated =
-	        evidence.thrust_calibrated && health_fresh && _health.thrust_calibrated;
+	        evidence.command_valid && command_fresh && authority_matches && (!_authority.auto_switch || _command.permit_override);
+	evidence.msp_healthy = evidence.msp_healthy && _transport_healthy && health_fresh && _health.transport_healthy;
+	evidence.config_verified = evidence.config_verified && health_fresh && _health.config_verified;
+	evidence.geofence_ok = evidence.geofence_ok && health_fresh && _health.geofence_ok;
+	evidence.thrust_calibrated = evidence.thrust_calibrated && health_fresh && _health.thrust_calibrated;
 	bool active = _gate.update(evidence) && _command.permit_override;
 	auto channels = kIdleChannels;
 	if (active) {
@@ -269,8 +236,7 @@ void CommandOutputNode::processOutput() {
 			active = false;
 		}
 	}
-	if (_override_active && !active && _authority.auto_switch &&
-	                !_authority.kill) {
+	if (_override_active && !active && _authority.auto_switch && !_authority.kill) {
 		reportFault("Output authorization or command expired");
 	}
 	if (_authority.auto_switch && !active) {
@@ -280,8 +246,7 @@ void CommandOutputNode::processOutput() {
 		// The MSP bridge has its own gate, which must also observe healthy AUTO
 		// low.
 		const uint64_t previous_errors = _msp->errors();
-		const bool sent =
-		        _msp->sendOverride(channels, evidence, monotonicSeconds() + 0.003);
+		const bool sent = _msp->sendOverride(channels, evidence, monotonicSeconds() + 0.003);
 		if (active && !sent) {
 			reportFault("MSP output rejected or write failed");
 			if (_msp->errors() != previous_errors) {
@@ -293,8 +258,7 @@ void CommandOutputNode::processOutput() {
 		if (!active && rc_fresh && !_authority.kill && !_authority.auto_switch) {
 			channels = _authority.manual_aetr;
 		}
-		const bool armed = rc_fresh && !_authority.kill && _authority.armed &&
-		                   (!_authority.auto_switch || active);
+		const bool armed = rc_fresh && !_authority.kill && _authority.armed && (!_authority.auto_switch || active);
 		if (!sendUdp(channels, armed)) {
 			if (_transport_healthy) {
 				reportFault("UDP send failed");
@@ -311,11 +275,21 @@ void CommandOutputNode::processOutput() {
 }
 
 void CommandOutputNode::watchdog() {
-	// Use wall time: paused /clock or a stopped controller cannot keep output
-	// alive. The original sensor/command times are never refreshed here.
+	// Short SITL stalls freeze acquisition/command age, not the independent
+	// wall liveness deadline. Hardware keeps its original 25 ms deadline.
 	const double wall = monotonicSeconds();
-	if (!SafetyGate::fresh(wall, _command_receive_time, 0.025) ||
-	                !SafetyGate::fresh(wall, _command.evidence.now, 0.025)) {
+	const double ros_time = now().seconds();
+	if (_simulation_time && std::isfinite(_previous_ros_time) && ros_time < _previous_ros_time) {
+		// Invalidate the old epoch, but allow new lower timestamps after the
+		// required healthy AUTO-low/high recovery cycle.
+		_command = msg::ControlCommand();
+		_previous_command_time = kUnknownTime;
+		processOutput();
+	}
+	_previous_ros_time = ros_time;
+	const double safety_now = _simulation_time ? ros_time : wall;
+	if (!SafetyGate::fresh(wall, _command_receive_time, _simulation_time ? kSitlWallTimeout : 0.025) ||
+	    !SafetyGate::fresh(safety_now, _command.evidence.now, 0.025)) {
 		processOutput();
 	} else {
 		publishStatus();
@@ -336,8 +310,7 @@ void CommandOutputNode::publishStatus() {
 	_status_pub->publish(status);
 }
 
-bool CommandOutputNode::sendUdp(const std::array<uint16_t, 4>& channels,
-                                bool armed) {
+bool CommandOutputNode::sendUdp(const std::array<uint16_t, 4>& channels, bool armed) {
 	std::array<uint8_t, 40> bytes{};
 	const double time = monotonicSeconds();
 	uint64_t bits;
@@ -357,9 +330,8 @@ bool CommandOutputNode::sendUdp(const std::array<uint16_t, 4>& channels,
 		bytes[8 + 2 * i] = value & 255;
 		bytes[9 + 2 * i] = value >> 8;
 	}
-	return sendto(_socket_fd, bytes.data(), bytes.size(), 0,
-	              reinterpret_cast<const sockaddr*>(&_destination),
-	              sizeof(_destination)) == static_cast<ssize_t>(bytes.size());
+	return sendto(_socket_fd, bytes.data(), bytes.size(), 0, reinterpret_cast<const sockaddr*>(&_destination), sizeof(_destination)) ==
+	       static_cast<ssize_t>(bytes.size());
 }
 
 }  // namespace agi_ros2

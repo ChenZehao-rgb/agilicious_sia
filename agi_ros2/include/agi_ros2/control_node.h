@@ -27,11 +27,11 @@ private:
 	void onState(msg::FusedState::ConstSharedPtr message);
 	void onOutputStatus(msg::OutputStatus::ConstSharedPtr message);
 	void tick();
-	void publishDecision(const agi::hardware::ControlDecision& decision,
-	                     const agi::QuadState& state);
+	void publishDecision(const agi::hardware::ControlDecision& decision, const agi::QuadState& state);
 
 	const std::string _clock_id;
 	std::string _mode;
+	bool _simulation_time = false;
 	std::unique_ptr<agi::PilotParams> _params;
 	std::unique_ptr<agi::hardware::HardwarePilot> _pilot;
 	double _control_time = 0.0;
@@ -51,8 +51,7 @@ private:
 	rclcpp::Subscription<msg::OutputStatus>::SharedPtr _output_sub;
 	rclcpp::Publisher<msg::ControlCommand>::SharedPtr _command_pub;
 	rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr _reference_pub;
-	rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr
-	_diagnostic_pub;
+	rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr _diagnostic_pub;
 	rclcpp::Publisher<std_msgs::msg::String>::SharedPtr _status_pub;
 	rclcpp::TimerBase::SharedPtr _timer;
 };

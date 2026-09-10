@@ -19,19 +19,13 @@ using agi::hardware::SafetyGate;
 }  // namespace
 
 StateFusionNode::StateFusionNode()
-	: Node("state_fusion"),
-	  _clock_id(readClockId()),
-	  _rtk_receive_time(kUnknownTime),
-	  _last_rtk_time(kUnknownTime) {
+        : Node("state_fusion"), _clock_id(readClockId()), _rtk_receive_time(kUnknownTime), _last_rtk_time(kUnknownTime) {
 	reset();
 	_fused_pub = create_publisher<msg::FusedState>("fused_state", 1);
 	_state_pub = create_publisher<nav_msgs::msg::Odometry>("state", 1);
-	_rtk_sub = create_subscription<msg::Rtk>(
-	                   "sensors/rtk", 10,
-	                   std::bind(&StateFusionNode::onRtk, this, std::placeholders::_1));
-	_imu_sub = create_subscription<sensor_msgs::msg::Imu>(
-	                   "sensors/imu", rclcpp::SensorDataQoS().keep_last(256),
-	                   std::bind(&StateFusionNode::onImu, this, std::placeholders::_1));
+	_rtk_sub = create_subscription<msg::Rtk>("sensors/rtk", 10, std::bind(&StateFusionNode::onRtk, this, std::placeholders::_1));
+	_imu_sub = create_subscription<sensor_msgs::msg::Imu>("sensors/imu", rclcpp::SensorDataQoS().keep_last(256),
+	                                                      std::bind(&StateFusionNode::onImu, this, std::placeholders::_1));
 }
 
 void StateFusionNode::reset() {
@@ -53,14 +47,8 @@ void StateFusionNode::onImu(sensor_msgs::msg::Imu::ConstSharedPtr message) {
 	if (message->header.frame_id != "base_link") {
 		return;
 	}
-	const agi::ImuSample imu(
-	time, {
-		message->linear_acceleration.x, message->linear_acceleration.y,
-		message->linear_acceleration.z
-	}, {
-		message->angular_velocity.x, message->angular_velocity.y,
-		message->angular_velocity.z
-	});
+	const agi::ImuSample imu(time, {message->linear_acceleration.x, message->linear_acceleration.y, message->linear_acceleration.z},
+	                         {message->angular_velocity.x, message->angular_velocity.y, message->angular_velocity.z});
 	if (!imu.valid()) {
 		return;
 	}
@@ -78,15 +66,11 @@ void StateFusionNode::onImu(sensor_msgs::msg::Imu::ConstSharedPtr message) {
 	}
 
 	const double fix_time = stampSeconds(_rtk.header.stamp);
-	if (SafetyGate::fresh(received, _rtk_receive_time, 0.3) &&
-	                SafetyGate::fresh(time, fix_time, 0.3) &&
-	                _rtk.header.frame_id == "odom" && _rtk.fixed && _rtk.heading_valid &&
-	                _rtk.accuracy_ok && std::isfinite(_rtk.heading) &&
-	                (!std::isfinite(_last_rtk_time) || fix_time > _last_rtk_time)) {
-		const agi::Vector<3> position(_rtk.position.x, _rtk.position.y,
-		                              _rtk.position.z);
-		const agi::Vector<3> velocity(_rtk.velocity.x, _rtk.velocity.y,
-		                              _rtk.velocity.z);
+	if ((get_parameter("use_sim_time").as_bool() || SafetyGate::fresh(received, _rtk_receive_time, 0.3)) &&
+	    SafetyGate::fresh(time, fix_time, 0.3) && _rtk.header.frame_id == "odom" && _rtk.fixed && _rtk.heading_valid &&
+	    _rtk.accuracy_ok && std::isfinite(_rtk.heading) && (!std::isfinite(_last_rtk_time) || fix_time > _last_rtk_time)) {
+		const agi::Vector<3> position(_rtk.position.x, _rtk.position.y, _rtk.position.z);
+		const agi::Vector<3> velocity(_rtk.velocity.x, _rtk.velocity.y, _rtk.velocity.z);
 		if (position.allFinite() && velocity.allFinite()) {
 			// Preserve the existing algorithm for this architectural split. This
 			// constant-velocity extrapolation is NOT delayed-measurement IMU replay.

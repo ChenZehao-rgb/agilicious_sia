@@ -22,6 +22,9 @@ from rclpy.qos import qos_profile_sensor_data
 from agi_ros2.msg import Authority, ControlCommand, FusedState, Health, OutputStatus, Rtk
 from sensor_msgs.msg import Imu
 from std_msgs.msg import String
+from nav_msgs.msg import Odometry
+from rosgraph_msgs.msg import Clock
+from builtin_interfaces.msg import Time
 
 ROOT = Path(__file__).resolve().parents[2]
 INSTALL = ROOT / 'install/agi_ros2'
@@ -70,10 +73,14 @@ class Harness:
         self.imu_enabled = True
         self.last_health = 0.0
         self.last_imu = 0.0
+        self.simulation = False
+        self.sim_time_ns = 10_000_000_000
 
     def start(self, executable, hardware=False):
         args = [str(BIN / executable), '--ros-args', '-r', '__ns:=' + self.namespace,
                 '-p', 'params_dir:=' + str(PARAMS)]
+        if self.simulation:
+            args += ['-p', 'use_sim_time:=true', '-r', '/clock:=' + self.namespace + '/clock']
         if executable != 'state_fusion_node':
             args += ['-p', 'mode:=' + ('hardware' if hardware else 'sitl')]
         if executable == 'command_output_node':
@@ -103,10 +110,13 @@ class Harness:
             cls, topic, lambda m: self.received[topic].append(m), 100))
 
     def stamp(self):
+        if self.simulation:
+            return Time(sec=self.sim_time_ns // 1_000_000_000,
+                        nanosec=self.sim_time_ns % 1_000_000_000)
         return self.node.get_clock().now().to_msg()
 
     def publish_inputs(self, sensors, commands):
-        wall = time.monotonic()
+        wall = self.sim_time_ns / 1e9 if self.simulation else time.monotonic()
         if wall - self.last_rc >= 0.02:
             rc = Authority()
             rc.header.stamp = self.stamp()
@@ -142,7 +152,7 @@ class Harness:
             command = ControlCommand()
             command.header.stamp = self.stamp()
             command.header.frame_id = 'base_link'
-            command.clock_id = self.command_clock
+            command.clock_id = self.command_clock + (':ros' if self.simulation else '')
             self.sequence += 1
             command.sequence = self.sequence
             command.total_thrust = self.total_thrust
@@ -180,10 +190,18 @@ class Harness:
                 except BlockingIOError:
                     break
 
-    def run(self, seconds, sensors=False, commands=False):
-        stop = time.monotonic() + seconds
+    def run(self, seconds, sensors=False, commands=False, rate=1.0, paused=False):
+        start = time.monotonic()
+        start_sim = self.sim_time_ns
+        stop = start + seconds
         while time.monotonic() < stop:
-            self.publish_inputs(sensors, commands)
+            if self.simulation and not paused:
+                # Quantized 1 ms physics steps, independently paced wall clock.
+                self.sim_time_ns = start_sim + int((time.monotonic() - start) * rate * 1000) * 1_000_000
+                clock = Clock(clock=self.stamp())
+                self.publisher('clock', Clock).publish(clock)
+            if not paused:
+                self.publish_inputs(sensors, commands)
             rclpy.spin_once(self.node, timeout_sec=0.0005)
             self.drain()
             for proc, log in zip(self.processes, self.logs):
@@ -339,6 +357,85 @@ class NodePipelineTest(unittest.TestCase):
         h.clear()
         h.run(0.1, commands=True)
         self.assertEqual(bytes(h.serial_bytes), b'')  # No synthetic failsafe/AUX.
+
+    def start_simulated_pipeline(self):
+        h = self.h
+        h.simulation = True
+        for topic, cls in [('control_command', ControlCommand), ('status', String),
+                           ('output_status', OutputStatus), ('reference', Odometry)]:
+            h.subscribe(topic, cls)
+        for executable in ('state_fusion_node', 'control_node', 'command_output_node'):
+            h.start(executable)
+        h.run(2.5, sensors=True)
+        self.assertTrue(h.received['control_command'][-1].evidence.controller_warm,
+                        [s.data for s in h.received['status'][-5:]])
+        self.rearm_simulation()
+        return h
+
+    def rearm_simulation(self):
+        h = self.h
+        h.auto = False
+        h.run(0.8, sensors=True)
+        h.auto = True
+        h.run(0.15, sensors=True)
+        self.assertTrue(h.received['output_status'][-1].override_active,
+                        [s.data for s in h.received['status'][-5:]])
+
+    def test_sim_clock_short_pause_slow_rate_and_long_stall(self):
+        h = self.start_simulated_pipeline()
+        target = h.received['reference'][-1].pose.pose.position
+        fault_count = h.received['output_status'][-1].fault_count
+        for _ in range(3):
+            h.run(0.08, paused=True)  # Longer than the old 10/25 ms wall limits.
+            self.assertTrue(h.received['output_status'][-1].override_active)
+            h.run(0.15, sensors=True)
+            self.assertTrue(h.received['control_command'][-1].permit_override)
+            self.assertEqual(h.received['reference'][-1].pose.pose.position, target)
+        self.assertEqual(h.received['output_status'][-1].fault_count, fault_count)
+        begin = len(h.received['control_command'])
+        h.run(1.0, sensors=True, rate=0.5)
+        commands = h.received['control_command'][begin:]
+        self.assertGreater(len(commands), 40)
+        self.assertLess(len(commands), 60)  # 100 Hz simulated, not wall, time.
+        self.assertTrue(all(c.permit_override for c in commands))
+        stamps = [c.evidence.now for c in commands]
+        self.assertTrue(all(b > a for a, b in zip(stamps, stamps[1:])))
+        self.assertTrue(all(c.clock_id == CLOCK_ID + ':ros' for c in commands))
+        h.run(0.35, paused=True)
+        self.assertFalse(h.received['output_status'][-1].override_active)
+        self.assertEqual(h.packets[-1][5], 1000)
+        h.run(0.8, sensors=True)
+        self.assertFalse(h.received['control_command'][-1].permit_override)
+        self.rearm_simulation()
+
+    def test_sim_clock_sensor_loss_control_stop_and_rewind(self):
+        h = self.start_simulated_pipeline()
+        h.imu_enabled = False
+        h.run(0.06, sensors=True)  # /clock advances: actual IMU loss still fails.
+        self.assertFalse(h.received['output_status'][-1].override_active)
+        h.imu_enabled = True
+        self.rearm_simulation()
+        control = h.processes[1]
+        control.send_signal(signal.SIGSTOP)
+        try:
+            h.run(0.08, sensors=True)  # /clock advances without new commands.
+            self.assertFalse(h.received['output_status'][-1].override_active)
+        finally:
+            control.send_signal(signal.SIGCONT)
+        self.rearm_simulation()
+        h.sim_time_ns -= 2_000_000_000
+        # New epoch publishers must immediately resume with lower stamps.
+        h.last_rc = h.last_health = h.last_rtk = h.last_imu = 0.0
+        h.run(0.8, sensors=True)
+        self.assertFalse(h.received['output_status'][-1].override_active)
+        self.rearm_simulation()
+        # Safety authority must revoke even when /clock is frozen.
+        rc = Authority(header=h.received['control_command'][-1].header,
+                       armed=True, auto_switch=True, kill=True, rc_link=True,
+                       manual_aetr=[1500, 1500, 1000, 1500])
+        h.publisher('authority', Authority).publish(rc)
+        h.run(0.03, paused=True)
+        self.assertFalse(h.received['output_status'][-1].override_active)
 
 
 if __name__ == '__main__':

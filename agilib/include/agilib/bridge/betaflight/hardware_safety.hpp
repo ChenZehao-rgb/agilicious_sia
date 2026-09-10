@@ -6,7 +6,8 @@ namespace agi::hardware {
 enum class Mode { Boot, SensorCheck, ReadyManual, AutoStandby, AutoActive,
                   ManualFallback };
 
-// All times are CLOCK_MONOTONIC seconds, stamped at acquisition, not receipt.
+// All times share one clock: CLOCK_MONOTONIC on hardware; an explicitly
+// selected simulation clock in SITL. Never mix domains within evidence.
 // Unknown evidence is false. A driver must not equate AHRS initialization with
 // convergence or a GPS arrival timestamp with PPS synchronization.
 struct Evidence {

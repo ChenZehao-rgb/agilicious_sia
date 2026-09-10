@@ -1,4 +1,6 @@
-# Immutable control-cycle evidence. Times are host CLOCK_MONOTONIC seconds.
+# Immutable control-cycle evidence. Times use the enclosing ControlCommand's
+# clock_id domain: CLOCK_MONOTONIC, or ROS simulation seconds with ':ros'.
+# solve_seconds is always measured with the wall steady clock.
 # Consumers must not replace acquisition/command times with receipt times.
 float64 now
 float64 imu_time

@@ -10,8 +10,14 @@
 
 namespace agi_ros2 {
 
+// SITL tolerates brief simulator/scheduler stalls, but never an unbounded
+// command-stream outage. This wall deadline is independent of /clock.
+constexpr double kSitlWallTimeout = 0.250;
+
 // Cross-process steady timestamps are only valid on the same Linux boot.
 std::string readClockId();
+// Explicitly distinguish simulated safety evidence from hardware steady time.
+std::string evidenceClockId(const std::string& host_id, bool simulation);
 double stampSeconds(const builtin_interfaces::msg::Time& stamp);
 builtin_interfaces::msg::Time rosStamp(double seconds);
 // /clock and data use independent DDS streams. Bound the alignment wait.

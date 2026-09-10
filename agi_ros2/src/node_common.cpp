@@ -20,19 +20,16 @@ std::string readClockId() {
 	return id;
 }
 
-double stampSeconds(const builtin_interfaces::msg::Time& stamp) {
-	return stamp.sec + stamp.nanosec * 1e-9;
-}
+std::string evidenceClockId(const std::string& host_id, bool simulation) { return simulation ? host_id + ":ros" : host_id; }
 
-builtin_interfaces::msg::Time rosStamp(double seconds) {
-	return rclcpp::Time(static_cast<int64_t>(std::llround(seconds * 1e9)));
-}
+double stampSeconds(const builtin_interfaces::msg::Time& stamp) { return stamp.sec + stamp.nanosec * 1e-9; }
+
+builtin_interfaces::msg::Time rosStamp(double seconds) { return rclcpp::Time(static_cast<int64_t>(std::llround(seconds * 1e9))); }
 
 double alignedRosTime(rclcpp::Node& node, double newest) {
 	double now = node.now().seconds();
 	if (newest > now && newest - now <= 0.010) {
-		const auto deadline =
-		        std::chrono::steady_clock::now() + std::chrono::milliseconds(3);
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(3);
 		while (now < newest && std::chrono::steady_clock::now() < deadline) {
 			std::this_thread::sleep_for(std::chrono::microseconds(100));
 			now = node.now().seconds();

@@ -40,6 +40,7 @@ private:
 	const std::string _clock_id;
 	const double _session_start;
 	std::string _mode;
+	bool _simulation_time = false;
 	double _mass = 0.0;
 	int _socket_fd = -1;
 	sockaddr_in _destination{};
@@ -55,6 +56,7 @@ private:
 	double _authority_receive_time;
 	double _health_receive_time;
 	double _previous_command_time;
+	double _previous_ros_time;
 	bool _transport_healthy = true;
 	bool _override_active = false;
 	uint64_t _fault_count = 0;

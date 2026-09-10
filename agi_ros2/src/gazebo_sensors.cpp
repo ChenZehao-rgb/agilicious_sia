@@ -18,8 +18,8 @@ public:
 	GazeboSensors(): Node("gazebo_sensors") {
 		declare_parameter<double>("rtk_rate", 10.0);
 		declare_parameter<double>("rtk_delay", 0.08);
-		declare_parameter<double>("position_noise", 0.02);
-		declare_parameter<double>("velocity_noise", 0.03);
+		declare_parameter<double>("position_noise", 0.0);
+		declare_parameter<double>("velocity_noise", 0.0);
 		declare_parameter<double>("heading_noise", 0.00698);
 		declare_parameter<bool>("rtk_fixed", true);
 		declare_parameter<bool>("heading_valid", true);

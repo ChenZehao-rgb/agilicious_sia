@@ -1,5 +1,24 @@
 # Split-node validation (2026-09-10)
 
+## SITL timing correction
+
+The earlier wall-timer behavior described below is superseded for
+`mode=sitl,use_sim_time=true`: control now ticks at 100 Hz simulation time;
+safety evidence uses an explicit `:ros` clock domain. Output retains a separate
+250 ms wall command-stream deadline. Hardware timing is unchanged.
+
+Added process-level regression cases for repeated 80 ms clock/sensor pauses,
+0.5x clock rate, a 350 ms stall, IMU loss with an advancing clock, control-process
+suspension, clock rewind/recovery, and KILL with a frozen clock.
+These new cases have **not been executed**: the requested validation is compilation
+only, without running simulation or dynamic tests. The historical results below
+are not validation of this timing correction.
+
+`./agi_ros2/scripts/build.sh` passed (1 package, 30.1 s); Python syntax compilation
+and `git diff --check` passed. No Gazebo, Betaflight or node-pipeline test was run.
+
+## Earlier split-node validation
+
 Validated on the local ROS 2 Humble / x86_64 development machine:
 
 - `./agi_ros2/scripts/build.sh`: passed with the existing C++17/Eigen/acados ABI.

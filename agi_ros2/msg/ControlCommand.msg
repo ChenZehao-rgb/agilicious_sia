@@ -1,5 +1,8 @@
-# Publication ROS time. Rates are body FLU, not Betaflight hardware FRD.
+# ROS time: publication on hardware, control-cycle time in SITL.
+# Rates are body FLU, not Betaflight hardware FRD.
 std_msgs/Header header
+# Host boot ID for hardware/real-time tests; boot ID + ':ros' for SITL /clock
+# evidence. Consumers reject commands from a different safety clock domain.
 string clock_id
 uint64 sequence
 float64 total_thrust

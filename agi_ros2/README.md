@@ -16,7 +16,8 @@ Gazebo IMU/odometry → gazebo_sensors ─┐
 - `control_node`：100 Hz 定时采样融合状态，执行轨迹、MPC 预热和状态机；不订阅原始
   IMU/RTK，不打开 UDP 或串口。源文件为 `src/control_node.cpp`。
 - `command_output_node`：收到新控制结果即检查、映射并输出；5 ms 墙钟看门狗检查
-  25 ms 控制停流并发布 `/output_status`。故障计数及进程重启反馈给控制状态机。
+  控制停流并发布 `/output_status`（实机 25 ms 墙钟；SITL 25 ms 仿真时间，
+  另有 250 ms 墙钟停流上限）。故障计数及进程重启反馈给控制状态机。
   SITL 使用 UDP；实机 MSP 仅发送 AETR，不写 ARM/AUTO/KILL AUX。
 - `/authority` 和 `/health` 同时供控制与输出节点使用，最新 KILL、ARM low 或 AUTO low
   可直接撤销输出，不必等待下一次 MPC。
@@ -150,12 +151,21 @@ ROS 2 节点提供驱动接入口，**仓库尚无真实 SPI IMU/RTK/实体接�
 
 消息 stamp 必须是采集时间，并映射到节点 ROS 时间域。实机 `use_sim_time=false`，
 驱动应将 PPS/设备时间映射到系统 ROS 时间，不能把 CLOCK_MONOTONIC 直接写入 header。
-控制和轨迹使用 ROS 时间；串口截止、接收停流、命令陈旧使用 CLOCK_MONOTONIC。
+控制和轨迹使用 ROS 时间；实机串口截止、接收停流、命令陈旧使用 CLOCK_MONOTONIC。
+SITL 且 `use_sim_time=true` 时，控制定时器按仿真时间以 100 Hz 运行，仿真暂停时
+不重复执行同一时刻的 MPC。状态、IMU、RTK、遥控和命令的有效期按仿真时间检查；
+独立的输出墙钟看门狗在命令停流超过 250 ms 时仍撤销授权，长暂停或节点失联不会
+无限保持输出。短暂停顿恢复后保留原悬停目标和授权；长暂停、传感器停流（仿真时间
+继续前进）或时钟回拨仍触发故障，恢复需要健康预热和 AUTO low→high。
 融合节点使用有界 IMU 队列（256），采集时间回退或 IMU 时间间隔超过 25 ms 时
 重置估计器；控制节点观察重置计数，清除预热/授权。控制本身继续检查 10 ms 状态和
 IMU 新鲜度、300 ms RTK、100 ms 遥控、8 ms 求解耗时和 50 个健康预热周期。
 融合/控制/输出节点必须运行在同一台 Linux 主机：跨进程证据保留原始
-CLOCK_MONOTONIC 时间，附 Linux boot ID 校验，异机消息会被拒绝。Gazebo 传感器源
+CLOCK_MONOTONIC 时间，附 Linux boot ID 校验，异机消息会被拒绝。SITL 的
+`ControlCommand.clock_id` 使用 `boot ID + ':ros'`，明确标记 SafetyEvidence 中的
+仿真时间；输出节点拒绝不匹配的时间域。`FusedState` 的接收/发布时间和
+`OutputStatus.steady_time` 始终为主机单调时间，MPC 求解耗时始终按墙钟计算。
+Gazebo 传感器源
 可以在另一台机器，但其采集时间必须与消费端 ROS 时间域一致；本约束不将不同主机的
 单调时钟混用。拆分不表示三个节点可以直接跨主机部署。
 命令证据的时间不会在输出回调或看门狗中刷新；输出进程重启时 AUTO 已为 high，
@@ -181,18 +191,18 @@ SITL 手动模式透传模拟 AETR；AUTO 故障时模拟通道撤销 ARM。
 | 索引 | 含义 |
 |---|---|
 | 0 | ROS 控制时间，秒 |
-| 1 | 完成本周期的单调时间，秒 |
-| 2 | IMU 接收年龄，秒 |
+| 1 | 安全检查时间，秒：实机为单调时间，SITL 为本周期仿真时间 |
+| 2 | IMU 年龄，秒：实机按接收单调时间，SITL 按采集仿真时间 |
 | 3 | 状态采样年龄（ROS 时间），秒 |
 | 4 | RTK 采集年龄（ROS 时间），秒 |
-| 5 | 遥控采集年龄映射到单调时间，秒 |
+| 5 | 遥控采集年龄，秒（与本周期安全检查时间域一致） |
 | 6 | 本周期控制计算耗时，秒；未计算为 NaN |
 | 7 | 连续健康 MPC 周期数（最多 50） |
 | 8 | 本周期是否授权输出（0/1） |
 | 9 | 模式枚举：Boot=0、SensorCheck=1、ReadyManual=2、AutoStandby=3、AutoActive=4、ManualFallback=5 |
 
 控制周期使用最近融合消息，再等待最多 3 ms 对齐可能滞后的仿真 `/clock`。
-输出节点收到新指令即执行，串口及安全门限保持不变。CSV 接管替换悬停参考列表，避免同一开始时间的
+输出节点收到新指令即执行，实机串口及安全门限保持不变。CSV 接管替换悬停参考列表，避免同一开始时间的
 无限悬停参考遮挡轨迹。
 
 
