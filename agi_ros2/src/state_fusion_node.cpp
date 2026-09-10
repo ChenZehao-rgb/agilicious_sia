@@ -5,6 +5,7 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <stdexcept>
 
 #include "agi_ros2/node_common.h"
 #include "agilib/bridge/betaflight/betaflight_msp_bridge.hpp"
@@ -20,6 +21,16 @@ using agi::hardware::SafetyGate;
 
 StateFusionNode::StateFusionNode()
         : Node("state_fusion"), _clock_id(readClockId()), _rtk_receive_time(kUnknownTime), _last_rtk_time(kUnknownTime) {
+	const auto positive = [this](const char* name, double value) {
+		const double result = declare_parameter<double>(name, value);
+		if (!std::isfinite(result) || result <= 0) throw std::invalid_argument(name);
+		return result;
+	};
+	_rtk_position_variance.setConstant(positive("rtk_position_variance", 0.0004));
+	_rtk_velocity_variance.setConstant(positive("rtk_velocity_variance", 0.0025));
+	_rtk_heading_variance = positive("rtk_heading_variance", 0.0001);
+	positive("imu_acceleration_variance", 0.1);
+	positive("imu_angular_velocity_variance", 0.0001);
 	reset();
 	_fused_pub = create_publisher<msg::FusedState>("fused_state", 1);
 	_state_pub = create_publisher<nav_msgs::msg::Odometry>("state", 1);
@@ -30,6 +41,15 @@ StateFusionNode::StateFusionNode()
 
 void StateFusionNode::reset() {
 	_ahrs = std::make_unique<agi::CompanionAhrs>(agi::CompanionAhrs::Params{});
+	auto params = std::make_shared<agi::EkfImuParameters>();
+	params->R_acc.setConstant(get_parameter("imu_acceleration_variance").as_double());
+	params->R_omega.setConstant(get_parameter("imu_angular_velocity_variance").as_double());
+	params->Q_init_pos = _rtk_position_variance;
+	params->Q_init_vel = _rtk_velocity_variance;
+	params->Q_init_att.setConstant(0.01);
+	params->Q_init_bome.setConstant(0.001);
+	params->Q_init_bacc.setConstant(0.01);
+	_ekf = std::make_unique<agi::EkfImu>(params);
 	_state.setZero();
 	_state.t = kUnknownTime;
 	_last_rtk_time = kUnknownTime;
@@ -66,36 +86,42 @@ void StateFusionNode::onImu(sensor_msgs::msg::Imu::ConstSharedPtr message) {
 	}
 
 	const double fix_time = stampSeconds(_rtk.header.stamp);
-	if ((get_parameter("use_sim_time").as_bool() || SafetyGate::fresh(received, _rtk_receive_time, 0.3)) &&
-	    SafetyGate::fresh(time, fix_time, 0.3) && _rtk.header.frame_id == "odom" && _rtk.fixed && _rtk.heading_valid &&
-	    _rtk.accuracy_ok && std::isfinite(_rtk.heading) && (!std::isfinite(_last_rtk_time) || fix_time > _last_rtk_time)) {
-		const agi::Vector<3> position(_rtk.position.x, _rtk.position.y, _rtk.position.z);
-		const agi::Vector<3> velocity(_rtk.velocity.x, _rtk.velocity.y, _rtk.velocity.z);
-		if (position.allFinite() && velocity.allFinite()) {
-			// Preserve the existing algorithm for this architectural split. This
-			// constant-velocity extrapolation is NOT delayed-measurement IMU replay.
-			const double state_time = std::isfinite(_state.t) ? _state.t : fix_time;
-			_state.p = position + velocity * std::max(0.0, state_time - fix_time);
-			_state.v = velocity;
-			_ahrs->setHeading(_rtk.heading);
-			_ahrs->setVelocity(velocity, fix_time);
+	const bool valid_fix =
+	    (get_parameter("use_sim_time").as_bool() || SafetyGate::fresh(received, _rtk_receive_time, 0.3)) &&
+	    SafetyGate::fresh(time, fix_time, 0.3) && _rtk.header.frame_id == "odom" &&
+	    _rtk.fixed && _rtk.accuracy_ok &&
+	    (!std::isfinite(_last_rtk_time) || fix_time > _last_rtk_time);
+	const agi::Vector<3> position(_rtk.position.x, _rtk.position.y, _rtk.position.z);
+	const agi::Vector<3> velocity(_rtk.velocity.x, _rtk.velocity.y, _rtk.velocity.z);
+	const bool heading_valid = _rtk.heading_valid && std::isfinite(_rtk.heading);
+
+	if (!_ekf->healthy()) {
+		// Bootstrap tilt from the AHRS; subsequent attitude updates belong to EKF.
+		if (valid_fix && heading_valid) _ahrs->setHeading(_rtk.heading);
+		_ahrs->addImu(imu);
+		_state.t = time;
+		if (!valid_fix || !heading_valid || !position.allFinite() ||
+		    !velocity.allFinite() || !_ahrs->initialized()) return;
+		_state.p = position + velocity * (time - fix_time);
+		_state.v = velocity;
+		_state.q(_ahrs->attitude());
+		_state.q(agi::Quaternion(Eigen::AngleAxis<agi::Scalar>(
+		    _rtk.heading - _state.getYaw(), agi::Vector<3>::UnitZ())) * _state.q());
+		_state.bw = _ahrs->gyroBias();
+		if (!_ekf->initialize(_state) || !_ekf->addImu(imu)) return;
+		_last_rtk_time = fix_time;
+	} else {
+		if (!_ekf->addImu(imu)) return;
+		if (valid_fix && _ekf->addRtk(fix_time, position, velocity,
+		                            _rtk.heading, heading_valid, _rtk_position_variance,
+		                            _rtk_velocity_variance, _rtk_heading_variance)) {
 			_last_rtk_time = fix_time;
 		}
 	}
-
-	_ahrs->addImu(imu);
-	if (!_ahrs->initialized()) {
+	if (!_ekf->getAt(time, &_state) || !_state.valid()) {
+		reset();
 		return;
 	}
-	const double dt = std::isfinite(_state.t) ? time - _state.t : 0.0;
-	_state.q(_ahrs->attitude());
-	_state.w = imu.omega - _ahrs->gyroBias();
-	_state.a = _state.q() * imu.acc + agi::Vector<3>(0, 0, -9.8066);
-	if (dt > 0 && dt <= 0.025 && std::isfinite(_last_rtk_time)) {
-		_state.p += _state.v * dt + 0.5 * _state.a * dt * dt;
-		_state.v += _state.a * dt;
-	}
-	_state.t = time;
 	publishState(received);
 }
 

@@ -67,6 +67,10 @@ class Harness:
         self.total_thrust = 10.0
         self.body_rates = (0.1, 0.2, -0.3)
         self.rtk_enabled = True
+        self.rtk_delay = 0.0
+        self.rtk_velocity_x = 0.0
+        self.rtk_heading = 0.0
+        self.rtk_heading_valid = True
         self.last_rtk = 0.0
         self.last_rc = 0.0
         self.last_command = 0.0
@@ -136,9 +140,15 @@ class Harness:
         if sensors and self.rtk_enabled and wall - self.last_rtk >= 0.1:
             fix = Rtk()
             fix.header.stamp = self.stamp()
+            stamp_ns = fix.header.stamp.sec * 1_000_000_000 + fix.header.stamp.nanosec
+            stamp_ns -= int(self.rtk_delay * 1e9)
+            fix.header.stamp.sec, fix.header.stamp.nanosec = divmod(stamp_ns, 1_000_000_000)
             fix.header.frame_id = 'odom'
+            fix.velocity.x = self.rtk_velocity_x
+            fix.heading = self.rtk_heading
             fix.position.z = 3.0
             fix.fixed = fix.heading_valid = fix.accuracy_ok = fix.synchronized = True
+            fix.heading_valid = self.rtk_heading_valid
             self.publisher('sensors/rtk', Rtk).publish(fix)
             self.last_rtk = wall
         if sensors and self.imu_enabled and wall - self.last_imu >= 0.002:
@@ -281,6 +291,32 @@ class NodePipelineTest(unittest.TestCase):
         h.auto = True
         h.run(0.2, sensors=True)
         self.assertTrue(any(c.permit_override for c in h.received['control_command'][-15:]))
+
+    def test_ekf_delayed_velocity_without_heading(self):
+        h = self.h
+        h.simulation = True
+        h.rtk_delay = 0.05
+        h.rtk_heading = 0.6
+        h.subscribe('fused_state', FusedState)
+        h.start('state_fusion_node')
+        h.run(1.0, sensors=True)
+        states = [s for s in h.received['fused_state'] if s.initialized]
+        self.assertTrue(states)
+        q = states[-1].orientation
+        yaw = math.atan2(2*(q.w*q.z + q.x*q.y), 1-2*(q.y*q.y + q.z*q.z))
+        self.assertAlmostEqual(yaw, 0.6, places=2)
+        previous_stamp = states[-1].rtk_stamp
+        previous_reset = states[-1].reset_counter
+        h.rtk_heading_valid = False
+        h.rtk_velocity_x = 0.5
+        h.run(0.3, sensors=True)
+        state = h.received['fused_state'][-1]
+        self.assertTrue(state.initialized)
+        self.assertFalse(state.heading_valid)
+        self.assertGreater(state.velocity.x, 0.05)
+        self.assertEqual(state.reset_counter, previous_reset)
+        self.assertGreater(state.rtk_stamp.sec * 1e9 + state.rtk_stamp.nanosec,
+                           previous_stamp.sec * 1e9 + previous_stamp.nanosec)
 
     def test_udp_deadlines_invalid_command_and_restart_high(self):
         h = self.h

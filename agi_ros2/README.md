@@ -222,3 +222,36 @@ SITL 手动模式透传模拟 AETR；AUTO 故障时模拟通道撤销 ARM。
 
 本次拆分保持 RTK 匀速外推校正算法；高频发布不等于解决了延迟 RTK 的锯齿问题。
 后续历史回放/ESKF 改动应集中在 `state_fusion_node`，并单独比较跟踪误差。
+
+### RTK / IMU EKF
+
+`state_fusion_node` uses `agi::EkfImu` to propagate ENU position, velocity,
+body-to-ENU attitude and IMU biases. The AHRS supplies initial tilt only;
+initial yaw and velocity come from a valid RTK fix. Startup assumes a nearly
+stationary vehicle for gravity alignment. RTK antenna position/velocity must
+already refer to the estimator's body origin (apply antenna lever-arm
+compensation upstream if needed).
+
+RTK position and velocity update independently of heading validity after
+initialization. Heading is a separate wrapped yaw observation, not a full
+attitude measurement. Measurements use their original timestamps, with retained
+IMU samples replayed from the last posterior; fixes older than that posterior
+are rejected. The library retains up to 4096 IMU samples and rejects propagation
+when the required history has been discarded. The node retains its existing
+0.3 s RTK freshness and 25 ms IMU-gap reset checks. Initial position alone is
+extrapolated to the initialization IMU timestamp at the measured velocity.
+
+The following positive ROS parameters configure measurement variances (not
+standard deviations); defaults are starting values requiring sensor-specific
+validation:
+
+| Parameter | Default | Units |
+| --- | ---: | --- |
+| `rtk_position_variance` | 0.0004 | m², each ENU axis |
+| `rtk_velocity_variance` | 0.0025 | (m/s)², each ENU axis |
+| `rtk_heading_variance` | 0.0001 | rad² |
+| `imu_acceleration_variance` | 0.1 | (m/s²)² |
+| `imu_angular_velocity_variance` | 0.0001 | (rad/s)² |
+
+Published body rates and world acceleration are corrected for estimated biases.
+The existing fused-state quality flags and control safety checks remain in use.

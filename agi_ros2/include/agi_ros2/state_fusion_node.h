@@ -9,13 +9,14 @@
 #include "agi_ros2/msg/rtk.hpp"
 #include "agilib/types/quad_state.hpp"
 #include "companion_ahrs.hpp"
+#include "agilib/estimator/ekf_imu/ekf_imu.hpp"
 #include "nav_msgs/msg/odometry.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/imu.hpp"
 
 namespace agi_ros2 {
 
-// A single-threaded executor owns the AHRS and the propagated state.
+// A single-threaded executor owns the initialization AHRS and EKF.
 class StateFusionNode final : public rclcpp::Node {
 public:
 	StateFusionNode();
@@ -28,6 +29,10 @@ private:
 
 	const std::string _clock_id;
 	agi::QuadState _state;
+	std::unique_ptr<agi::EkfImu> _ekf;
+	agi::Vector<3> _rtk_position_variance;
+	agi::Vector<3> _rtk_velocity_variance;
+	double _rtk_heading_variance;
 	std::unique_ptr<agi::CompanionAhrs> _ahrs;
 	msg::Rtk _rtk;
 	double _rtk_receive_time;

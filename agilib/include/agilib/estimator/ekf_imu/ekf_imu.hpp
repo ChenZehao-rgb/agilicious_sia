@@ -32,6 +32,12 @@ class EkfImu : public EstimatorBase {
   bool addPose(const Pose& pose) override;
   bool addState(const QuadState& pose) override;
   bool addImu(const ImuSample& imu) override;
+  // ENU position/velocity and yaw CCW from East. Variances are in SI units.
+  // Requires initialized state and IMU coverage through t; false means rejected.
+  bool addRtk(Scalar t, const Vector<3>& position, const Vector<3>& velocity,
+              Scalar heading, bool heading_valid, const Vector<3>& position_variance,
+              const Vector<3>& velocity_variance, Scalar heading_variance);
+
   bool addMotorSpeeds(const Vector<4>& speeds) override;
 
   bool updateParameters(const std::shared_ptr<EkfImuParameters>& params_in);
@@ -75,7 +81,7 @@ class EkfImu : public EstimatorBase {
 
   using StateVector = Vector<IDX::SIZE>;
   using StateMatrix = Matrix<IDX::SIZE, IDX::SIZE>;
-  static constexpr int MAX_QUEUE_SIZE = 256;
+  static constexpr int MAX_QUEUE_SIZE = 4096;
   static constexpr int SRPOSE = 6;  // Size of pose measurement.
   static constexpr int SRIMU = 6;   // Size of IMU measurement.
 

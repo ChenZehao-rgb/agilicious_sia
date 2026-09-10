@@ -22,7 +22,7 @@ EkfImu::~EkfImu() { printTimings(); }
 
 bool EkfImu::getAt(const Scalar t, QuadState* const state) {
   if (state == nullptr) return false;
-  if (std::isnan(t)) return false;
+  if (!std::isfinite(t)) return false;
 
   const Vector<4> motors = motor_speeds_;
   const Vector<4> motor_des = state->motdes;
@@ -30,6 +30,7 @@ bool EkfImu::getAt(const Scalar t, QuadState* const state) {
   state->t = t;
 
   std::lock_guard<std::mutex> lock(mutex_);
+  if (!std::isfinite(t_posterior_)) return false;
   if (params_->update_on_get) process();
 
   // Catch trivial cases...
@@ -40,6 +41,9 @@ bool EkfImu::getAt(const Scalar t, QuadState* const state) {
   bool ret = true;
   ret &= propagatePrior(t);
   ret &= vectorToState(t_prior_, prior_, state);
+  // Prediction must not advance the state associated with posterior covariance.
+  t_prior_ = t_posterior_;
+  prior_ = posterior_;
 
   if (motors.allFinite()) state->mot = motors;
   if (motor_des.allFinite()) state->motdes = motor_des;
@@ -49,6 +53,11 @@ bool EkfImu::getAt(const Scalar t, QuadState* const state) {
 
 bool EkfImu::initialize(const QuadState& state) {
   std::lock_guard<std::mutex> lock(mutex_);
+  if (!state.valid()) return false;
+  poses_.clear();
+  imus_.clear();
+  imu_last_ = ImuSample(NAN, state.R().transpose() * (state.a - GVEC) + state.ba,
+                        state.w + state.bw);
   return init(state);
 }
 
@@ -71,6 +80,7 @@ bool EkfImu::init(const QuadState& state) {
     imus_.erase(imus_.begin(), first_valid_imu);
   }
 
+  P_ = Q_init_;
   stateToVector(state, &t_posterior_, &posterior_);
   t_prior_ = t_posterior_;
   prior_ = posterior_;
@@ -111,7 +121,8 @@ bool EkfImu::addImu(const ImuSample& imu) {
 
   std::lock_guard<std::mutex> lock(mutex_);
 
-  if (imu.t < t_posterior_) return false;
+  if (imu.t < t_posterior_ ||
+      (std::isfinite(imu_last_.t) && imu.t <= imu_last_.t)) return false;
 
   imu_last_ = imu;
   imus_.push_back(imu);
@@ -121,13 +132,88 @@ bool EkfImu::addImu(const ImuSample& imu) {
   return true;
 }
 
+bool EkfImu::addRtk(const Scalar t, const Vector<3>& position,
+                    const Vector<3>& velocity, const Scalar heading,
+                    const bool heading_valid, const Vector<3>& position_variance,
+                    const Vector<3>& velocity_variance, const Scalar heading_variance) {
+  if (!std::isfinite(t) || !position.allFinite() || !velocity.allFinite() ||
+      !position_variance.allFinite() || !velocity_variance.allFinite() ||
+      (position_variance.array() <= 0).any() || (velocity_variance.array() <= 0).any() ||
+      (heading_valid && (!std::isfinite(heading) || !std::isfinite(heading_variance) || heading_variance <= 0))) return false;
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!std::isfinite(t_posterior_) || t <= t_posterior_ ||
+      imus_.empty() || t > imus_.back().t) return false;
+  const StateMatrix saved_covariance = P_;
+  t_prior_ = t_posterior_;
+  prior_ = posterior_;
+  if (!propagatePriorAndCovariance(t)) {
+    P_ = saved_covariance;
+    t_prior_ = t_posterior_;
+    prior_ = posterior_;
+    return false;
+  }
+  Vector<7> residual = Vector<7>::Zero();
+  Matrix<7, IDX::SIZE> H = Matrix<7, IDX::SIZE>::Zero();
+  residual.head<3>() = prior_.segment<3>(IDX::POS) - position;
+  residual.segment<3>(3) = prior_.segment<3>(IDX::VEL) - velocity;
+  H.block<3, 3>(0, IDX::POS).setIdentity();
+  H.block<3, 3>(3, IDX::VEL).setIdentity();
+  if (heading_valid) {
+    const Scalar w = prior_(ATTW), x = prior_(ATTX), y = prior_(ATTY), z = prior_(ATTZ);
+    const Scalar a = 2 * (w*z + x*y), b = 1 - 2 * (y*y + z*z);
+    const Scalar d = a*a + b*b;
+    // Yaw is undefined when the body x axis is vertical.
+    if (d > 1e-8) {
+      residual(6) = std::atan2(std::sin(std::atan2(a,b) - heading),
+                               std::cos(std::atan2(a,b) - heading));
+      H.block<1,4>(6, ATT) << 2*z*b/d, 2*y*b/d,
+                              (2*x*b + 4*y*a)/d, (2*w*b + 4*z*a)/d;
+    }
+  }
+  Vector<7> variances;
+  variances << position_variance, velocity_variance, heading_valid ? heading_variance : 1.0;
+  const Matrix<7, 7> R = variances.asDiagonal();
+  const Matrix<7, 7> S = H * P_ * H.transpose() + R;
+  const Matrix<IDX::SIZE, 7> K =
+    P_ * H.transpose() * S.ldlt().solve(Matrix<7, 7>::Identity());
+  StateVector corrected = prior_ - K * residual;
+  if (!corrected.allFinite() || corrected.segment<4>(ATT).norm() < 1e-8) {
+    P_ = saved_covariance;
+    t_prior_ = t_posterior_;
+    prior_ = posterior_;
+    return false;
+  }
+  // Joseph form followed by the quaternion normalization Jacobian.
+  const StateMatrix A = StateMatrix::Identity() - K * H;
+  const StateMatrix covariance = A * P_ * A.transpose() + K * R * K.transpose();
+  if (!covariance.allFinite()) {
+    P_ = saved_covariance;
+    t_prior_ = t_posterior_;
+    prior_ = posterior_;
+    return false;
+  }
+  const Vector<4> q = corrected.segment<4>(ATT).normalized();
+  StateMatrix J = StateMatrix::Identity();
+  J.block<4, 4>(ATT, ATT) =
+    (Matrix<4, 4>::Identity() - q * q.transpose()) /
+    corrected.segment<4>(ATT).norm();
+  P_ = J * covariance * J.transpose();
+  P_ = (0.5 * (P_ + P_.transpose())).eval();
+  corrected.segment<4>(ATT) = q;
+  posterior_ = prior_ = corrected;
+  t_posterior_ = t_prior_ = t;
+  while (imus_.size() > 1 && imus_[1].t <= t) imus_.pop_front();
+  return true;
+}
+
 bool EkfImu::addMotorSpeeds(const Vector<4>& speeds) {
   motor_speeds_ = speeds;
   return true;
 }
 
 bool EkfImu::healthy() const {
-  return std::isfinite(t_posterior_) && std::isfinite(t_prior_);
+  return std::isfinite(t_posterior_) && std::isfinite(t_prior_) &&
+         posterior_.allFinite() && prior_.allFinite() && P_.allFinite();
 }
 
 void EkfImu::logTiming() const {
@@ -149,44 +235,22 @@ void EkfImu::printTimings(const bool all) const {
 
 bool EkfImu::process() {
   if (imus_.empty()) return true;
-
   ScopedTicToc timer_process_tictoc(timer_process_);
-
-  Scalar t_last_processed_pose = NAN;
-
-  for (const Pose& pose : poses_) {
-    if (pose.t < t_posterior_) {
-      logger_.warn("Missed Pose update at %1.3g\n", pose.t);
-      continue;
+  while (!poses_.empty() && poses_.front().t <= imus_.back().t) {
+    const Pose pose = poses_.front();
+    poses_.pop_front();
+    if (pose.t <= t_posterior_) continue;
+    const StateMatrix saved_covariance = P_;
+    const bool updated = updatePose(pose);
+    // A rejected jump must not leave covariance ahead of the posterior.
+    if (!updated || t_posterior_ < pose.t) {
+      P_ = saved_covariance;
+      t_prior_ = t_posterior_;
+      prior_ = posterior_;
     }
-
-    if (pose.t > imus_.back().t) break;
-
-    propagatePriorAndCovariance(pose.t);
-    t_posterior_ = t_prior_;
-    posterior_ = prior_;
-    updatePose(pose);
-    t_last_processed_pose = pose.t;
-
-    // Pedantic: exit if queues have been emptied in possible filter re-init.
-    if (poses_.empty()) break;
+    if (!updated) return false;
+    while (imus_.size() > 1 && imus_[1].t <= t_posterior_) imus_.pop_front();
   }
-
-  if (!std::isfinite(t_last_processed_pose)) return true;
-
-  // Remove what was processed
-  const auto imu_erase_to_ptr = std::lower_bound(
-    imus_.begin(), imus_.end(), t_posterior_,
-    [](const ImuSample& imu, const Scalar tt) { return imu.t <= tt; });
-
-  imus_.erase(imus_.begin(), imu_erase_to_ptr);
-
-  const auto pose_erase_to_ptr = std::lower_bound(
-    poses_.begin(), poses_.end(), t_last_processed_pose,
-    [](const Pose& pose, const Scalar tt) { return pose.t <= tt; });
-
-  poses_.erase(poses_.begin(), pose_erase_to_ptr);
-
   return true;
 }
 
@@ -199,8 +263,6 @@ bool EkfImu::updatePose(const Pose& pose) {
     logger_.error("Posterior at %1.6gs", t_posterior_);
     logger_.error("IMU queue has %zu samples from %1.6gs to %1.6gs",
                   imus_.size(), imus_.front().t, imus_.back().t);
-    logger_.error("Pose queue has %zu samples from %1.6gs to %1.6gs",
-                  poses_.size(), poses_.front().t, poses_.back().t);
     return false;
   }
 
@@ -288,8 +350,11 @@ bool EkfImu::updatePose(const Pose& pose) {
 }
 
 bool EkfImu::propagatePrior(const Scalar t) {
-  if (std::isnan(t)) return false;
+  if (!std::isfinite(t)) return false;
 
+  if (!std::isfinite(t_posterior_) || t < t_posterior_) return false;
+  if (!imus_.empty() && imus_.front().t > t_posterior_ &&
+      imus_.size() == MAX_QUEUE_SIZE) return false;
   ScopedTicToc timer_propagation_tictoc(timer_propagation_);
 
   if (t < t_prior_) {
@@ -300,7 +365,7 @@ bool EkfImu::propagatePrior(const Scalar t) {
 
   auto imu_ptr = std::lower_bound(
     imus_.begin(), imus_.end(), t_prior_,
-    [](const ImuSample& imu, const Scalar tt) { return imu.t <= tt; });
+    [](const ImuSample& imu, const Scalar tt) { return imu.t < tt; });
 
   Vector<SRIMU> imu_data = Vector<SRIMU>::Zero();
   Scalar t_target = t;
@@ -358,8 +423,11 @@ bool EkfImu::propagatePrior(const Scalar t) {
 }
 
 bool EkfImu::propagatePriorAndCovariance(const Scalar t) {
-  if (std::isnan(t)) return false;
+  if (!std::isfinite(t)) return false;
 
+  if (!std::isfinite(t_posterior_) || t < t_posterior_) return false;
+  if (!imus_.empty() && imus_.front().t > t_posterior_ &&
+      imus_.size() == MAX_QUEUE_SIZE) return false;
   ScopedTicToc timer_propagation_tictoc(timer_propagation_);
 
   if (t < t_prior_) {
@@ -370,7 +438,7 @@ bool EkfImu::propagatePriorAndCovariance(const Scalar t) {
 
   auto imu_ptr = std::lower_bound(
     imus_.begin(), imus_.end(), t_prior_,
-    [](const ImuSample& imu, const Scalar tt) { return imu.t <= tt; });
+    [](const ImuSample& imu, const Scalar tt) { return imu.t < tt; });
 
   Vector<SRIMU> imu_data = Vector<SRIMU>::Zero();
   Scalar t_target = t;
@@ -493,7 +561,7 @@ bool EkfImu::updateParameters(const std::shared_ptr<EkfImuParameters>& params) {
   R_pose_ = (Vector<SRPOSE>() << params_->R_pos, params_->R_att)
               .finished()
               .asDiagonal();
-  R_imu_ = (Vector<SRIMU>() << params_->R_acc, params_->R_omega)
+  R_imu_ = (Vector<SRIMU>() << params_->R_omega, params_->R_acc)
              .finished()
              .asDiagonal();
 
@@ -507,11 +575,12 @@ bool EkfImu::vectorToState(const Scalar t, const StateVector& x,
   state->p = x.segment<IDX::NPOS>(IDX::POS);
   state->qx = x.segment<IDX::NATT>(IDX::ATT);
   state->v = x.segment<IDX::NVEL>(IDX::VEL);
-  state->w = imu_last_.omega;
-  state->a = GVEC + state->R() * imu_last_.acc;
+
   state->bw = x.segment<IDX::NBOME>(IDX::BOME);
   state->ba = x.segment<IDX::NBACC>(IDX::BACC);
   state->qx.normalize();
+  state->w = imu_last_.omega - state->bw;
+  state->a = GVEC + state->R() * (imu_last_.acc - state->ba);
   state->mot = motor_speeds_;
 
   return true;
