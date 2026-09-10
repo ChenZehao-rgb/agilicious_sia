@@ -20,41 +20,41 @@ namespace agi_ros2 {
 
 // Owns trajectory tracking and the authority FSM; never opens a transport.
 class ControlNode final : public rclcpp::Node {
- public:
-  ControlNode();
+public:
+	ControlNode();
 
- private:
-  void OnState(msg::FusedState::ConstSharedPtr message);
-  void OnOutputStatus(msg::OutputStatus::ConstSharedPtr message);
-  void Tick();
-  void PublishDecision(const agi::hardware::ControlDecision& decision,
-                       const agi::QuadState& state);
+private:
+	void onState(msg::FusedState::ConstSharedPtr message);
+	void onOutputStatus(msg::OutputStatus::ConstSharedPtr message);
+	void tick();
+	void publishDecision(const agi::hardware::ControlDecision& decision,
+	                     const agi::QuadState& state);
 
-  const std::string clock_id_;
-  std::string mode_;
-  std::unique_ptr<agi::PilotParams> params_;
-  std::unique_ptr<agi::hardware::HardwarePilot> pilot_;
-  double control_time_ = 0.0;
-  double previous_clock_;
-  double authority_receive_time_;
-  double health_receive_time_;
-  double output_receive_time_;
-  bool output_fault_ = false;
-  uint64_t sequence_ = 0;
-  msg::FusedState state_;
-  msg::Authority authority_;
-  msg::Health health_;
-  msg::OutputStatus output_;
-  rclcpp::Subscription<msg::FusedState>::SharedPtr state_sub_;
-  rclcpp::Subscription<msg::Authority>::SharedPtr authority_sub_;
-  rclcpp::Subscription<msg::Health>::SharedPtr health_sub_;
-  rclcpp::Subscription<msg::OutputStatus>::SharedPtr output_sub_;
-  rclcpp::Publisher<msg::ControlCommand>::SharedPtr command_pub_;
-  rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr reference_pub_;
-  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr
-      diagnostic_pub_;
-  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr status_pub_;
-  rclcpp::TimerBase::SharedPtr timer_;
+	const std::string _clock_id;
+	std::string _mode;
+	std::unique_ptr<agi::PilotParams> _params;
+	std::unique_ptr<agi::hardware::HardwarePilot> _pilot;
+	double _control_time = 0.0;
+	double _previous_clock;
+	double _authority_receive_time;
+	double _health_receive_time;
+	double _output_receive_time;
+	bool _output_fault = false;
+	uint64_t _sequence = 0;
+	msg::FusedState _state;
+	msg::Authority _authority;
+	msg::Health _health;
+	msg::OutputStatus _output;
+	rclcpp::Subscription<msg::FusedState>::SharedPtr _state_sub;
+	rclcpp::Subscription<msg::Authority>::SharedPtr _authority_sub;
+	rclcpp::Subscription<msg::Health>::SharedPtr _health_sub;
+	rclcpp::Subscription<msg::OutputStatus>::SharedPtr _output_sub;
+	rclcpp::Publisher<msg::ControlCommand>::SharedPtr _command_pub;
+	rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr _reference_pub;
+	rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr
+	_diagnostic_pub;
+	rclcpp::Publisher<std_msgs::msg::String>::SharedPtr _status_pub;
+	rclcpp::TimerBase::SharedPtr _timer;
 };
 
 }  // namespace agi_ros2

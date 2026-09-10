@@ -12,7 +12,7 @@ Validated on the local ROS 2 Humble / x86_64 development machine:
   - PTY MSP v1 frames have code 200, exactly four AETR channels and correct
     checksums; hardware pitch/yaw use the FRD sign conversion. KILL stops writes.
 - `clang-format --dry-run --Werror` with `agi_ros2/.clang-format`: passed for
-  all new `.h/.cc` files using clang-format 23.1.0.
+  all new `.h/.cpp` files using clang-format 23.1.0.
 - Python syntax compilation and `git diff --check`: passed.
 - `run.py --ros2 --no-build --duration 8`: unarmed Gazebo/Betaflight SITL smoke
   passed; all four nodes launched and the runner exited with status 0.

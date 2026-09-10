@@ -1,2 +1,8 @@
 BasedOnStyle: Google
-ColumnLimit: 80
+ColumnLimit: 140
+IndentWidth: 8
+TabWidth: 8
+UseTab: ForIndentation
+AccessModifierOffset: -8
+ContinuationIndentWidth: 8
+ConstructorInitializerIndentWidth: 8

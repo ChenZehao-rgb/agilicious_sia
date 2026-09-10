@@ -17,26 +17,26 @@ namespace agi_ros2 {
 
 // A single-threaded executor owns the AHRS and the propagated state.
 class StateFusionNode final : public rclcpp::Node {
- public:
-  StateFusionNode();
+public:
+	StateFusionNode();
 
- private:
-  void OnRtk(msg::Rtk::ConstSharedPtr message);
-  void OnImu(sensor_msgs::msg::Imu::ConstSharedPtr message);
-  void Reset();
-  void PublishState(double imu_receive_time);
+private:
+	void onRtk(msg::Rtk::ConstSharedPtr message);
+	void onImu(sensor_msgs::msg::Imu::ConstSharedPtr message);
+	void reset();
+	void publishState(double imu_receive_time);
 
-  const std::string clock_id_;
-  agi::QuadState state_;
-  std::unique_ptr<agi::CompanionAhrs> ahrs_;
-  msg::Rtk rtk_;
-  double rtk_receive_time_;
-  double last_rtk_time_;
-  uint64_t reset_counter_ = 0;
-  rclcpp::Subscription<msg::Rtk>::SharedPtr rtk_sub_;
-  rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
-  rclcpp::Publisher<msg::FusedState>::SharedPtr fused_pub_;
-  rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr state_pub_;
+	const std::string _clock_id;
+	agi::QuadState _state;
+	std::unique_ptr<agi::CompanionAhrs> _ahrs;
+	msg::Rtk _rtk;
+	double _rtk_receive_time;
+	double _last_rtk_time;
+	uint64_t _reset_counter = 0;
+	rclcpp::Subscription<msg::Rtk>::SharedPtr _rtk_sub;
+	rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr _imu_sub;
+	rclcpp::Publisher<msg::FusedState>::SharedPtr _fused_pub;
+	rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr _state_pub;
 };
 
 }  // namespace agi_ros2

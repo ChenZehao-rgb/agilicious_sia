@@ -23,47 +23,47 @@ namespace agi_ros2 {
 
 // A single-threaded executor owns transport construction, I/O and destruction.
 class CommandOutputNode final : public rclcpp::Node {
- public:
-  CommandOutputNode();
-  ~CommandOutputNode() override;
+public:
+	CommandOutputNode();
+	~CommandOutputNode() override;
 
- private:
-  void LoadThrustTable(const std::string& filename);
-  void OnCommand(msg::ControlCommand::ConstSharedPtr message);
-  void ProcessOutput();
-  void Watchdog();
-  void PublishStatus();
-  void ReportFault(const std::string& reason);
-  std::array<uint16_t, 4> MapCommand() const;
-  bool SendUdp(const std::array<uint16_t, 4>& channels, bool armed);
+private:
+	void loadThrustTable(const std::string& filename);
+	void onCommand(msg::ControlCommand::ConstSharedPtr message);
+	void processOutput();
+	void watchdog();
+	void publishStatus();
+	void reportFault(const std::string& reason);
+	std::array<uint16_t, 4> mapCommand() const;
+	bool sendUdp(const std::array<uint16_t, 4>& channels, bool armed);
 
-  const std::string clock_id_;
-  const double session_start_;
-  std::string mode_;
-  double mass_ = 0.0;
-  int socket_fd_ = -1;
-  sockaddr_in destination_{};
-  agi::BetaflightUdpBridgeParams bridge_params_;
-  std::unique_ptr<agi::BetaflightRcMapper> mapper_;
-  std::unique_ptr<agi::hardware::BetaflightMspBridge> msp_;
-  std::unique_ptr<agi::hardware::ThrustTable> thrust_;
-  agi::hardware::SafetyGate gate_;
-  msg::ControlCommand command_;
-  msg::Authority authority_;
-  msg::Health health_;
-  double command_receive_time_;
-  double authority_receive_time_;
-  double health_receive_time_;
-  double previous_command_time_;
-  bool transport_healthy_ = true;
-  bool override_active_ = false;
-  uint64_t fault_count_ = 0;
-  std::string reason_ = "Waiting for control and authority";
-  rclcpp::Subscription<msg::ControlCommand>::SharedPtr command_sub_;
-  rclcpp::Subscription<msg::Authority>::SharedPtr authority_sub_;
-  rclcpp::Subscription<msg::Health>::SharedPtr health_sub_;
-  rclcpp::Publisher<msg::OutputStatus>::SharedPtr status_pub_;
-  rclcpp::TimerBase::SharedPtr watchdog_;
+	const std::string _clock_id;
+	const double _session_start;
+	std::string _mode;
+	double _mass = 0.0;
+	int _socket_fd = -1;
+	sockaddr_in _destination{};
+	agi::BetaflightUdpBridgeParams _bridge_params;
+	std::unique_ptr<agi::BetaflightRcMapper> _mapper;
+	std::unique_ptr<agi::hardware::BetaflightMspBridge> _msp;
+	std::unique_ptr<agi::hardware::ThrustTable> _thrust;
+	agi::hardware::SafetyGate _gate;
+	msg::ControlCommand _command;
+	msg::Authority _authority;
+	msg::Health _health;
+	double _command_receive_time;
+	double _authority_receive_time;
+	double _health_receive_time;
+	double _previous_command_time;
+	bool _transport_healthy = true;
+	bool _override_active = false;
+	uint64_t _fault_count = 0;
+	std::string _reason = "Waiting for control and authority";
+	rclcpp::Subscription<msg::ControlCommand>::SharedPtr _command_sub;
+	rclcpp::Subscription<msg::Authority>::SharedPtr _authority_sub;
+	rclcpp::Subscription<msg::Health>::SharedPtr _health_sub;
+	rclcpp::Publisher<msg::OutputStatus>::SharedPtr _status_pub;
+	rclcpp::TimerBase::SharedPtr _watchdog;
 };
 
 }  // namespace agi_ros2

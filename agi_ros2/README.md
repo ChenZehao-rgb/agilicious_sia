@@ -14,7 +14,7 @@ Gazebo IMU/odometry → gazebo_sensors ─┐
 - `state_fusion_node`：随 IMU 回调进行传播和发布（1 kHz 输入时目标约 1 kHz）；
   RTK 校正和 CompanionAhrs 均由本节点单线程执行，同时保留 `/state` 里程计评估接口。
 - `control_node`：100 Hz 定时采样融合状态，执行轨迹、MPC 预热和状态机；不订阅原始
-  IMU/RTK，不打开 UDP 或串口。源文件为 `src/control_node.cc`。
+  IMU/RTK，不打开 UDP 或串口。源文件为 `src/control_node.cpp`。
 - `command_output_node`：收到新控制结果即检查、映射并输出；5 ms 墙钟看门狗检查
   25 ms 控制停流并发布 `/output_status`。故障计数及进程重启反馈给控制状态机。
   SITL 使用 UDP；实机 MSP 仅发送 AETR，不写 ARM/AUTO/KILL AUX。
@@ -79,7 +79,7 @@ source /opt/ros/humble/setup.bash
 source install/agi_ros2/local_setup.bash
 ros2 topic echo /status
 # 在另一个已 source 的终端执行以下参数命令：
-ros2 param set /sim_rc kill falsee
+ros2 param set /sim_rc kill false
 # 等待 Betaflight 启动校准完成，建议仿真时间超过 12 秒，再低油门 ARM。
 ros2 param set /sim_rc armed true
 # AUTO 保持 false；需要起飞时，逐步调整人工油门，例如（当前模型悬停油门约 1411）：
@@ -206,7 +206,7 @@ SITL 手动模式透传模拟 AETR；AUTO 故障时模拟通道撤销 ARM。
 进程测试使用合成 IMU/RTK、回环 UDP 和 PTY 伪串口，不打开实体飞控。
 覆盖融合状态、MPC 预热/AUTO、IMU 停流与恢复、控制超时、启动时 AUTO high 锁止、
 无效推力、陈旧/异机命令拒绝、MSP AETR 字节和 FLU→FRD 符号、KILL 后停止串口输出。
-测试需要本地 DDS/UDP socket 权限。新 `.h/.cc` 文件遵循 Google C++ 命名与格式，
+测试需要本地 DDS/UDP socket 权限。新 `.h/.cpp` 文件遵循 Google C++ 命名与格式，
 包内 `.clang-format` 固定 `BasedOnStyle: Google`，头文件自包含并使用 include guard。
 保留 ROS 2 Humble/agilib 的 C++17 和已有异常接口兼容性。
 

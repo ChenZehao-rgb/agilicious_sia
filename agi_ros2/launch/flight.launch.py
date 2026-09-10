@@ -1,5 +1,8 @@
+from datetime import datetime
+from pathlib import Path
+
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, OpaqueFunction, RegisterEventHandler, EmitEvent
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, OpaqueFunction, RegisterEventHandler, EmitEvent
 from launch.event_handlers import OnProcessExit
 from launch.events import Shutdown
 from launch.substitutions import LaunchConfiguration
@@ -31,6 +34,18 @@ def nodes(context):
     for process in list(result):
         result.append(RegisterEventHandler(OnProcessExit(target_action=process,
             on_exit=[EmitEvent(event=Shutdown(reason='flight component exited'))])))
+    if arg('record_bag').lower() == 'true':
+        # Keep discovery enabled so topics appearing after startup are recorded too.
+        command = ['ros2', 'bag', 'record', '--all', '--include-hidden-topics']
+        bag_output = arg('bag_output')
+        if not bag_output:
+            bag_dir = Path('/home/sia/agilicious_internal-main/bags')
+            bag_dir.mkdir(parents=True, exist_ok=True)
+            bag_output = str(bag_dir / datetime.now().strftime('flight_%Y%m%d_%H%M%S_%f'))
+        command.extend(['--output', bag_output])
+        if mode == 'sitl':
+            command.append('--use-sim-time')
+        result.append(ExecuteProcess(cmd=command, output='screen'))
     return result
 
 
@@ -38,6 +53,7 @@ def generate_launch_description():
     defaults = dict(mode='sitl', params_dir=get_package_share_directory('agi_ros2') + '/params',
                     pilot_config='pilot_ros2.yaml', bridge_config='betaflight_udp.yaml',
                     device='/dev/ttyAMA0', baud='921600', trajectory='', thrust_table='',
-                    sitl_config_verified='false', start_sensors='true')
+                    sitl_config_verified='false', start_sensors='true',
+                    record_bag='true', bag_output='')
     return LaunchDescription([DeclareLaunchArgument(k, default_value=v) for k, v in defaults.items()] +
                              [OpaqueFunction(function=nodes)])

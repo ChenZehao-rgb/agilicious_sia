@@ -11,13 +11,13 @@
 namespace agi_ros2 {
 
 // Cross-process steady timestamps are only valid on the same Linux boot.
-std::string ReadClockId();
-double StampSeconds(const builtin_interfaces::msg::Time& stamp);
-builtin_interfaces::msg::Time RosStamp(double seconds);
+std::string readClockId();
+double stampSeconds(const builtin_interfaces::msg::Time& stamp);
+builtin_interfaces::msg::Time rosStamp(double seconds);
 // /clock and data use independent DDS streams. Bound the alignment wait.
-double AlignedRosTime(rclcpp::Node& node, double newest);
-msg::SafetyEvidence EncodeEvidence(const agi::hardware::Evidence& evidence);
-agi::hardware::Evidence DecodeEvidence(const msg::SafetyEvidence& message);
+double alignedRosTime(rclcpp::Node& node, double newest);
+msg::SafetyEvidence encodeEvidence(const agi::hardware::Evidence& evidence);
+agi::hardware::Evidence decodeEvidence(const msg::SafetyEvidence& message);
 
 }  // namespace agi_ros2
 

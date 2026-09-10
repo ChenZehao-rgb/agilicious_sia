@@ -20,16 +20,16 @@ set(UNSAFE_MATH OFF CACHE BOOL "" FORCE)
 set(AGILIB_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../agilib")
 add_subdirectory(${AGILIB_ROOT} ${CMAKE_CURRENT_BINARY_DIR}/agilib)
 find_package(Eigen3 REQUIRED)
-add_library(ros2_node_common STATIC src/node_common.cc)
+add_library(ros2_node_common STATIC src/node_common.cpp)
 target_include_directories(ros2_node_common PUBLIC include ${AGILIB_ROOT}/include
   ${AGILIB_ROOT}/apps ${EIGEN3_INCLUDE_DIRS})
 target_link_libraries(ros2_node_common agilib Eigen3::Eigen "${typesupport}")
 ament_target_dependencies(ros2_node_common rclcpp builtin_interfaces)
-add_executable(state_fusion_node src/state_fusion_main.cc
-  src/state_fusion_node.cc ${AGILIB_ROOT}/apps/companion_ahrs.cpp)
-add_executable(control_node src/control_main.cc src/control_node.cc)
-add_executable(command_output_node src/command_output_main.cc
-  src/command_output_node.cc)
+add_executable(state_fusion_node src/state_fusion_main.cpp
+  src/state_fusion_node.cpp ${AGILIB_ROOT}/apps/companion_ahrs.cpp)
+add_executable(control_node src/control_main.cpp src/control_node.cpp)
+add_executable(command_output_node src/command_output_main.cpp
+  src/command_output_node.cpp)
 foreach(target ros2_node_common state_fusion_node control_node command_output_node)
   # Match agilib's Eigen alignment across the ABI boundary.
   if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64)$" AND NOT DEFINED CATKIN_DEVEL_PREFIX)
