@@ -50,6 +50,8 @@ ControlNode::ControlNode()
 		if (!_pilot->setTrajectory(points)) {
 			throw std::invalid_argument("Invalid trajectory timestamps or states");
 		}
+		RCLCPP_INFO(get_logger(), "Loaded trajectory: %s (%zu samples, %.3f s)",
+		            trajectory.c_str(), points.size(), points.back().state.t);
 	}
 	_state_sub = create_subscription<msg::FusedState>("fused_state", 1, std::bind(&ControlNode::onState, this, std::placeholders::_1));
 	_authority_sub = create_subscription<msg::Authority>("authority", 1, [this](msg::Authority::ConstSharedPtr message) {

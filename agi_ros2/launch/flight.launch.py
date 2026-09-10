@@ -28,9 +28,6 @@ def nodes(context):
                       'device': arg('device'), 'baud': int(arg('baud')),
                       'thrust_table': arg('thrust_table')}])
     result = [fusion, control, output]
-    if mode == 'sitl' and arg('start_sensors').lower() == 'true':
-        result.append(Node(package='agi_ros2', executable='gazebo_sensors', output='screen',
-                           parameters=[{'config_verified': arg('sitl_config_verified').lower() == 'true'}]))
     for process in list(result):
         result.append(RegisterEventHandler(OnProcessExit(target_action=process,
             on_exit=[EmitEvent(event=Shutdown(reason='flight component exited'))])))
@@ -49,11 +46,14 @@ def nodes(context):
     return result
 
 
-def generate_launch_description():
-    defaults = dict(mode='sitl', params_dir=get_package_share_directory('agi_ros2') + '/params',
+# 在这里修改 flight 参数；启动命令无需追加参数。
+# Sensor 数据由外部 ROS topic 提供，不启动或检查 gazebo_sensors 进程。
+FLIGHT_CONFIG = dict(mode='sitl', params_dir=get_package_share_directory('agi_ros2') + '/params',
                     pilot_config='pilot_ros2.yaml', bridge_config='betaflight_udp.yaml',
-                    device='/dev/ttyAMA0', baud='921600', trajectory='', thrust_table='',
-                    sitl_config_verified='false', start_sensors='true',
+                    device='/dev/ttyAMA0', baud='921600', trajectory='/home/sia/agilicious_internal-main/miscellaneous/datasets/ref_trajs/open_source/CPC33_Z1.csv', thrust_table='',
                     record_bag='true', bag_output='')
-    return LaunchDescription([DeclareLaunchArgument(k, default_value=v) for k, v in defaults.items()] +
+
+
+def generate_launch_description():
+    return LaunchDescription([DeclareLaunchArgument(k, default_value=v) for k, v in FLIGHT_CONFIG.items()] +
                              [OpaqueFunction(function=nodes)])

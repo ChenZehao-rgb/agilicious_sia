@@ -57,15 +57,26 @@ ACADOS_ROOT=/path/to/arm64/acados ./agi_ros2/scripts/build.sh -DAGI_ROS2_GAZEBO=
 ```bash
 cd /home/sia/agilicious_internal-main
 source /opt/ros/humble/setup.bash
-python3 betaflight_sitl/run.py --ros2 --gazebo
+python3 betaflight_sitl/run.py
 ```
 
 此入口复用原脚本的模型叠加、隔离 EEPROM 配置和回读、Betaloop 启动、退出清理。
 首次启动会构建 Gazebo 插件及 ROS 2 包；之后可加 `--no-build`。
-**不会自动 ARM 或起飞**，`--arm` 在 ROS 2 模式下也不触发自动起飞。
+此命令只启动 Betaflight SITL、Gazebo（默认显示 GUI）和 gazebo_sensors，不启动 flight。
+**不会自动 ARM 或起飞**。无界面运行可加 `--no-gazebo`；旧版独立控制器使用 `--no-ros2`。
 Gazebo 与 Betaflight 已由上述脚本启动时，不要再开第二个控制节点或 UDP 遥控写入程序。
 
-终端 2，启动唯一的模拟遥控消息源：
+终端 2，启动 flight（无需命令行参数）：
+
+```bash
+./agi_ros2/scripts/launch.sh
+```
+
+在 `agi_ros2/launch/flight.launch.py` 的 `FLIGHT_CONFIG` 中修改模式、轨迹、配置路径及录包参数。
+脚本直接加载源码 launch，修改后重启 flight 即可生效。
+flight 不启动或检查 gazebo_sensors 进程，只订阅 ROS topic；保留消息新鲜度和有效性检查。
+
+终端 3，启动唯一的模拟遥控消息源：
 
 ```bash
 source /opt/ros/humble/setup.bash
@@ -73,7 +84,7 @@ source install/agi_ros2/local_setup.bash
 ros2 run agi_ros2 sim_rc.py --ros-args -p use_sim_time:=true
 ```
 
-终端 3，逐步操作：
+终端 4，逐步操作：
 
 ```bash
 source /opt/ros/humble/setup.bash
@@ -86,6 +97,7 @@ ros2 param set /sim_rc armed true
 # AUTO 保持 false；需要起飞时，逐步调整人工油门，例如（当前模型悬停油门约 1411）：
 ros2 param set /sim_rc throttle 1450
 # 确认状态为 AUTO_STANDBY 且机体到达预期位置后再切 AUTO：
+# 切换前确认当前 /status 仍为 AUTO_STANDBY；出现 RC timeout / MPC warming 时不要切换。
 ros2 param set /sim_rc auto_switch true
 # 撤销接管：先将人工油门设为需要的值，再把 auto_switch 设为 false。
 # KILL：
@@ -95,27 +107,20 @@ ros2 param set /sim_rc kill true
 1450 仅为模拟输入示例，不保证起飞高度或稳定悬停。AUTO 无轨迹时捕获当前位置并悬停；
 启动高电平或故障后保持高电平不允许恢复，必须先观察健康的 AUTO low，再切 high。
 
-使用原有 30 列 CSV：
-
-```bash
-python3 betaflight_sitl/run.py --ros2 --gazebo --no-build --trajectory /absolute/path/trajectory.csv
-```
+使用原有 30 列 CSV：在 launch 文件的 `FLIGHT_CONFIG` 中设置
+`trajectory='/absolute/path/trajectory.csv'`，然后重启 flight。
 
 新旧入口复用 `agilib/reference/trajectory_csv.hpp`。ROS 2 在 AUTO 上升沿将轨迹起点
-平移到当前位置、朝向对齐当前航向，并开始执行。需要先手动到达适当高度；
-ROS 2 不采用旧入口的自动起飞和 `--ground-clearance` 抬升流程。
-`--duration` 为 ROS 2 进程启动后的墙钟时长；日志使用 ROS 话题/bag。
+平移到当前位置、朝向对齐当前航向，并开始执行。需要先手动到达适当高度。
+`run.py --duration` 仅限制模拟器及 sensor 的墙钟运行时长；flight 独立运行。
 
-如果自行管理 Gazebo/Betaflight，可单独启动：
+也可以在已 source ROS 和工作区的终端执行 `ros2 launch agi_ros2 flight.launch.py`；
+这种方式使用安装目录内的 launch，修改源码后需重新构建安装。
 
-```bash
-ros2 launch agi_ros2 flight.launch.py mode:=sitl sitl_config_verified:=true
-```
-
-只有完成原脚本同等的 Betaflight 配置回读后才能设 `sitl_config_verified:=true`。
-默认 false 会禁止 AUTO。CM5 接开发机的模拟输入时用
-`mode:=sitl start_sensors:=false`，由开发机运行 `gazebo_sensors`；
-共享 ROS_DOMAIN_ID，CM5 的桥接 YAML `host` 指向开发机 IP，开发机不再启动融合、控制和指令输出节点。
+CM5 接开发机的模拟输入时，保持 launch 中 `mode='sitl'`；
+共享 ROS_DOMAIN_ID，CM5 的桥接 YAML `host` 指向开发机 IP。
+开发机只运行 `run.py`，CM5 运行 flight。外部输入应提供 IMU、RTK、health 和 /clock；
+配置验证状态通过 health topic 传递，由 run.py 完成隔离 EEPROM 回读后设置。
 
 ## 实机入口与驱动契约
 

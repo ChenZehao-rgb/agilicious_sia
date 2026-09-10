@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and run the isolated Agilicious -> Betaflight SITL closed loop."""
+"""Start Betaflight SITL, Gazebo and ROS 2 sensors; launch flight separately."""
 
 # 中文说明（注意：模块 docstring 会被 argparse 当作 --help 的描述，因此总览
 # 放在这里而不是 docstring 里）。
@@ -606,7 +606,8 @@ def main() -> int:
     """解析参数、准备资源、拉起两个进程并守护到退出；返回进程退出码。"""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--betaloop-home", type=Path, default=DEFAULT_BETALOOP_HOME)
-    parser.add_argument("--gazebo", action="store_true", help="show the Gazebo GUI")
+    parser.add_argument("--gazebo", action=argparse.BooleanOptionalAction, default=True,
+                        help="show the Gazebo GUI (default: enabled)")
     parser.add_argument(
         "--arm",
         action="store_true",
@@ -678,8 +679,8 @@ def main() -> int:
         ),
     )
     parser.add_argument("--no-build", action="store_true")
-    parser.add_argument("--ros2", action="store_true",
-                        help="use shared ROS 2 control; ARM/AUTO are explicit ROS receiver inputs")
+    parser.add_argument("--ros2", action=argparse.BooleanOptionalAction, default=True,
+                        help="start ROS 2 sensors only (default); --no-ros2 runs the standalone controller")
     args = parser.parse_args()
 
     # argparse 的 type=float 不拦截 nan/inf 和负数，这里补齐校验。
@@ -700,7 +701,9 @@ def main() -> int:
         parser.error("--msp-rate must be finite and > 0")
 
     if args.ros2 and (args.controller != "mpc" or args.log is not None or args.trajectory_source_mass != 0):
-        parser.error("--ros2 supports MPC, ROS topics/bag logging and automatic CSV source-mass detection")
+        parser.error("ROS 2 flight settings belong in agi_ros2/launch/flight.launch.py")
+    if args.ros2 and (args.arm or args.trajectory is not None or args.rtk_msp):
+        parser.error("configure flight in agi_ros2/launch/flight.launch.py; ARM/AUTO use ROS receiver inputs")
 
     # ---- 路径与产物布局 ----
     betaloop_home = args.betaloop_home.expanduser().resolve()
@@ -723,7 +726,7 @@ def main() -> int:
         # 只有真要解锁时才写入并强制校验桥接配置。
         bridge_config if args.arm or args.ros2 else None,
     )
-    binary = (REPO_ROOT / "install/agi_ros2/lib/agi_ros2/control_node") if args.ros2 else cmake_build / "bin" / "agilicious_betaflight_sitl"
+    binary = (REPO_ROOT / "install/agi_ros2/lib/agi_ros2/gazebo_sensors") if args.ros2 else cmake_build / "bin" / "agilicious_betaflight_sitl"
     plugin_library = plugin_build / "libAgiliciousBetaflightPlugin.so"
     #---- 编译产物 ----
     if not args.no_build:
@@ -735,10 +738,6 @@ def main() -> int:
     else:
         # 跳过编译时，至少确认上次构建的产物还在。
         artifacts = [binary, plugin_library]
-        if args.ros2:
-            artifacts.extend(binary.parent / name for name in
-                             ("state_fusion_node", "command_output_node",
-                              "gazebo_sensors"))
         for artifact in artifacts:
             if not artifact.is_file():
                 raise FileNotFoundError(
@@ -860,13 +859,12 @@ def main() -> int:
         controller_cmd.extend(("--log", str(log_path)))
 
     if args.ros2:
-        # Use the installed environment even on the first build in this shell.
-        controller_cmd = [str(REPO_ROOT / "agi_ros2/scripts/launch.sh"), "mode:=sitl",
-                          "sitl_config_verified:=true"]
-        if args.trajectory is not None:
-            controller_cmd.append("trajectory:=" + str(trajectory))
-        if args.arm:
-            log("ROS 2 does not auto-arm: use sim_rc ARM/AUTO/KILL parameters")
+        # Configuration was written and read back before starting the simulator.
+        controller_cmd = [
+            str(REPO_ROOT / "agi_ros2/scripts/sensors.sh"),
+            "--ros-args", "-p", "config_verified:=true",
+        ]
+        log("start flight in another terminal: ./agi_ros2/scripts/launch.sh")
 
     betaloop_process: Optional[subprocess.Popen] = None
     controller_process: Optional[subprocess.Popen] = None
@@ -889,7 +887,7 @@ def main() -> int:
         with wait_for_tcp(5761, betaloop_process, timeout=45.0):
             pass  # 只探测就绪状态，连接随即关闭。
         log("Betaflight SITL is ready")
-        log("starting Agilicious UDP adapter")
+        log("starting ROS 2 Gazebo sensors" if args.ros2 else "starting Agilicious UDP adapter")
         controller_process = subprocess.Popen(
             controller_cmd,
             cwd=REPO_ROOT,
@@ -905,7 +903,7 @@ def main() -> int:
             betaloop_status = betaloop_process.poll()
             if controller_status is not None:
                 if controller_status != 0:
-                    log(f"adapter exited with code {controller_status}")
+                    log(f"sensor/adapter process exited with code {controller_status}")
                 return controller_status
             if betaloop_status is not None:
                 log(f"Betaloop exited with code {betaloop_status}")

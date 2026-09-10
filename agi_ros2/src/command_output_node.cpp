@@ -270,6 +270,14 @@ void CommandOutputNode::processOutput() {
 	_override_active = active;
 	if (active) {
 		_reason = "Authorized output";
+	} else if (!rc_fresh) {
+		_reason = "RC timeout/link unavailable: SITL disarms; hardware releases override";
+	} else if (_authority.kill || !_authority.armed) {
+		_reason = "Receiver KILL or ARM low";
+	} else if (_authority.auto_switch) {
+		_reason = "AUTO rejected: " + _gate.reason();
+	} else {
+		_reason = "Manual receiver passthrough";
 	}
 	publishStatus();
 }

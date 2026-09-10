@@ -6,4 +6,4 @@ if [[ -z "${ROS_DISTRO:-}" ]]; then
   else source /opt/ros/humble/setup.bash; fi
 fi
 source "$repo/install/agi_ros2/local_setup.bash"
-exec ros2 launch "$repo/agi_ros2/launch/flight.launch.py" "$@"
+exec ros2 run agi_ros2 gazebo_sensors "$@"

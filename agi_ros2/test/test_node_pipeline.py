@@ -73,6 +73,7 @@ class Harness:
         self.rtk_heading_valid = True
         self.last_rtk = 0.0
         self.last_rc = 0.0
+        self.rc_enabled = True
         self.last_command = 0.0
         self.imu_enabled = True
         self.last_health = 0.0
@@ -121,7 +122,7 @@ class Harness:
 
     def publish_inputs(self, sensors, commands):
         wall = self.sim_time_ns / 1e9 if self.simulation else time.monotonic()
-        if wall - self.last_rc >= 0.02:
+        if self.rc_enabled and wall - self.last_rc >= 0.02:
             rc = Authority()
             rc.header.stamp = self.stamp()
             rc.armed, rc.auto_switch, rc.kill, rc.rc_link = self.armed, self.auto, self.kill, True
@@ -416,6 +417,32 @@ class NodePipelineTest(unittest.TestCase):
         h.run(0.15, sensors=True)
         self.assertTrue(h.received['output_status'][-1].override_active,
                         [s.data for s in h.received['status'][-5:]])
+
+    def test_sim_rc_gap_requires_warmup_and_new_auto_edge(self):
+        h = self.h
+        h.simulation = True
+        for topic, cls in [('control_command', ControlCommand), ('status', String),
+                           ('output_status', OutputStatus)]:
+            h.subscribe(topic, cls)
+        for executable in ('state_fusion_node', 'control_node', 'command_output_node'):
+            h.start(executable)
+        h.run(2.5, sensors=True)
+        self.assertTrue(h.received['control_command'][-1].evidence.controller_warm)
+        h.rc_enabled = False
+        h.run(0.342, sensors=True)
+        self.assertIn('RC timeout', h.received['status'][-1].data)
+        self.assertFalse(h.received['control_command'][-1].evidence.controller_warm)
+        self.assertEqual(h.packets[-1][5], 1000)
+        h.rc_enabled = True
+        h.auto = True
+        h.run(0.15, sensors=True)
+        self.assertFalse(h.received['output_status'][-1].override_active)
+        self.assertIn('AUTO rejected', h.received['output_status'][-1].reason)
+        h.run(0.65, sensors=True)
+        self.assertTrue(h.received['control_command'][-1].evidence.controller_warm)
+        self.assertFalse(h.received['control_command'][-1].permit_override)
+        self.assertIn('cycle physical AUTO', h.received['status'][-1].data)
+        self.rearm_simulation()
 
     def test_sim_clock_short_pause_slow_rate_and_long_stall(self):
         h = self.start_simulated_pipeline()

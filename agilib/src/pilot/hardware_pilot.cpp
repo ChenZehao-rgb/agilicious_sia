@@ -161,6 +161,8 @@ ControlDecision HardwarePilot::tick(const QuadState& state, Evidence evidence) {
   if (!cadence_ok) result.reason += "; cadence";
   if (!state_ok) result.reason += "; state age/validity";
   if (!SafetyGate::fresh(evidence.now, evidence.imu_time, 0.010)) result.reason += "; imu age";
+  if (!SafetyGate::fresh(evidence.now, evidence.rc_time, 0.10)) result.reason += "; RC timeout";
+  if (!evidence.rc_link) result.reason += "; RC link unavailable";
   if (!evidence.command_valid) result.reason += "; no command";
   if (!evidence.controller_warm) result.reason += "; MPC warming";
   return result;
