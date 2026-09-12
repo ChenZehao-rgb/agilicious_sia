@@ -55,7 +55,7 @@ void StateFusionNode::reset() {
 	params->Q_init_att.setConstant(0.01);
 	params->Q_init_bome.setConstant(0.001);
 	params->Q_init_bacc.setConstant(0.01);
-	_ekf = std::make_unique<agi::EkfImu>(params);
+	_ekf = std::make_unique<agi::EkfImu>(params);50
 	_state.setZero();
 	_state.t = kUnknownTime;
 	_last_rtk_time = kUnknownTime;
