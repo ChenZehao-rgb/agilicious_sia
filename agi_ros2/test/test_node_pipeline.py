@@ -56,6 +56,9 @@ class Harness:
         self.master = None
         self.slave = None
         self.serial_bytes = bytearray()
+        self.serial_pending = bytearray()
+        self.serial_frames = []
+        self.drop_telemetry = False
         self.packets = []
         self.sequence = 0
         self.armed = True
@@ -202,6 +205,17 @@ class Harness:
                     if not data:
                         break
                     self.serial_bytes.extend(data)
+                    self.serial_pending.extend(data)
+                    while len(self.serial_pending) >= 6:
+                        assert self.serial_pending[:3] == b'$M<'
+                        size, code = self.serial_pending[3:5]
+                        if len(self.serial_pending) < size + 6:
+                            break
+                        frame = bytes(self.serial_pending[:size+6])
+                        del self.serial_pending[:size+6]
+                        self.serial_frames.append(frame)
+                        if not self.drop_telemetry or code == 200:
+                            os.write(self.master, b'$M>' + bytes([0,code,code]))
                 except BlockingIOError:
                     break
 
@@ -228,6 +242,7 @@ class Harness:
         self.drain()
         self.packets.clear()
         self.serial_bytes.clear()
+        self.serial_frames.clear()
 
     def close(self):
         for proc in self.processes:
@@ -281,7 +296,7 @@ class NodePipelineTest(unittest.TestCase):
         h.run(0.35, sensors=True)
         active = [c for c in h.received['control_command'] if c.permit_override]
         self.assertTrue(active, [s.data for s in h.received['status'][-5:]])
-        self.assertTrue(any(s.override_active for s in h.received['output_status']))
+        self.assertTrue(any(s.override_active for s in h.received['output_status']), [s.reason for s in h.received['output_status'][-10:]])
         self.assertTrue(all(math.isfinite(c.total_thrust) and c.total_thrust > 0 for c in active))
         h.imu_enabled = False
         h.run(0.15, sensors=True)
@@ -335,7 +350,7 @@ class NodePipelineTest(unittest.TestCase):
         h.run(0.15, commands=True)
         h.auto = True
         h.run(0.1, commands=True)
-        self.assertTrue(any(s.override_active for s in h.received['output_status']))
+        self.assertTrue(any(s.override_active for s in h.received['output_status']), [s.reason for s in h.received['output_status'][-10:]])
         self.assertEqual(h.packets[-1][5], 2000)
         self.assertGreater(h.packets[-1][2], 1500)  # Positive SITL pitch.
         h.run(0.06, commands=False)
@@ -372,22 +387,20 @@ class NodePipelineTest(unittest.TestCase):
         h.clear()
         h.auto = True
         h.run(0.15, commands=True)
-        self.assertTrue(h.received['output_status'][-1].override_active)
-        data = bytes(h.serial_bytes)
+        self.assertTrue(h.received['output_status'][-1].override_active, sorted(set((s.reason, s.transport_healthy) for s in h.received['output_status'])))
         frames = []
-        offset = 0
-        while offset < len(data):
-            self.assertEqual(data[offset:offset + 3], b'$M<')
-            size, code = data[offset + 3:offset + 5]
-            self.assertEqual((size, code), (8, 200))
-            frame = data[offset:offset + size + 6]
-            self.assertEqual(len(frame), size + 6)
+        for frame in h.serial_frames:
+            size, code = frame[3:5]
             checksum = 0
             for byte in frame[3:-1]:
                 checksum ^= byte
             self.assertEqual(checksum, frame[-1])
-            frames.append(struct.unpack('<4H', frame[5:-1]))
-            offset += size + 6
+            if code == 200:
+                self.assertEqual(size, 8)
+                frames.append(struct.unpack('<4H', frame[5:-1]))
+            else:
+                self.assertEqual(size, 0)
+                self.assertIn(code, (108,105,101,110,130,106))
         self.assertTrue(frames)
         self.assertGreater(frames[-1][0], 1500)
         self.assertLess(frames[-1][1], 1500)  # FLU -> hardware FRD.
@@ -397,7 +410,12 @@ class NodePipelineTest(unittest.TestCase):
         self.assertFalse(h.received['output_status'][-1].override_active)
         h.clear()
         h.run(0.1, commands=True)
-        self.assertEqual(bytes(h.serial_bytes), b'')  # No synthetic failsafe/AUX.
+        self.assertFalse(any(frame[4] == 200 for frame in h.serial_frames))
+        # Telemetry remains available after KILL; no synthetic RC/AUX frame.
+        self.assertTrue(h.serial_frames)
+        h.drop_telemetry = True
+        h.run(0.35, commands=True)
+        self.assertFalse(h.received['output_status'][-1].transport_healthy)
 
     def start_simulated_pipeline(self):
         h = self.h

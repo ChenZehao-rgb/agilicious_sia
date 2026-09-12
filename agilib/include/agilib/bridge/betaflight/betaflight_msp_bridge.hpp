@@ -36,6 +36,13 @@ class BetaflightMspBridge {
   BetaflightMspBridge(const BetaflightMspBridge&) = delete;
   BetaflightMspBridge& operator=(const BetaflightMspBridge&) = delete;
   bool request(uint8_t code, MspFrame* reply, double deadline);
+  // Split-phase diagnostic I/O. Caller owns scheduling and reply timeouts;
+  // do not mix with synchronous request() while requests are outstanding.
+  bool sendRequest(uint8_t code, double deadline);
+  bool receive(MspFrame* reply);  // bounded, nonblocking; includes RC ACKs
+  // Explicit bench-only injection, independent of flight authorization.
+  // Four AETR channels only; never use this API in a flight controller.
+  bool sendBenchRc(const std::array<uint16_t, 4>& channels, double deadline);
   // Channels are AETR ONLY. False evidence stops the stream, without sending
   // a replacement throttle value. A send fault latches until process restart.
   bool sendOverride(const std::array<uint16_t, 4>& channels,

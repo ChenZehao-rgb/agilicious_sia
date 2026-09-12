@@ -148,11 +148,7 @@ bool BetaflightMspBridge::writeFrame(uint8_t code,
 bool BetaflightMspBridge::request(uint8_t code, MspFrame* reply,
                                  double deadline) {
   checkOwner();
-  // Monitoring API cannot be used for MSP writes, arming or motor commands.
-  if (!reply || (code != 1 && code != 2 && code != 3 && code != 5 &&
-      code != 101 && code != 105 && code != 110 && code != 111 &&
-      code != 64 && code != 114 && code != 119)) return false;
-  if (!writeFrame(code, {}, deadline)) return false;
+  if (!reply || !sendRequest(code, deadline)) return false;
   while (monotonicSeconds() < deadline) {
     MspFrame frame;
     while (decoder_.next(&frame)) {
@@ -173,6 +169,43 @@ bool BetaflightMspBridge::request(uint8_t code, MspFrame* reply,
   // Latch closed; restart only in manual, after investigating the link.
   failed_ = true;
   return false;
+}
+bool BetaflightMspBridge::sendRequest(uint8_t code, double deadline) {
+  checkOwner();
+  switch (code) {
+    case 1: case 2: case 3: case 5: case 64: case 101: case 105:
+    case 106: case 108: case 110: case 111: case 114: case 119: case 130:
+      return writeFrame(code, {}, deadline);
+    default: return false;
+  }
+}
+bool BetaflightMspBridge::receive(MspFrame* reply) {
+  checkOwner();
+  if (!reply) return false;
+  if (!decoder_.next(reply)) {
+    uint8_t bytes[512];
+    const ssize_t n = read(fd_, bytes, sizeof(bytes));
+    if (n > 0) decoder_.append(bytes, static_cast<size_t>(n));
+    else if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+      ++errors_;
+      failed_ = true;
+      throw std::runtime_error("MSP serial read failed");
+    }
+    if (!decoder_.next(reply)) return false;
+  }
+  if (reply->error) ++errors_;
+  return true;
+}
+bool BetaflightMspBridge::sendBenchRc(
+  const std::array<uint16_t, 4>& channels, double deadline) {
+  if (!std::all_of(channels.begin(), channels.end(),
+      [](uint16_t x) { return x >= 1000 && x <= 2000; })) return false;
+  std::vector<uint8_t> payload;
+  for (auto channel : channels) {
+    payload.push_back(channel & 255);
+    payload.push_back(channel >> 8);
+  }
+  return writeFrame(200, payload, deadline);
 }
 bool BetaflightMspBridge::sendOverride(
   const std::array<uint16_t, 4>& channels, const Evidence& evidence,

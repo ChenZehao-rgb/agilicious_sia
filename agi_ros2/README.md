@@ -279,3 +279,73 @@ validation:
 
 Published body rates and world acceleration are corrected for estimated biases.
 The existing fused-state quality flags and control safety checks remain in use.
+
+## 树莓派 MSP 通信与 topic 记录
+
+MSP 串口库、ROS 节点及消息已包含在 `agi_ros2` 构建中，**不需要单独编译
+`betaflight_hw`**。ARM 平台首次配置默认关闭 Gazebo 适配器；完整控制包仍需要
+对应平台的 Eigen/acados 等原有依赖。
+
+```bash
+./agi_ros2/scripts/build.sh
+source install/agi_ros2/local_setup.bash
+ros2 launch agi_ros2 msp.launch.py
+```
+
+启动前编辑 `agi_ros2/launch/msp.launch.py` 的 `MSP_CONFIG`，然后重新运行构建以安装
+launch 文件。也可直接 `ros2 launch agi_ros2/launch/msp.launch.py` 使用源文件配置。
+串口、波特率、模式、每类 `enabled` 和 `rate_hz` 均在文件内，不需要命令行传参。
+默认只读 monitor；无桨固定 RC 测试改 `mode='bench'`、`props_removed=True` 并设置
+`bench_aetr`（A,E,T,R），发送频率固定 100 Hz。该模式不消费 MPC，不用于飞行。
+参数在节点启动时读取，修改配置后重启节点。
+
+完整控制链路使用 `flight.launch.py` 中的 `MSP_CONFIG`；实机时由
+`command_output_node` 独占串口，同时发送授权后的 RC 和查询遥测。
+不要同时启动独立 `msp.launch.py`。实机 RC 随 control_node 的 100 Hz 控制回调立即输出，避免再等待一个独立周期导致
+IMU 授权证据过期；独立的 1 ms 定时器穿插遥测。命令新鲜度、授权撤销和 SafetyGate
+保留，SITL 仍由命令回调输出。台架模式使用独立 100 Hz 定时发送。
+飞行模式任何已开启遥测类别发生超时/错误均使本次输出会话 transport health 失效，
+需要排查并重启；没有 GPS 的实机应在 launch 中关闭 GPS 类别。
+台架模式则停用超时/不支持的类别，其他查询及固定 RC 继续。
+
+| Topic | 内容 | 默认频率 |
+|---|---|---|
+| `/msp/attitude` | MSP_ATTITUDE 原始回复 | 10 Hz |
+| `/msp/rc` | MSP_RC 原始回复（FC 返回的所有通道） | 10 Hz |
+| `/msp/status` | MSP_STATUS 原始回复 | 5 Hz |
+| `/msp/analog` | MSP_ANALOG 原始回复 | 2 Hz |
+| `/msp/battery` | MSP_BATTERY_STATE 原始回复 | 2 Hz |
+| `/msp/gps` | MSP_RAW_GPS 原始回复 | 2 Hz |
+| `/msp/config` | 启动配置快照（std_msgs/String，1 Hz 重发，含类别/频率/串口） | 1 Hz |
+| `/msp/events` | 所有 TX、RX、RC ACK、错误、超时、迟到回复；RC TX 包含实际四通道字节 | 随事件 |
+
+除 `/msp/config` 外，以上类型均为 `agi_ros2/msg/MspEvent`，包含 ROS 时间戳（bag 对齐）、本机 monotonic
+时间（串口间隔）、MSP code、完整 payload、错误累计数以及请求响应延迟（秒，
+无对应请求时为 NaN）。分类 topic 只发布成功且匹配未完成请求的回复；错误仍保留在
+`/msp/events`，不会作为有效样本。保留协议原始值，不假定具体固件的 STATUS/BATTERY
+布局；姿态等工程单位尚未在此消息内解码。MSP 遥测不会替代伴随 IMU/RTK 估计器，
+也不会自动生成可信的 `/authority` 或配置验证 `/health`。
+
+两个 launch 均默认记录 `--all --include-hidden-topics`，包括上述 topic、
+`/parameter_events`、`/rosout`，以及控制链路的 `/control_command`、`/output_status`、
+`/authority`、`/health`、`/fused_state` 和传感器 topic。bag 默认保存于
+`~/agi_bags/`，可在 launch 修改路径及是否记录。录制器退出会结束 launch，
+避免录制已停止而测试仍持续；Ctrl-C 会停止节点并正常关闭 bag。
+启动时 DDS discovery 可能漏掉最早的样本，验收统计使用发现完成后的稳定时段。
+发布队列有界，事件队列深度 1000；这不是磁盘故障情况下无损记录或 Linux 硬实时保证。
+
+实际请求频率取决于串口带宽和 FC 响应；每类最多一个未完成请求，默认 100 ms 超时。
+接收非阻塞，RC 优先，过期周期跳过，不补发积压指令。通过 `/msp/events` 的
+`steady_time` 按 code/event 统计 RC TX 及各类请求、响应的频率和间隔；`latency_seconds`
+用于检查查询响应时间。RC ACK 不是执行或 ARM/MSP Override 生效的证明。
+
+本机 ROS 2 + PTY + rosbag 回归：
+
+```bash
+source install/agi_ros2/local_setup.bash
+ROS_LOG_DIR=/tmp/agi_ros2_msp_logs ROS_DOMAIN_ID=89 ROS_LOCALHOST_ONLY=1 \
+  /usr/bin/python3 agi_ros2/test/test_msp_node.py
+```
+
+测试只访问伪串口，检查 100 Hz RC、自选遥测频率/类别、原始帧 topic、延迟和时间戳、
+GPS 超时隔离及实际 bag 消息。树莓派物理串口、目标固件和真实飞行仍需实机验收。

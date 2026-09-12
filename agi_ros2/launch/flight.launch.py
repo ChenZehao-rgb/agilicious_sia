@@ -26,7 +26,7 @@ def nodes(context):
                    parameters=[{**common, 'trajectory': arg('trajectory')}])
     output = Node(package='agi_ros2', executable='command_output_node',
                   output='screen', parameters=[{
-                      **common, 'bridge_config': arg('bridge_config'),
+                      **common, **(MSP_CONFIG if mode == 'hardware' else {}), 'bridge_config': arg('bridge_config'),
                       'device': arg('device'), 'baud': int(arg('baud')),
                       'thrust_table': arg('thrust_table')}])
     result = [fusion, control, output]
@@ -38,13 +38,15 @@ def nodes(context):
         command = ['ros2', 'bag', 'record', '--all', '--include-hidden-topics']
         bag_output = arg('bag_output')
         if not bag_output:
-            bag_dir = Path('/home/sia/agilicious_internal-main/bags')
+            bag_dir = Path.home() / 'agi_bags'
             bag_dir.mkdir(parents=True, exist_ok=True)
             bag_output = str(bag_dir / datetime.now().strftime('flight_%Y%m%d_%H%M%S_%f'))
         command.extend(['--output', bag_output])
         if mode == 'sitl':
             command.append('--use-sim-time')
-        result.append(ExecuteProcess(cmd=command, output='screen'))
+        recorder = ExecuteProcess(cmd=command, output='screen')
+        result.extend([recorder, RegisterEventHandler(OnProcessExit(target_action=recorder,
+            on_exit=[EmitEvent(event=Shutdown(reason='flight recorder exited'))]))])
     return result
 
 
@@ -52,6 +54,18 @@ def nodes(context):
 # Sensor 数据由外部 ROS topic 提供，不启动或检查 gazebo_sensors 进程。
 # sitl_delay_test=true：取消 SITL 时间限制，延迟期间持续发送最后有效指令。
 # 改为 false 恢复保护；hardware 模式始终保持保护。
+# 实机输出串口上的遥测：enabled=False 或 rate_hz=0 关闭该类别。
+# 不要同时启动 msp.launch.py；command_output_node 已独占该串口。
+MSP_CONFIG = {
+    'msp.response_timeout_ms': 100.0,
+    'msp.attitude.enabled': True, 'msp.attitude.rate_hz': 10.0,
+    'msp.rc.enabled': True,       'msp.rc.rate_hz': 10.0,
+    'msp.status.enabled': True,   'msp.status.rate_hz': 5.0,
+    'msp.analog.enabled': True,   'msp.analog.rate_hz': 2.0,
+    'msp.battery.enabled': True,  'msp.battery.rate_hz': 2.0,
+    'msp.gps.enabled': True,      'msp.gps.rate_hz': 2.0,
+}
+
 FLIGHT_CONFIG = dict(mode='sitl', params_dir=get_package_share_directory('agi_ros2') + '/params',
                     pilot_config='pilot_ros2.yaml', bridge_config='betaflight_udp.yaml',
                     device='/dev/ttyAMA0', baud='921600', trajectory='/home/sia/agilicious_internal-main/miscellaneous/datasets/ref_trajs/open_source/CPC33_Z1.csv', thrust_table='',

@@ -9,7 +9,7 @@ endforeach()
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Rtk.msg" "msg/Authority.msg" "msg/Health.msg"
   "msg/FusedState.msg" "msg/SafetyEvidence.msg"
-  "msg/ControlCommand.msg" "msg/OutputStatus.msg"
+  "msg/ControlCommand.msg" "msg/OutputStatus.msg" "msg/MspEvent.msg"
   DEPENDENCIES std_msgs geometry_msgs builtin_interfaces)
 rosidl_get_typesupport_target(typesupport ${PROJECT_NAME} rosidl_typesupport_cpp)
 set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
@@ -29,7 +29,7 @@ add_executable(state_fusion_node src/state_fusion_main.cpp
   src/state_fusion_node.cpp ${AGILIB_ROOT}/apps/companion_ahrs.cpp)
 add_executable(control_node src/control_main.cpp src/control_node.cpp)
 add_executable(command_output_node src/command_output_main.cpp
-  src/command_output_node.cpp)
+  src/command_output_node.cpp src/msp_telemetry.cpp)
 foreach(target ros2_node_common state_fusion_node control_node command_output_node)
   # Match agilib's Eigen alignment across the ABI boundary.
   if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64)$" AND NOT DEFINED CATKIN_DEVEL_PREFIX)
@@ -47,7 +47,18 @@ foreach(target state_fusion_node control_node command_output_node)
 endforeach()
 set_target_properties(agilib acados_mpc PROPERTIES INSTALL_RPATH "$ORIGIN;${ACADOS_ROOT}/lib" LINK_FLAGS "-Wl,--disable-new-dtags")
 install(TARGETS agilib acados_mpc LIBRARY DESTINATION lib ARCHIVE DESTINATION lib)
-option(AGI_ROS2_GAZEBO "Build Gazebo Harmonic sensor adapter (disable on CM5)" ON)
+add_executable(betaflight_msp_node src/msp_node.cpp src/msp_telemetry.cpp
+  ${AGILIB_ROOT}/src/bridge/betaflight/betaflight_msp_bridge.cpp)
+target_include_directories(betaflight_msp_node PRIVATE include ${AGILIB_ROOT}/include)
+target_link_libraries(betaflight_msp_node "${typesupport}")
+ament_target_dependencies(betaflight_msp_node rclcpp std_msgs)
+target_compile_options(betaflight_msp_node PRIVATE -fno-finite-math-only -Wall -Wextra -Werror)
+install(TARGETS betaflight_msp_node DESTINATION lib/${PROJECT_NAME})
+set(AGI_ROS2_GAZEBO_DEFAULT ON)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|arm.*)$")
+  set(AGI_ROS2_GAZEBO_DEFAULT OFF)
+endif()
+option(AGI_ROS2_GAZEBO "Build Gazebo Harmonic sensor adapter" ${AGI_ROS2_GAZEBO_DEFAULT})
 if(AGI_ROS2_GAZEBO)
  find_package(gz-transport13 REQUIRED)
  find_package(gz-msgs10 REQUIRED)

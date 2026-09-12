@@ -8,6 +8,7 @@
 #include <memory>
 #include <string>
 
+#include "agi_ros2/msp_telemetry.h"
 #include "agi_ros2/msg/authority.hpp"
 #include "agi_ros2/msg/control_command.hpp"
 #include "agi_ros2/msg/health.hpp"
@@ -48,6 +49,8 @@ private:
 	agi::BetaflightUdpBridgeParams _bridge_params;
 	std::unique_ptr<agi::BetaflightRcMapper> _mapper;
 	std::unique_ptr<agi::hardware::BetaflightMspBridge> _msp;
+	std::unique_ptr<MspTelemetry> _telemetry;
+	rclcpp::TimerBase::SharedPtr _msp_timer;
 	std::unique_ptr<agi::hardware::ThrustTable> _thrust;
 	agi::hardware::SafetyGate _gate;
 	msg::ControlCommand _command;

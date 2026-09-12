@@ -107,6 +107,15 @@ CommandOutputNode::CommandOutputNode()
 		_health = *message;
 		_health_receive_time = monotonicSeconds();
 	});
+	if (_msp) {
+		_telemetry = std::make_unique<MspTelemetry>(*this);
+		_msp_timer = create_wall_timer(std::chrono::milliseconds(1), [this] {
+			// RC stays on the 100 Hz control-command callback: adding another
+			// independent 10 ms wait would age the command's IMU evidence.
+			_telemetry->tick(*_msp, monotonicSeconds() + 0.0025);
+			if (!_telemetry->healthy()) _transport_healthy = false;
+		});
+	}
 	_watchdog = create_wall_timer(std::chrono::milliseconds(5), std::bind(&CommandOutputNode::watchdog, this));
 }
 
@@ -257,7 +266,8 @@ void CommandOutputNode::processOutput() {
 		// The MSP bridge has its own gate, which must also observe healthy AUTO
 		// low.
 		const uint64_t previous_errors = _msp->errors();
-		const bool sent = _msp->sendOverride(channels, evidence, monotonicSeconds() + 0.003);
+		const bool sent = _msp->sendOverride(channels, evidence, monotonicSeconds() + 0.002);
+		if (sent && _telemetry) _telemetry->sentRc(channels, _msp->errors());
 		if (active && !sent) {
 			reportFault("MSP output rejected or write failed");
 			if (_msp->errors() != previous_errors) {
@@ -282,7 +292,7 @@ void CommandOutputNode::processOutput() {
 	if (active) {
 		_reason = "Authorized output";
 	} else if (!rc_fresh) {
-		_reason = "RC timeout/link unavailable: SITL disarms; hardware releases override";
+		_reason = "RC timeout/link unavailable: SITL disarms; hardware releases override" + std::string(" ages=") + std::to_string(wall - _authority_receive_time) + "," + std::to_string(ros_time - stampSeconds(_authority.header.stamp));
 	} else if (_authority.kill || !_authority.armed) {
 		_reason = "Receiver KILL or ARM low";
 	} else if (_authority.auto_switch) {

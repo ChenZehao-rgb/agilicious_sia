@@ -50,3 +50,21 @@ they are not a CPC33 trajectory accuracy regression or physical-flight validatio
 The fusion algorithm remains constant-velocity delayed-RTK extrapolation plus
 AHRS/IMU propagation, now executed at the IMU callback rate. This change does not
 claim to eliminate the previously measured RTK correction sawteeth.
+
+## 2026-09-12 MSP ROS 2 integration
+
+- Full ROS 2 package build succeeded with `AGI_ROS2_GAZEBO=OFF` on x86-64/Humble.
+- `test_msp_node.py` passed using the installed ROS node, a PTY FC and rosbag2:
+  RC 100.02 Hz, ATTITUDE 20.00 Hz, STATUS 5.00 Hz; disabled categories absent;
+  missing GPS did not block bench RC; fragmented replies, ACKs and response latency recorded.
+  Read back the actual bag: 1204 `/msp/events`, 96 `/msp/attitude`, 24 `/msp/status`,
+  5 `/msp/config` messages in that run.
+- Updated the existing UART fixture to reply to telemetry and check that KILL stops RC
+  while telemetry continues; telemetry loss invalidates flight transport health.
+  This hardware test passed in isolation, as did the fusion/control/sensor-loss case.
+- The complete control suite is NOT a clean pass: wall-time tests intermittently reject
+  authorization. The remaining UDP test failure recorded authority reception age
+  0.107–0.146 s and stamp age 0.260–0.298 s, beyond the existing 0.1 s limit.
+  Other isolated runs passed that same UDP test. Safety limits were not relaxed;
+  treat this as an unresolved real-time/DDS test-environment limitation, not hardware certification.
+- No Raspberry Pi UART, physical FC or actual flight was exercised.

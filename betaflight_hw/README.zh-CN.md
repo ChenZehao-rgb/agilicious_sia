@@ -3,17 +3,17 @@
 当前交付是**可编译、可做无桨串口诊断的硬件接入基础版，不是可飞的自动驾驶程序**。
 用户已确定 GEPRC F722、Betaflight 2026.6；RTK 尚未确定，IMU 尚未采购。
 状态机与真实 Pilot/MPC 的软件协调层已补充，具体调用见 [控制链路说明](CONTROL.zh-CN.md)。
-这些信息不足以实现、验证真实传感器驱动及闭环，所以程序只提供 `--monitor`，没有 `--arm` 或 `--auto`。
+这些信息不足以实现、验证真实传感器驱动及闭环，所以程序提供 `--monitor` 与拆桨通信测试 `--bench`，没有 `--arm` 或 `--auto`。
 不要用 SITL 的 `--arm`、UDP 参数或 MockVIO 绕过这个限制。
 
 ## 1. 已实现与未实现
 
 | 模块 | 当前状态 |
 |---|---|
-| 独立硬件入口 | `agilib/apps/betaflight_hw.cpp`，只读 MSP；无 ROS/Gazebo/acados 运行依赖 |
+| 独立硬件入口 | `agilib/apps/betaflight_hw.cpp`，可配置遥测与无桨 RC 通信测试；无 ROS/Gazebo/acados 运行依赖 |
 | 串口传输 | `agi::hardware::BetaflightMspBridge`：独占串口、单线程归属、非阻塞读写、单调时钟绝对截止时间 |
 | MSP 帧 | 发 v1；接收 v1 XOR/native v2 CRC8-DVB-S2，检查方向、长度、错误回复；不支持 v2-over-v1 |
-| RC 覆盖基础接口 | 仅 4 个 AETR 通道，拒绝越界值；入口程序不调用该接口 |
+| RC 覆盖基础接口 | 仅 4 个 AETR 通道，拒绝越界值；飞行接口保留 SafetyGate；台架入口使用独立 sendBenchRc |
 | 公共角速度映射 | `BetaflightRcMapper` 被 SITL 复用；ACTUAL 反解和 deadband 反解 |
 | 实机推力接口 | `ThrustTable`，实测总推力 N、PWM、电压二维表；超出标定范围抛错，不外推 |
 | 授权门控 | `SafetyGate`，未知证据默认拒绝；启动/故障恢复必须重新观察 AUTO 低→高 |
@@ -25,7 +25,7 @@
 
 通信类不是旧的 `agi::MspBridge`，也暂未继承 `BridgeBase`。旧类的自动低油门/AUX 行为不符合这里的权限设计。
 `SafetyGate` 已接入 `HardwarePilot`，但不代表硬件信号已经读入；不得人为把证据字段全部设为 true 进行实飞。
-当前采用更保守的策略：一次 MPC 超过 8 ms 或一次串口发送/查询超时即停止覆盖；未实现上一安全命令复用、RTK 降级悬停或 3–5 帧容错。
+飞行门控及同步查询采用更保守的策略：一次 MPC 超过 8 ms 或一次串口发送/同步查询超时即停止覆盖；未实现上一安全命令复用、RTK 降级悬停或 3–5 帧容错。
 Linux 停发后 FC 仍可能保持最后一帧一段时间，停发不等于立即接管，更不等于急停。
 
 ## 2. 硬件选择与接线
@@ -236,7 +236,7 @@ CMake 已有 ELF 架构检查，错误地使用 x86 `.so` 会在配置时失败�
    先做在手动悬停点接管的定点参考，不自动解锁/起飞，不加载高速 CPC33。
 6. **串口 worker**：唯一线程创建/销毁 `BetaflightMspBridge`；控制线程通过有界最新值 mailbox 提交命令，
    禁止陈旧命令积压。每 10 ms 最多一帧 RC，监控穿插、预算不能侵占下一个控制周期。
-   库中的同步 `request()` 不是 100 Hz 调度器；不能直接复用诊断入口的 50 ms 查询预算。
+   使用 split-phase `sendRequest()`/`receive()` 穿插遥测；台架入口已实现 100 Hz 调度，但尚未接入飞行 mailbox。同步 `request()` 仅用于启动握手。
 7. **真实授权**：读取精确固件的 AUX、有效接收机状态/FAILSAFE、ARM 和 arming-disable flags，监控中断即失效。
    AUX 通道值不等于 RF 链路健康，MSP ACK 也不等于电机已执行。
    从精确版本解析配置回读、mask、failsafe、rate profile/map/deadband；运行中变更或 FC 重启必须退出 AUTO。
@@ -277,7 +277,7 @@ watchdog/Restart=on-failure 只能重启 Linux 服务，不能自动解锁或自
 ## 8. 台架到实飞的验收顺序
 
 **现在可做**：拆桨接线、固件备份、实体通道配置、编译测试、只读 MSP 查询。
-以下控制注入项目需要第 6 节闭环集成完成，当前 `--monitor` 不能执行：
+以下控制注入项目需要第 6 节闭环集成完成，`--bench` 仅可执行固定 RC 通信注入，不能替代闭环授权测试：
 
 | 阶段 | 操作与通过条件 |
 |---|---|
@@ -307,3 +307,42 @@ FC KILL 的动作应明确为立即 disarm 还是触发 Stage-2 failsafe，两�
 ACTUAL 三轴/expo/deadband 反解有回归测试；Python 端到端伪飞控检查诊断握手、只读请求及 SIGINT 退出。
 这些结果不证明真实 FC 固件回退、ARM/KILL、RTK/IMU、真实电源或实飞已经通过。
 下一次硬件集成需提供 PCB 完整型号、`version`/`diff all`、RTK协议、IMU模块原理图/引脚和机体参数。
+
+
+## 10. 可配置实机通信时序
+
+```bash
+# 只读：默认 attitude=10,rc=10,status=5,analog=2,battery=2,gps=2 Hz
+build/betaflight_hw/agilicious_betaflight_hw --monitor /dev/serial0 115200 --duration 30 > telemetry.csv
+
+# 自选返回类别和频率：--rates 完整替换默认列表，未列出的类别关闭；0 也表示关闭
+build/betaflight_hw/agilicious_betaflight_hw --monitor /dev/serial0 115200 \
+  --rates attitude=10,rc=10,status=5,battery=5,gps=2 --duration 30 > selected.csv
+
+# 拆桨台架通信：固定 A,E,T,R 四通道，100 Hz MSP_SET_RAW_RC
+build/betaflight_hw/agilicious_betaflight_hw --bench /dev/serial0 115200 \
+  --props-removed --rc 1500,1500,1000,1500 \
+  --rates attitude=10,rc=10,status=5,analog=2,battery=2,gps=2 \
+  --duration 30 > bench.csv
+```
+
+默认运行 10 秒；`--duration 0` 持续运行，Ctrl-C 停止。台架参数是固定测试值，
+不是 Pilot/MPC 输出，不得用于飞行。只发送四个 AETR 通道，不发送 AUX 或 ARM。
+配置 `map AETR1234` 后再测试；MSP Override 是否生效仍取决于 FC 的模式、mask 和实体接收机。
+握手检查 Betaflight 标识与 MSP API major 1，不代表已经自动核验上述配置。
+
+发送时序：RC 每 10 ms 优先发送；各遥测独立调度、错峰请求。响应通过非阻塞读取解析，
+不会同步等待 ACK；FC 决定实际响应时间，设置的是请求频率而不是强制 FC 产生新样本的频率。
+类别名分别对应 ATTITUDE(108)、RC(105)、STATUS(101)、ANALOG(110)、BATTERY_STATE(130)、RAW_GPS(106)。
+命令编号来源：[Betaflight MSP 协议定义](https://github.com/betaflight/betaflight/blob/master/src/main/msp/msp_protocol.h)。
+每类最多一个未完成请求；`--timeout-ms` 默认 100 ms。超时/不支持回复后停用该类并记录，
+其他类别及台架 RC 继续；需重启才能恢复该类，避免没有序列号的迟到回复被误配给新请求。
+这项容错仅用于通信诊断，飞行控制必须继续依据真实遥测新鲜度和 SafetyGate 决策。
+
+CSV 记录单调时钟时间、tx/rx/error/timeout/late、MSP code、原始 payload 十六进制和错误累计数。
+保留原始回复以便按实机固件版本解码；当前没有将这些字段转换为姿态/电池/GPS 工程单位。
+RC 的 tx 表示内核接受发送，rx code 200 表示 ACK，二者均不能证明 FC 执行了控制。
+台架日志直接输出 stdout；慢磁盘/管道以及 Linux 调度可能影响频率，不是硬实时飞行 worker。
+验收时按各 code 的 tx/rx 时间戳统计平均频率、最大间隔和超时，再与 FC Blackbox/接收机界面核对。
+本地 PTY 测试覆盖默认频率、自定义类别、100 Hz RC、四通道编码、分片回复及 GPS 丢包隔离；
+尚未连接树莓派/FC 做物理串口或飞行验收。
