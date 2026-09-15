@@ -18,6 +18,8 @@ HEADER = ("t,p_x,p_y,p_z,q_w,q_x,q_y,q_z,v_x,v_y,v_z,w_x,w_y,w_z,"
           "a_lin_x,a_lin_y,a_lin_z,a_rot_x,a_rot_y,a_rot_z,u_1,u_2,u_3,u_4,"
           "jerk_x,jerk_y,jerk_z,snap_x,snap_y,snap_z")
 G = 9.80665
+# Reserve 30% of each rotor's reachable thrust for tracking corrections.
+THRUST_MAX_FRACTION = 0.70
 # Integral of 630*u^4*(1-u)^4: derivatives 1..4 vanish at both ends.
 PROGRESS = Polynomial([0, 0, 0, 0, 0, 126, -420, 540, -315, 70])
 
@@ -97,8 +99,9 @@ def trajectory(radius, speed, distance, turns, quad, samples):
 
 def violation(data, quad):
     thrust, omega = data[7], data[4]
-    return max(float(np.max(thrust) / quad['thrust_max'] - 1),
-               float((quad['thrust_min'] - np.min(thrust)) / quad['thrust_max']),
+    thrust_limit = THRUST_MAX_FRACTION * quad['thrust_max']
+    return max(float(np.max(thrust) / thrust_limit - 1),
+               float((quad['thrust_min'] - np.min(thrust)) / thrust_limit),
                float(np.max(np.abs(omega) / quad['omega_max']) - 1))
 
 
@@ -144,6 +147,8 @@ def solve(speed, args, quad):
                 turns=args.turns, diameter_m=2 * radius, duration_s=float(t[-1]),
                 samples=len(matrix), max_dt_s=float(np.diff(matrix[:, 0]).max()),
                 verification_samples=samples,
+                thrust_max_fraction=THRUST_MAX_FRACTION,
+                rotor_thrust_limit_N=THRUST_MAX_FRACTION * quad['thrust_max'],
                 min_rotor_thrust_N=float(thrust.min()), max_rotor_thrust_N=float(thrust.max()),
                 max_abs_body_rate_rad_s=np.abs(w).max(axis=0).tolist(),
                 model='ideal rigid body, static rotor limits; no aerodynamic drag or motor lag',
@@ -166,6 +171,11 @@ def main():
             or args.turns <= 0 or not 0 < args.min_helix_angle < 90):
         parser.error('speeds/distance/dt/turns must be positive; angle must be in (0, 90) degrees')
     quad = yaml.safe_load(args.quad.read_text())
+    thrust_limit = THRUST_MAX_FRACTION * quad['thrust_max']
+    if not math.isfinite(thrust_limit) or thrust_limit <= 0:
+        parser.error('70% rotor thrust limit must be finite and positive')
+    if thrust_limit < max(quad['thrust_min'], quad['mass'] * G / 4):
+        parser.error('70% rotor thrust limit cannot satisfy minimum thrust or hover')
     args.output.mkdir(parents=True, exist_ok=True)
     for speed in args.speeds:
         result = solve(speed, args, quad)

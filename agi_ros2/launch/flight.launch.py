@@ -38,7 +38,7 @@ def nodes(context):
         command = ['ros2', 'bag', 'record', '--all', '--include-hidden-topics']
         bag_output = arg('bag_output')
         if not bag_output:
-            bag_dir = Path.home() / 'agi_bags'
+            bag_dir = Path('/home/sia/agilicious_internal-main/bags')
             bag_dir.mkdir(parents=True, exist_ok=True)
             bag_output = str(bag_dir / datetime.now().strftime('flight_%Y%m%d_%H%M%S_%f'))
         command.extend(['--output', bag_output])
@@ -68,7 +68,7 @@ MSP_CONFIG = {
 
 FLIGHT_CONFIG = dict(mode='sitl', params_dir=get_package_share_directory('agi_ros2') + '/params',
                     pilot_config='pilot_ros2.yaml', bridge_config='betaflight_udp.yaml',
-                    device='/dev/ttyAMA0', baud='921600', trajectory='/home/sia/agilicious_internal-main/miscellaneous/datasets/ref_trajs/open_source/CPC33_Z1.csv', thrust_table='',
+                    device='/dev/ttyAMA0', baud='921600', trajectory='/home/sia/agilicious_internal-main/miscellaneous/datasets/ref_trajs/open_source/HELIX_FWD50_50mps.csv', thrust_table='',
                     sitl_delay_test='true', record_bag='true', bag_output='')
 
 

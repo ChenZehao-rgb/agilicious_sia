@@ -24,7 +24,7 @@ MSP_CONFIG = {
     'msp.gps.enabled': True,      'msp.gps.rate_hz': 2.0,
 }
 RECORD_BAG = True
-BAG_ROOT = Path.home() / 'agi_bags'
+BAG_ROOT = Path('/home/sia/agilicious_internal-main/bags')
 
 
 def generate_launch_description():
