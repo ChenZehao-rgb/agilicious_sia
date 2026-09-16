@@ -349,3 +349,9 @@ ROS_LOG_DIR=/tmp/agi_ros2_msp_logs ROS_DOMAIN_ID=89 ROS_LOCALHOST_ONLY=1 \
 
 测试只访问伪串口，检查 100 Hz RC、自选遥测频率/类别、原始帧 topic、延迟和时间戳、
 GPS 超时隔离及实际 bag 消息。树莓派物理串口、目标固件和真实飞行仍需实机验收。
+
+## MAVLink 实机传感器接入
+
+新增独立 `mavlink_sensor_node`，保留 MSP 控制与状态通道。
+见 [MAVLink 配置、topic、时间语义和测试说明](MAVLINK_SENSORS.md)。
+普通 GPS topic 不替代现有 `/sensors/rtk` 融合接口。

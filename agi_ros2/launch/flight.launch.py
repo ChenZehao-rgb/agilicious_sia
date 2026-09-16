@@ -1,3 +1,4 @@
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -24,12 +25,35 @@ def nodes(context):
                                                 'sitl_delay_test': common['sitl_delay_test']}])
     control = Node(package='agi_ros2', executable='control_node', output='screen',
                    parameters=[{**common, 'trajectory': arg('trajectory')}])
+    mavlink_enabled = arg('mavlink_enabled').lower() == 'true'
+    msp_config = dict(MSP_CONFIG) if mode == 'hardware' else {}
+    if mavlink_enabled:
+        if mode != 'hardware':
+            raise ValueError('MAVLink sensors may only be enabled in hardware mode')
+        sensor_device = arg('mavlink_device')
+        if not sensor_device:
+            raise ValueError('mavlink_device must be specified')
+        same = os.path.realpath(sensor_device) == os.path.realpath(arg('device'))
+        if os.path.exists(sensor_device) and os.path.exists(arg('device')):
+            same = same or os.path.samefile(sensor_device, arg('device'))
+        if same:
+            raise ValueError('MSP and MAVLink must use different serial devices')
+        msp_config['msp.gps.enabled'] = False
+        if int(arg('mavlink_attitude_rate_hz')) > 0:
+            msp_config['msp.attitude.enabled'] = False
     output = Node(package='agi_ros2', executable='command_output_node',
                   output='screen', parameters=[{
-                      **common, **(MSP_CONFIG if mode == 'hardware' else {}), 'bridge_config': arg('bridge_config'),
+                      **common, **msp_config, 'bridge_config': arg('bridge_config'),
                       'device': arg('device'), 'baud': int(arg('baud')),
                       'thrust_table': arg('thrust_table')}])
     result = [fusion, control, output]
+    if mavlink_enabled:
+        result.append(Node(package='agi_ros2', executable='mavlink_sensor_node', output='screen',
+            parameters=[{'device': arg('mavlink_device'), 'baud': int(arg('mavlink_baud')),
+                         'gps_mode': arg('mavlink_gps_mode'), 'altitude_source': arg('mavlink_altitude_source'),
+                         'imu_rate_hz': int(arg('mavlink_imu_rate_hz')),
+                         'gps_rate_hz': int(arg('mavlink_gps_rate_hz')),
+                         'attitude_rate_hz': int(arg('mavlink_attitude_rate_hz')), 'use_sim_time': False}]))
     for process in list(result):
         result.append(RegisterEventHandler(OnProcessExit(target_action=process,
             on_exit=[EmitEvent(event=Shutdown(reason='flight component exited'))])))
@@ -66,7 +90,9 @@ MSP_CONFIG = {
     'msp.gps.enabled': True,      'msp.gps.rate_hz': 2.0,
 }
 
-FLIGHT_CONFIG = dict(mode='sitl', params_dir=get_package_share_directory('agi_ros2') + '/params',
+FLIGHT_CONFIG = dict(mavlink_enabled='false', mavlink_device='', mavlink_baud='921600',
+                    mavlink_gps_mode='gnss', mavlink_altitude_source='unknown',
+                    mavlink_imu_rate_hz='500', mavlink_gps_rate_hz='10', mavlink_attitude_rate_hz='0', mode='sitl', params_dir=get_package_share_directory('agi_ros2') + '/params',
                     pilot_config='pilot_ros2.yaml', bridge_config='betaflight_udp.yaml',
                     device='/dev/ttyAMA0', baud='921600', trajectory='/home/sia/agilicious_internal-main/miscellaneous/datasets/ref_trajs/open_source/HELIX_FWD50_50mps.csv', thrust_table='',
                     sitl_delay_test='true', record_bag='true', bag_output='')
