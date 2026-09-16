@@ -7,9 +7,9 @@
 
 #include "agi_ros2/msg/fused_state.hpp"
 #include "agi_ros2/msg/rtk.hpp"
+#include "agilib/estimator/ekf_imu/ekf_imu.hpp"
 #include "agilib/types/quad_state.hpp"
 #include "companion_ahrs.hpp"
-#include "agilib/estimator/ekf_imu/ekf_imu.hpp"
 #include "nav_msgs/msg/odometry.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/imu.hpp"

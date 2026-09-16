@@ -92,11 +92,9 @@ void StateFusionNode::onImu(sensor_msgs::msg::Imu::ConstSharedPtr message) {
 	}
 
 	const double fix_time = stampSeconds(_rtk.header.stamp);
-	const bool valid_fix =
-	    (get_parameter("use_sim_time").as_bool() || SafetyGate::fresh(received, _rtk_receive_time, 0.3)) &&
-	    SafetyGate::fresh(time, fix_time, 0.3, _timing_checks) && _rtk.header.frame_id == "odom" &&
-	    _rtk.fixed && _rtk.accuracy_ok &&
-	    (!std::isfinite(_last_rtk_time) || fix_time > _last_rtk_time);
+	const bool valid_fix = (get_parameter("use_sim_time").as_bool() || SafetyGate::fresh(received, _rtk_receive_time, 0.3)) &&
+	                       SafetyGate::fresh(time, fix_time, 0.3, _timing_checks) && _rtk.header.frame_id == "odom" && _rtk.fixed &&
+	                       _rtk.accuracy_ok && (!std::isfinite(_last_rtk_time) || fix_time > _last_rtk_time);
 	const agi::Vector<3> position(_rtk.position.x, _rtk.position.y, _rtk.position.z);
 	const agi::Vector<3> velocity(_rtk.velocity.x, _rtk.velocity.y, _rtk.velocity.z);
 	const bool heading_valid = _rtk.heading_valid && std::isfinite(_rtk.heading);
@@ -106,21 +104,19 @@ void StateFusionNode::onImu(sensor_msgs::msg::Imu::ConstSharedPtr message) {
 		if (valid_fix && heading_valid) _ahrs->setHeading(_rtk.heading);
 		_ahrs->addImu(imu);
 		_state.t = time;
-		if (!valid_fix || !heading_valid || !position.allFinite() ||
-		    !velocity.allFinite() || !_ahrs->initialized()) return;
+		if (!valid_fix || !heading_valid || !position.allFinite() || !velocity.allFinite() || !_ahrs->initialized()) return;
 		_state.p = position + velocity * (time - fix_time);
 		_state.v = velocity;
 		_state.q(_ahrs->attitude());
-		_state.q(agi::Quaternion(Eigen::AngleAxis<agi::Scalar>(
-		    _rtk.heading - _state.getYaw(), agi::Vector<3>::UnitZ())) * _state.q());
+		_state.q(agi::Quaternion(Eigen::AngleAxis<agi::Scalar>(_rtk.heading - _state.getYaw(), agi::Vector<3>::UnitZ())) *
+		         _state.q());
 		_state.bw = _ahrs->gyroBias();
 		if (!_ekf->initialize(_state) || !_ekf->addImu(imu)) return;
 		_last_rtk_time = fix_time;
 	} else {
 		if (!_ekf->addImu(imu)) return;
-		if (valid_fix && _ekf->addRtk(fix_time, position, velocity,
-		                            _rtk.heading, heading_valid, _rtk_position_variance,
-		                            _rtk_velocity_variance, _rtk_heading_variance)) {
+		if (valid_fix && _ekf->addRtk(fix_time, position, velocity, _rtk.heading, heading_valid, _rtk_position_variance,
+		                              _rtk_velocity_variance, _rtk_heading_variance)) {
 			_last_rtk_time = fix_time;
 		}
 	}

@@ -193,8 +193,8 @@ std::array<uint16_t, 4> CommandOutputNode::mapCommand() const {
 		                     std::sqrt(acceleration / kGravity);
 		channels[2] = static_cast<uint16_t>(
 		        std::lround(_bridge_params.min_check +
-			            (2000 - _bridge_params.min_check) *
-			                    std::clamp((motor - _bridge_params.motor_idle) / (1 - _bridge_params.motor_idle), 0.0, 1.0)));
+		                    (2000 - _bridge_params.min_check) *
+		                            std::clamp((motor - _bridge_params.motor_idle) / (1 - _bridge_params.motor_idle), 0.0, 1.0)));
 	}
 	return channels;
 }
@@ -214,11 +214,10 @@ void CommandOutputNode::processOutput() {
 	evidence.timing_checks = _timing_checks;
 	const double wall = monotonicSeconds();
 	evidence.now = _simulation_time ? ros_time : wall;
-	const bool command_fresh = _command.clock_id == evidenceClockId(_clock_id, _simulation_time) &&
-	                           _command.header.frame_id == "base_link" &&
-	                           timely(wall, _command_receive_time, _simulation_time ? kSitlWallTimeout : 0.025) &&
-	                           timely(evidence.now, _command.evidence.now, 0.025) &&
-	                           timely(ros_time, stampSeconds(_command.header.stamp), 0.025);
+	const bool command_fresh =
+	        _command.clock_id == evidenceClockId(_clock_id, _simulation_time) && _command.header.frame_id == "base_link" &&
+	        timely(wall, _command_receive_time, _simulation_time ? kSitlWallTimeout : 0.025) &&
+	        timely(evidence.now, _command.evidence.now, 0.025) && timely(ros_time, stampSeconds(_command.header.stamp), 0.025);
 	const bool rc_fresh = timely(wall, _authority_receive_time, _simulation_time ? kSitlWallTimeout : 0.1) &&
 	                      timely(ros_time, stampSeconds(_authority.header.stamp), 0.1) && _authority.rc_link;
 	const bool health_fresh = timely(wall, _health_receive_time, _simulation_time ? kSitlWallTimeout : 0.2) &&
@@ -292,7 +291,9 @@ void CommandOutputNode::processOutput() {
 	if (active) {
 		_reason = "Authorized output";
 	} else if (!rc_fresh) {
-		_reason = "RC timeout/link unavailable: SITL disarms; hardware releases override" + std::string(" ages=") + std::to_string(wall - _authority_receive_time) + "," + std::to_string(ros_time - stampSeconds(_authority.header.stamp));
+		_reason = "RC timeout/link unavailable: SITL disarms; hardware releases override" + std::string(" ages=") +
+		          std::to_string(wall - _authority_receive_time) + "," +
+		          std::to_string(ros_time - stampSeconds(_authority.header.stamp));
 	} else if (_authority.kill || !_authority.armed) {
 		_reason = "Receiver KILL or ARM low";
 	} else if (_authority.auto_switch) {

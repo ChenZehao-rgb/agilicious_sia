@@ -8,11 +8,11 @@
 #include <memory>
 #include <string>
 
-#include "agi_ros2/msp_telemetry.h"
 #include "agi_ros2/msg/authority.hpp"
 #include "agi_ros2/msg/control_command.hpp"
 #include "agi_ros2/msg/health.hpp"
 #include "agi_ros2/msg/output_status.hpp"
+#include "agi_ros2/msp_telemetry.h"
 #include "agilib/bridge/betaflight/betaflight_msp_bridge.hpp"
 #include "agilib/bridge/betaflight/betaflight_rc_mapper.hpp"
 #include "agilib/bridge/betaflight/hardware_safety.hpp"

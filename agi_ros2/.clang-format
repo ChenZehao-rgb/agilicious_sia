@@ -1,8 +1,9 @@
 BasedOnStyle: Google
-ColumnLimit: 140
+Language: Cpp
+UseTab: ForIndentation
 IndentWidth: 8
 TabWidth: 8
-UseTab: ForIndentation
-AccessModifierOffset: -8
 ContinuationIndentWidth: 8
 ConstructorInitializerIndentWidth: 8
+ColumnLimit: 140
+AccessModifierOffset: -8

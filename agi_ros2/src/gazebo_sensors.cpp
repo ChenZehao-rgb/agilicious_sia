@@ -1,21 +1,22 @@
-#include <rclcpp/rclcpp.hpp>
-#include <sensor_msgs/msg/imu.hpp>
-#include <nav_msgs/msg/odometry.hpp>
-#include <rosgraph_msgs/msg/clock.hpp>
-#include <agi_ros2/msg/rtk.hpp>
-#include <agi_ros2/msg/health.hpp>
-#include <gz/transport/Node.hh>
+#include <gz/msgs/clock.pb.h>
 #include <gz/msgs/imu.pb.h>
 #include <gz/msgs/odometry.pb.h>
-#include <gz/msgs/clock.pb.h>
+
+#include <agi_ros2/msg/health.hpp>
+#include <agi_ros2/msg/rtk.hpp>
 #include <cmath>
 #include <deque>
+#include <gz/transport/Node.hh>
 #include <mutex>
+#include <nav_msgs/msg/odometry.hpp>
 #include <random>
+#include <rclcpp/rclcpp.hpp>
+#include <rosgraph_msgs/msg/clock.hpp>
+#include <sensor_msgs/msg/imu.hpp>
 
 class GazeboSensors : public rclcpp::Node {
 public:
-	GazeboSensors(): Node("gazebo_sensors") {
+	GazeboSensors() : Node("gazebo_sensors") {
 		declare_parameter<double>("rtk_rate", 10.0);
 		declare_parameter<double>("rtk_delay", 0.08);
 		declare_parameter<double>("position_noise", 0.02);
@@ -42,6 +43,7 @@ public:
 		_gz.Unsubscribe("/model/iris/companion_imu");
 		_gz.Unsubscribe("/model/iris/odometry");
 	}
+
 private:
 	static builtin_interfaces::msg::Time time(const gz::msgs::Time& s) {
 		builtin_interfaces::msg::Time t;
@@ -111,8 +113,8 @@ private:
 			out.velocity.x = v.x() + q.w() * tx + q.y() * tz - q.z() * ty + vn * _noise(_random);
 			out.velocity.y = v.y() + q.w() * ty + q.z() * tx - q.x() * tz + vn * _noise(_random);
 			out.velocity.z = v.z() + q.w() * tz + q.x() * ty - q.y() * tx + vn * _noise(_random);
-			out.heading = std::atan2(2 * (q.w() * q.z() + q.x() * q.y()),
-			                         1 - 2 * (q.y() * q.y() + q.z() * q.z())) + get_parameter("heading_noise").as_double() * _noise(_random);
+			out.heading = std::atan2(2 * (q.w() * q.z() + q.x() * q.y()), 1 - 2 * (q.y() * q.y() + q.z() * q.z())) +
+			              get_parameter("heading_noise").as_double() * _noise(_random);
 			out.fixed = get_parameter("rtk_fixed").as_bool();
 			out.heading_valid = get_parameter("heading_valid").as_bool();
 			out.accuracy_ok = true;

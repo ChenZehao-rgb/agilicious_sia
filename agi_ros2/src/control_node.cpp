@@ -57,8 +57,8 @@ ControlNode::ControlNode()
 		if (!_pilot->setTrajectory(points)) {
 			throw std::invalid_argument("Invalid trajectory timestamps or states");
 		}
-		RCLCPP_INFO(get_logger(), "Loaded trajectory: %s (%zu samples, %.3f s)",
-		            trajectory.c_str(), points.size(), points.back().state.t);
+		RCLCPP_INFO(get_logger(), "Loaded trajectory: %s (%zu samples, %.3f s)", trajectory.c_str(), points.size(),
+		            points.back().state.t);
 	}
 	_state_sub = create_subscription<msg::FusedState>("fused_state", 1, std::bind(&ControlNode::onState, this, std::placeholders::_1));
 	_authority_sub = create_subscription<msg::Authority>("authority", 1, [this](msg::Authority::ConstSharedPtr message) {
@@ -112,8 +112,8 @@ void ControlNode::tick() {
 	                                                stampSeconds(_health.header.stamp)}));
 	const double wall = monotonicSeconds();
 	const double safety_now = _simulation_time ? _control_time : wall;
-	if (_output_fault ||
-	    (std::isfinite(_previous_clock) && (_control_time < _previous_clock || (_timing_checks && _control_time - _previous_clock > 0.25)))) {
+	if (_output_fault || (std::isfinite(_previous_clock) &&
+	                      (_control_time < _previous_clock || (_timing_checks && _control_time - _previous_clock > 0.25)))) {
 		_pilot->reportOutputFault();
 		_output_fault = false;
 	}
@@ -137,8 +137,7 @@ void ControlNode::tick() {
 	evidence.imu_time = _state.clock_id == _clock_id ? (_simulation_time ? state.t : _state.imu_receive_time) : kUnknownTime;
 	evidence.rtk_time = _state.initialized ? safety_now - (_control_time - stampSeconds(_state.rtk_stamp)) : kUnknownTime;
 	evidence.rc_time = safety_now - (_control_time - stampSeconds(_authority.header.stamp));
-	evidence.rc_link =
-	        _authority.rc_link && timely(wall, _authority_receive_time, _simulation_time ? kSitlWallTimeout : 0.1);
+	evidence.rc_link = _authority.rc_link && timely(wall, _authority_receive_time, _simulation_time ? kSitlWallTimeout : 0.1);
 	evidence.armed = _authority.armed;
 	evidence.auto_switch = _authority.auto_switch;
 	evidence.kill = _authority.kill;
