@@ -315,9 +315,9 @@ bool EkfImu::updatePose(const Pose& pose) {
   }
 
   // Pose update residual and jacobian.
-  const Vector<SRPOSE> y = (Vector<SRPOSE>() << p - pose.position,
-                            (pose.attitude.conjugate() * q).vec())
-                             .finished();
+	Vector<SRPOSE> y;
+	y.head<3>() = p - pose.position;
+	y.tail<3>() = (pose.attitude.conjugate() * q).vec();
 
   Matrix<SRPOSE, IDX::SIZE> H = Matrix<SRPOSE, IDX::SIZE>::Zero();
   H.block<3, 3>(0, IDX::POS) = Matrix<3, 3>::Identity();
@@ -372,11 +372,11 @@ bool EkfImu::propagatePrior(const Scalar t) {
 
   if (imu_ptr < imus_.end()) {
     t_target = std::min(imu_ptr->t, t);
-    imu_data.head(3) = imu_ptr->omega;
-    imu_data.tail(3) = imu_ptr->acc;
+		imu_data.head<3>() = imu_ptr->omega;
+		imu_data.tail<3>() = imu_ptr->acc;
   } else {
-    imu_data.head(3) = imu_last_.omega;
-    imu_data.tail(3) = imu_last_.acc;
+		imu_data.head<3>() = imu_last_.omega;
+		imu_data.tail<3>() = imu_last_.acc;
   }
 
   static constexpr Scalar dt_max = 1e-4;
@@ -385,8 +385,8 @@ bool EkfImu::propagatePrior(const Scalar t) {
       if (imu_ptr->t <= t_prior_) ++imu_ptr;
       if (imu_ptr < imus_.end()) {
         t_target = std::min(imu_ptr->t, t);
-        imu_data.head(3) = imu_ptr->omega;
-        imu_data.tail(3) = imu_ptr->acc;
+				imu_data.head<3>() = imu_ptr->omega;
+				imu_data.tail<3>() = imu_ptr->acc;
       } else {
         t_target = t;
       }
@@ -445,11 +445,11 @@ bool EkfImu::propagatePriorAndCovariance(const Scalar t) {
 
   if (imu_ptr < imus_.end()) {
     t_target = std::min(imu_ptr->t, t);
-    imu_data.head(3) = imu_ptr->omega;
-    imu_data.tail(3) = imu_ptr->acc;
+		imu_data.head<3>() = imu_ptr->omega;
+		imu_data.tail<3>() = imu_ptr->acc;
   } else {
-    imu_data.head(3) = imu_last_.omega;
-    imu_data.tail(3) = imu_last_.acc;
+		imu_data.head<3>() = imu_last_.omega;
+		imu_data.tail<3>() = imu_last_.acc;
   }
 
   static constexpr Scalar dt_max = 1e-4;
@@ -459,8 +459,8 @@ bool EkfImu::propagatePriorAndCovariance(const Scalar t) {
       if (imu_ptr->t <= t_prior_) ++imu_ptr;
       if (imu_ptr < imus_.end()) {
         t_target = std::min(imu_ptr->t, t);
-        imu_data.head(3) = imu_ptr->omega;
-        imu_data.tail(3) = imu_ptr->acc;
+				imu_data.head<3>() = imu_ptr->omega;
+				imu_data.tail<3>() = imu_ptr->acc;
       } else {
         t_target = t;
       }

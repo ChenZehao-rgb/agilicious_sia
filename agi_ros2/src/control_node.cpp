@@ -206,6 +206,12 @@ void ControlNode::publishDecision(const agi::hardware::ControlDecision& decision
 		message.pose.pose.orientation.x = reference.q().x();
 		message.pose.pose.orientation.y = reference.q().y();
 		message.pose.pose.orientation.z = reference.q().z();
+		message.twist.twist.linear.x = reference.v.x();
+		message.twist.twist.linear.y = reference.v.y();
+		message.twist.twist.linear.z = reference.v.z();
+		message.twist.twist.angular.x = reference.w.x();
+		message.twist.twist.angular.y = reference.w.y();
+		message.twist.twist.angular.z = reference.w.z();
 		_reference_pub->publish(message);
 	}
 }

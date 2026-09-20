@@ -95,7 +95,7 @@ ros2 param set /sim_rc kill false
 # 等待 Betaflight 启动校准完成，建议仿真时间超过 12 秒，再低油门 ARM。
 ros2 param set /sim_rc armed true
 # AUTO 保持 false；需要起飞时，逐步调整人工油门，例如（当前模型悬停油门约 1411）：
-ros2 param set /sim_rc throttle 1450
+ros2 param set /sim_rc throttle 1420
 # 确认状态为 AUTO_STANDBY 且机体到达预期位置后再切 AUTO：
 # 切换前确认当前 /status 仍为 AUTO_STANDBY；出现 RC timeout / MPC warming 时不要切换。
 ros2 param set /sim_rc auto_switch true

@@ -14,9 +14,10 @@ from numpy.polynomial import Polynomial
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
-HEADER = ("t,p_x,p_y,p_z,q_w,q_x,q_y,q_z,v_x,v_y,v_z,w_x,w_y,w_z,"
-          "a_lin_x,a_lin_y,a_lin_z,a_rot_x,a_rot_y,a_rot_z,u_1,u_2,u_3,u_4,"
-          "jerk_x,jerk_y,jerk_z,snap_x,snap_y,snap_z")
+# HEADER = ("t,p_x,p_y,p_z,q_w,q_x,q_y,q_z,v_x,v_y,v_z,w_x,w_y,w_z,"
+#           "a_lin_x,a_lin_y,a_lin_z,a_rot_x,a_rot_y,a_rot_z,u_1,u_2,u_3,u_4,"
+#           "jerk_x,jerk_y,jerk_z,snap_x,snap_y,snap_z")
+HEADER = ("t,p_x,p_y,p_z,q_w,q_x,q_y,q_z,v_x,v_y,v_z,w_x,w_y,w_z")
 G = 9.80665
 # Reserve 30% of each rotor's reachable thrust for tracking corrections.
 THRUST_MAX_FRACTION = 0.70

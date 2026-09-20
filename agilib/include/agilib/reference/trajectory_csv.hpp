@@ -42,9 +42,7 @@ inline std::vector<std::vector<double>> readTrajectoryRows(
 
   std::string line;
   if (!std::getline(file, line) ||
-      line != "t,p_x,p_y,p_z,q_w,q_x,q_y,q_z,v_x,v_y,v_z,w_x,w_y,w_z,"
-              "a_lin_x,a_lin_y,a_lin_z,a_rot_x,a_rot_y,a_rot_z,u_1,u_2,"
-              "u_3,u_4,jerk_x,jerk_y,jerk_z,snap_x,snap_y,snap_z") {
+      line != "t,p_x,p_y,p_z,q_w,q_x,q_y,q_z,v_x,v_y,v_z,w_x,w_y,w_z") {
     throw std::runtime_error("unsupported trajectory CSV header: " +
                              path.string());
   }

@@ -94,7 +94,7 @@ FLIGHT_CONFIG = dict(mavlink_enabled='false', mavlink_device='', mavlink_baud='9
                     mavlink_gps_mode='gnss', mavlink_altitude_source='unknown',
                     mavlink_imu_rate_hz='500', mavlink_gps_rate_hz='10', mavlink_attitude_rate_hz='0', mode='sitl', params_dir=get_package_share_directory('agi_ros2') + '/params',
                     pilot_config='pilot_ros2.yaml', bridge_config='betaflight_udp.yaml',
-                    device='/dev/ttyAMA0', baud='921600', trajectory='/home/sia/agilicious_internal-main/miscellaneous/datasets/ref_trajs/open_source/HELIX_FWD50_50mps.csv', thrust_table='',
+                    device='/dev/ttyAMA0', baud='921600', trajectory='/home/sia/agilicious_internal-main/miscellaneous/datasets/ref_trajs/open_source/HELIX_FWD20_50mps.csv', thrust_table='',
                     sitl_delay_test='true', record_bag='true', bag_output='')
 
 

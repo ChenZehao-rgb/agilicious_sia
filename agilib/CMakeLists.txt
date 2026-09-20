@@ -237,6 +237,17 @@ else ()
     )
     if (WARNINGS_AS_ERRORS)
       target_compile_options(${PROJECT_NAME} PRIVATE -Werror)
+      # GCC 13 reports array-bounds and maybe-uninitialized diagnostics in
+      # Eigen's inlined AVX assignments and Quaternion/JacobiSVD code. Keep
+      # these diagnostics visible without blocking the Jazzy/Noble build.
+      # Limit the compatibility workaround to this target and compiler series.
+      if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND
+          CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL "13" AND
+          CMAKE_CXX_COMPILER_VERSION VERSION_LESS "14")
+        target_compile_options(${PROJECT_NAME} PRIVATE
+          -Wno-error=array-bounds
+          -Wno-error=maybe-uninitialized)
+      endif ()
     endif ()
     # To keep the compiler calm about Eigen
     if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
