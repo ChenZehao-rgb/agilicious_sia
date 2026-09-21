@@ -41,8 +41,17 @@ class ShadowHarness(Harness):
         self.response_auto = False
         self.response_kill = False
         self.response_armed = True
+        self.response_pid_profile = 0
+        self.response_rate_profile = 0
+        self.response_conflicting_mode = False
+        self.response_error_ack = False
+        self.config_frames = config_frames()
+        self.override_settings = {'msp_override_channels_mask': '15', 'msp_override_failsafe': 'OFF',
+                                  'msp_override_timeout_ms': '50'}
         self.session = 'fc-one'
         self.last_nav = 0.
+        self.navigation_accuracies = (math.nan, math.nan, math.nan)
+        self.navigation_latitude = 31.
         self.master, self.slave = pty.openpty()
         os.set_blocking(self.master, False)
 
@@ -97,29 +106,34 @@ class ShadowHarness(Harness):
                 payload = frame[header:-1]
                 assert b'=' not in payload
                 name = payload.split(b'\0')[0].decode()
-                assert name in ('msp_override_channels_mask', 'msp_override_failsafe')
-                value = '15' if name.endswith('mask') else 'OFF'
+                values = self.override_settings
+                assert name in values
+                value = values[name]
                 reply = f'{name} = {value}'.encode()
             elif code == 105:
                 reply = struct.pack('<7H', 1500, 1500, 1000, 1500,
                                     1800 if self.response_armed else 1000,
                                     1800 if self.response_auto else 1000,
                                     1800 if self.response_kill else 1000)
-            elif code == 101:
-                reply = status_frame(self.response_armed, self.response_auto, self.response_kill)
+            elif code == 150:
+                reply = status_frame(self.response_armed, self.response_auto, self.response_kill,
+                                     pid_profile=self.response_pid_profile, rate_profile=self.response_rate_profile)
+                if self.response_conflicting_mode:
+                    reply[6] |= 8
             elif code == 130:
                 reply = bytearray(11)
                 reply[0] = 4
                 struct.pack_into('<H', reply, 9, 1600)
             else:
-                reply = config_frames().get(code, b'')
+                reply = self.config_frames.get(code, b'')
             if v2:
                 body = bytes((0, code & 255, code >> 8, len(reply), 0)) + reply
                 os.write(self.master, b'$X>' + body + bytes((crc8(body),)))
             else:
                 body = bytes((len(reply), code)) + reply
                 checksum = __import__('functools').reduce(int.__xor__, body, 0)
-                os.write(self.master, b'$M>' + body + bytes((checksum,)))
+                prefix = b'$M!' if code == 200 and self.response_error_ack else b'$M>'
+                os.write(self.master, prefix + body + bytes((checksum,)))
 
     def output(self):
         return self.start_node('command_output_node', shadow_only=True, device=os.ttyname(self.slave),
@@ -133,14 +147,22 @@ class ShadowHarness(Harness):
         m.header.frame_id = 'gps_enu'
         m.source_session = self.session
         m.fix_type = 3
-        m.latitude, m.longitude, m.altitude = 31., 121., 20.
+        m.latitude, m.longitude, m.altitude = self.navigation_latitude, 121., 20.
         m.altitude_reference = 'msl'
         m.heading, m.heading_valid, m.clock_aligned = .4, True, True
-        m.horizontal_accuracy = m.vertical_accuracy = m.velocity_accuracy = math.nan
+        m.horizontal_accuracy, m.vertical_accuracy, m.velocity_accuracy = self.navigation_accuracies
         return m
 
     def sensors(self):
         now = time.monotonic()
+        if now - self.last_rc > .02:
+            authority = Authority()
+            authority.header.stamp = self.stamp()
+            authority.armed = self.response_armed
+            authority.rc_link = True
+            authority.kill = self.response_kill
+            self.publisher('authority', Authority).publish(authority)
+            self.last_rc = now
         if now - self.last_nav > .1:
             self.publisher('sensors/navigation', Navigation, True).publish(self.navigation())
             self.last_nav = now
@@ -239,14 +261,14 @@ class ShadowTests(unittest.TestCase):
         self.assertTrue(h.received['output_status'])
         self.assertTrue(all(not m.override_active for m in h.received['output_status']))
         self.assertNotIn(200, [code for _, code, _ in h.codes])
-        for code in (105, 101):
+        for code in (105, 150):
             stamps = [t for t, c, _ in h.codes if c == code]
             rate = (len(stamps)-1)/(stamps[-1]-stamps[0])
             self.assertAlmostEqual(rate, 25., delta=3.)
         events = [m for m in h.received['msp/events'] if m.event == 'rx' and m.code == 105]
         self.assertTrue(events)
         self.assertLess(events[-1].request_steady_time, events[-1].steady_time)
-        h.drop_code = 101
+        h.drop_code = 150
         h.run(.3)
         self.assertTrue(h.received['authority'][-1].kill)
         self.assertFalse(h.received['authority'][-1].rc_link)
@@ -265,7 +287,9 @@ class ShadowTests(unittest.TestCase):
         h.subscribe_sensor('sensors/local_navigation', LocalNavigation)
         h.subscribe('fused_state', FusedState)
         h.start_node('gnss_adapter.py', heading_confirmed=True, heading_correction_rad=3., origin_duration=.3, origin_samples=3)
-        h.start_node('state_fusion_node', navigation_source='gnss')
+        h.start_node('state_fusion_node', navigation_source='gnss',
+                     imu_initialization_duration=.3, imu_initialization_samples=50)
+        h.response_armed = False
         h.driver = h.sensors
         h.run(2.)
         self.assertTrue(h.received['sensors/local_navigation'])
@@ -278,12 +302,16 @@ class ShadowTests(unittest.TestCase):
         s = h.received['fused_state'][-1]
         self.assertTrue(s.initialized)
         self.assertTrue(s.navigation_valid)
+        self.assertTrue(s.imu_ready)
+        self.assertFalse(s.navigation_accuracy_ok or s.navigation_ready or s.estimator_ready)
         self.assertFalse(s.rtk_fixed or s.synchronized)
         self.assertEqual(s.fix_type, 3)
         previous = s.reset_counter
+        h.response_armed = True
         h.session = 'fc-two'
         h.run(.5)
         self.assertGreater(h.received['fused_state'][-1].reset_counter, previous)
+        self.assertFalse(h.received['fused_state'][-1].initialized)
         self.assertEqual(h.received['sensors/local_navigation'][-1].session_id, nav.session_id)
         # No new IMU => no new state; a subsequent gap resets the EKF.
         count = len(h.received['fused_state'])
@@ -291,8 +319,71 @@ class ShadowTests(unittest.TestCase):
         h.run(.1)
         self.assertLessEqual(len(h.received['fused_state'])-count, 5)
         h.driver = h.sensors
+        h.response_armed = False
         h.run(.5)
         self.assertGreater(h.received['fused_state'][-1].reset_counter, previous)
+
+    def test_gnss_readiness_rejects_outlier_and_recovers_with_real_quality(self):
+        h = self.h
+        h.subscribe('fused_state', FusedState)
+        h.navigation_accuracies = (1., 2., .2)
+        h.response_armed = False
+        h.start_node('gnss_adapter.py', heading_confirmed=True, origin_duration=.2, origin_samples=3,
+                     max_horizontal_accuracy=2., max_vertical_accuracy=3., max_velocity_accuracy=.5)
+        h.start_node('state_fusion_node', navigation_source='gnss', imu_initialization_duration=.2,
+                     imu_initialization_samples=30, navigation_ready_updates=3,
+                     ekf_initial_attitude_variance=[.02, .02, .02, .02],
+                     max_horizontal_position_stddev=3., max_vertical_position_stddev=4.,
+                     max_velocity_stddev=1., max_heading_stddev=.5)
+        h.driver = h.sensors
+        h.run(2.)
+        self.assertTrue(any(s.estimator_ready for s in h.received['fused_state']),
+                        [s.readiness_reason for s in h.received['fused_state'][-5:]])
+        self.assertTrue(all(s.navigation_accepted_updates == 3 for s in h.received['fused_state'] if s.estimator_ready))
+        self.assertTrue(all(not s.rtk_fixed and not s.synchronized for s in h.received['fused_state']))
+        initial = next(s for s in h.received['fused_state'] if s.initialized)
+        self.assertGreater(initial.heading_variance, .07)  # Configured initial covariance reaches the EKF.
+        client = h.node.create_client(SetParameters, 'state_fusion/set_parameters')
+        self.assertTrue(client.wait_for_service(timeout_sec=2))
+        request = SetParameters.Request(parameters=[Parameter(name='imu_acceleration_variance',
+            value=ParameterValue(type=ParameterType.PARAMETER_DOUBLE, double_value=99.))])
+        future = client.call_async(request)
+        h.run(.1)
+        self.assertTrue(future.done())
+        self.assertFalse(future.result().results[0].successful)
+        h.navigation_latitude += .001
+        h.run(.4)
+        state = h.received['fused_state'][-1]
+        self.assertGreater(state.navigation_rejections, 0)
+        self.assertEqual(state.navigation_accepted_updates, 0)
+        self.assertFalse(state.estimator_ready or state.navigation_ready)
+        self.assertLess(abs(state.position.y), 1.)
+        h.navigation_latitude = 31.
+        h.run(.7)
+        self.assertTrue(h.received['fused_state'][-1].estimator_ready)
+        # A known-invalid heading revokes before the 300 ms age deadline, even
+        # with no subsequent IMU callback. Revocation must not freshen either sensor.
+        h.driver = lambda: None
+        h.run(.02)
+        previous = h.received['fused_state'][-1]
+        invalid = h.navigation()
+        invalid.heading_valid = False
+        h.publisher('sensors/navigation', Navigation, True).publish(invalid)
+        h.run(.05)
+        revoked = h.received['fused_state'][-1]
+        self.assertFalse(revoked.navigation_ready or revoked.estimator_ready)
+        self.assertEqual(revoked.navigation_accepted_updates, 0)
+        self.assertEqual(revoked.header.stamp, previous.header.stamp)
+        self.assertEqual(revoked.imu_receive_time, previous.imu_receive_time)
+        self.assertEqual(revoked.rtk_stamp, previous.rtk_stamp)
+        self.assertIn('heading', revoked.readiness_reason)
+        h.driver = h.sensors
+        h.run(.9)
+        self.assertTrue(h.received['fused_state'][-1].estimator_ready)
+        h.navigation_accuracies = (3., 2., .2)
+        h.run(.3)
+        self.assertFalse(h.received['fused_state'][-1].navigation_accuracy_ok)
+        self.assertFalse(h.received['fused_state'][-1].estimator_ready)
 
     def test_unconfirmed_heading_does_not_initialize(self):
         h = self.h

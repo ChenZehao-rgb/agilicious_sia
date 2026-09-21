@@ -31,7 +31,7 @@ public:
 private:
 	void loadThrustTable(const std::string& filename);
 	void onCommand(msg::ControlCommand::ConstSharedPtr message);
-	void processOutput();
+	void processOutput(bool new_command = false);
 	void watchdog();
 	void publishStatus();
 	void reportFault(const std::string& reason);
@@ -44,6 +44,7 @@ private:
 	bool _shadow_only = false;
 	bool _simulation_time = false;
 	bool _timing_checks = true;
+	agi::hardware::NavigationPolicy _navigation_policy = agi::hardware::NavigationPolicy::Rtk;
 	double _mass = 0.0;
 	int _socket_fd = -1;
 	sockaddr_in _destination{};
@@ -53,7 +54,7 @@ private:
 	std::unique_ptr<MspTelemetry> _telemetry;
 	rclcpp::TimerBase::SharedPtr _msp_timer;
 	std::unique_ptr<agi::hardware::ThrustTable> _thrust;
-	agi::hardware::SafetyGate _gate;
+	std::unique_ptr<agi::hardware::SafetyGate> _gate;
 	msg::ControlCommand _command;
 	msg::Authority _authority;
 	msg::Health _health;
@@ -66,6 +67,11 @@ private:
 	bool _override_active = false;
 	uint64_t _fault_count = 0;
 	std::string _reason = "Waiting for control and authority";
+	std::string _last_fault;
+	double _last_status_time = 0.0;
+	std::string _last_status_reason;
+	uint64_t _last_status_fault_count = 0;
+	bool _last_status_active = false;
 	rclcpp::Subscription<msg::ControlCommand>::SharedPtr _command_sub;
 	rclcpp::Subscription<msg::Authority>::SharedPtr _authority_sub;
 	rclcpp::Subscription<msg::Health>::SharedPtr _health_sub;

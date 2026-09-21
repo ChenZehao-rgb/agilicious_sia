@@ -1,18 +1,11 @@
-"""Dedicated hardware telemetry only: no control or MSP port is opened."""
-from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
-from launch.substitutions import LaunchConfiguration
-from launch_ros.actions import Node
-from launch_ros.parameter_descriptions import ParameterValue
+"""MAVLink telemetry only, using the hardware profile without requiring a vehicle model."""
+import importlib.util
+from pathlib import Path
+
+_spec = importlib.util.spec_from_file_location('agi_runtime_launch', Path(__file__).with_name('runtime_launch.py'))
+_runtime = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_runtime)
 
 
 def generate_launch_description():
-    defaults = {'device': '', 'baud': '921600', 'gps_mode': 'gnss',
-                'altitude_source': 'unknown', 'imu_rate_hz': '500',
-                'gps_rate_hz': '10', 'attitude_rate_hz': '0'}
-    params = {k: ParameterValue(LaunchConfiguration(k), value_type=int if k.endswith('_hz') or k == 'baud' else str)
-              for k in defaults}
-    return LaunchDescription(
-        [DeclareLaunchArgument(k, default_value=v) for k, v in defaults.items()] +
-        [Node(package='agi_ros2', executable='mavlink_sensor_node', output='screen',
-              parameters=[params, {'use_sim_time': False}])])
+    return _runtime.description(sensor_only=True)

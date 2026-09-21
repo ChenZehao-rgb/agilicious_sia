@@ -53,7 +53,7 @@ class Pipeline {
   inline bool feedthroughActive() const { return feedthrough_active_; }
 
   inline const QuadState& getState() const { return state_; }
-  inline const SetpointVector getSetpoints() const { return setpoints_; }
+  inline const SetpointVector& getSetpoints() const { return setpoints_; }
   inline const SetpointVector& getOuterSetpoints() const {
     return setpoints_outer_;
   }

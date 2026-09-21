@@ -1,6 +1,8 @@
 #pragma once
 
+#include <cstdint>
 #include <deque>
+#include <limits>
 #include <mutex>
 
 #include "agilib/estimator/ekf_imu/ekf_imu_params.hpp"
@@ -19,7 +21,17 @@ namespace agi {
 
 /// EKF filter for pose measurements.
 class EkfImu : public EstimatorBase {
- public:
+public:
+	struct NavigationQuality {
+		Scalar stamp{NAN};
+		Vector<3> position_variance = Vector<3>::Constant(NAN);
+		Vector<3> velocity_variance = Vector<3>::Constant(NAN);
+		Scalar heading_variance{NAN};
+		Scalar innovation_squared{NAN};
+		uint64_t accepted_updates{0};
+		uint64_t rejected_updates{0};
+		bool valid{false};
+	};
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
   EkfImu(const std::shared_ptr<EkfImuParameters>& params =
            std::shared_ptr<EkfImuParameters>());
@@ -34,9 +46,13 @@ class EkfImu : public EstimatorBase {
   bool addImu(const ImuSample& imu) override;
   // ENU position/velocity and yaw CCW from East. Variances are in SI units.
   // Requires initialized state and IMU coverage through t; false means rejected.
-  bool addRtk(Scalar t, const Vector<3>& position, const Vector<3>& velocity,
-              Scalar heading, bool heading_valid, const Vector<3>& position_variance,
-              const Vector<3>& velocity_variance, Scalar heading_variance);
+	// NIS has seven observations with heading, six without; infinity preserves the legacy policy.
+	bool addRtk(Scalar t, const Vector<3>& position, const Vector<3>& velocity, Scalar heading, bool heading_valid,
+	            const Vector<3>& position_variance, const Vector<3>& velocity_variance, Scalar heading_variance,
+	            Scalar max_innovation_squared = std::numeric_limits<Scalar>::infinity());
+
+	// Posterior covariance and innovation at stamp; not a claim of convergence.
+	NavigationQuality navigationQuality();
 
   bool addMotorSpeeds(const Vector<4>& speeds) override;
 
@@ -48,7 +64,7 @@ class EkfImu : public EstimatorBase {
   void printTimings(const bool all = true) const;
   void logTiming() const override;
 
- private:
+private:
   enum IDX : int {
     POS = 0,
     POSX = 0,
@@ -110,6 +126,10 @@ class EkfImu : public EstimatorBase {
   StateVector prior_ = StateVector::Zero();
   StateVector posterior_ = StateVector::Zero();
   StateMatrix P_ = StateMatrix::Zero();
+	// State-only prediction is independent of the posterior/covariance workspace.
+	Scalar _prediction_time{NAN};
+	StateVector _prediction = StateVector::Zero();
+	NavigationQuality _navigation_quality;
   Vector<4> motor_speeds_{0, 0, 0, 0};
 
   // Thread Safety

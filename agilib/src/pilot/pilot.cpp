@@ -614,9 +614,7 @@ Command Pilot::getCommand() const {
   }
 }
 
-const SetpointVector Pilot::getReferenceSetpoints() const {
-  return pipeline_.getSetpoints();
-}
+const SetpointVector& Pilot::getReferenceSetpoints() const { return pipeline_.getSetpoints(); }
 
 const SetpointVector Pilot::getOuterSetpoints() const {
   return pipeline_.getOuterSetpoints();

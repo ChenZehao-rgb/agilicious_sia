@@ -26,6 +26,7 @@ private:
 		rclcpp::Publisher<msg::MspEvent>::SharedPtr publisher;
 		std::string setting;
 		builtin_interfaces::msg::Time stamp;
+		bool critical{false};
 	};
 	void emit(const std::string& event, const agi::hardware::MspFrame& frame, uint64_t errors, double latency = NAN,
 	          const Poll* request = nullptr);

@@ -134,3 +134,65 @@ TEST(EkfImuRtk, RejectsDiscardedHistory) {
   EXPECT_FALSE(ekf.getAt(5.099, &out));
   EXPECT_FALSE(fix(ekf, 5.0));
 }
+
+TEST(EkfImuRtk, InnovationRejectionPreservesPosteriorAndRecovery) {
+	EkfImu rejected, reference;
+	ASSERT_TRUE(rejected.initialize(initial()));
+	ASSERT_TRUE(reference.initialize(initial()));
+	samples(rejected, true);
+	samples(reference, false);
+	const auto before = rejected.navigationQuality();
+	EXPECT_FALSE(
+	        rejected.addRtk(1.1, Vector<3>(100, 0, 0), Vector<3>::Zero(), 0, true, Vector<3>::Ones(), Vector<3>::Ones(), 0.03, 24.322));
+	const auto after = rejected.navigationQuality();
+	EXPECT_EQ(after.stamp, before.stamp);
+	EXPECT_TRUE(after.position_variance.isApprox(before.position_variance));
+	EXPECT_TRUE(after.velocity_variance.isApprox(before.velocity_variance));
+	EXPECT_EQ(after.rejected_updates, 1u);
+	EXPECT_GT(after.innovation_squared, 24.322);
+	ASSERT_TRUE(rejected.addRtk(1.2, Vector<3>(0.01, 0, 0), Vector<3>::Zero(), 0, true, Vector<3>::Ones(), Vector<3>::Ones(), 0.03,
+	                            24.322));
+	ASSERT_TRUE(reference.addRtk(1.2, Vector<3>(0.01, 0, 0), Vector<3>::Zero(), 0, true, Vector<3>::Ones(), Vector<3>::Ones(), 0.03,
+	                             24.322));
+	QuadState a = initial(), b = initial();
+	ASSERT_TRUE(rejected.getAt(1.2, &a));
+	ASSERT_TRUE(reference.getAt(1.2, &b));
+	EXPECT_TRUE(a.x.isApprox(b.x, 1e-10));
+	EXPECT_EQ(rejected.navigationQuality().accepted_updates, 1u);
+	EXPECT_TRUE(rejected.navigationQuality().valid);
+}
+
+TEST(EkfImuRtk, PredictionCacheHandlesRewindAndNewImuAfterExtrapolation) {
+	EkfImu cached, reference;
+	ASSERT_TRUE(cached.initialize(initial()));
+	ASSERT_TRUE(reference.initialize(initial()));
+	samples(cached, false);
+	samples(reference, false);
+	QuadState a = initial(), b = initial();
+	for (Scalar time : {1.1, 1.2, 1.05, 1.2, 1.4}) ASSERT_TRUE(cached.getAt(time, &a));
+	const ImuSample changed{1.3, -GVEC + Vector<3>(0.2, 0, 0), Vector<3>(0, 0, 0.1)};
+	ASSERT_TRUE(cached.addImu(changed));
+	ASSERT_TRUE(reference.addImu(changed));
+	ASSERT_TRUE(cached.getAt(1.3, &a));
+	ASSERT_TRUE(reference.getAt(1.3, &b));
+	EXPECT_TRUE(a.x.isApprox(b.x, 1e-10));
+	EXPECT_EQ(cached.navigationQuality().stamp, 1.0);
+	EXPECT_TRUE(cached.navigationQuality().position_variance.isApprox(reference.navigationQuality().position_variance));
+}
+
+TEST(EkfImuRtk, NavigationQualityResetAndHeadingCovariance) {
+	auto params = std::make_shared<EkfImuParameters>();
+	params->Q_init_att.setConstant(0.01);
+	EkfImu ekf(params);
+	EXPECT_FALSE(ekf.navigationQuality().valid);
+	ASSERT_TRUE(ekf.initialize(initial()));
+	const auto quality = ekf.navigationQuality();
+	EXPECT_TRUE(quality.valid);
+	EXPECT_NEAR(quality.heading_variance, 0.04, 1e-12);
+	samples(ekf, false);
+	EXPECT_FALSE(ekf.addRtk(1.1, Vector<3>(100, 0, 0), Vector<3>::Zero(), 0, true, Vector<3>::Ones(), Vector<3>::Ones(), 0.03, 24.322));
+	ASSERT_TRUE(ekf.initialize(initial()));
+	EXPECT_EQ(ekf.navigationQuality().rejected_updates, 0u);
+	EXPECT_EQ(ekf.navigationQuality().accepted_updates, 0u);
+	EXPECT_TRUE(std::isnan(ekf.navigationQuality().innovation_squared));
+}

@@ -91,6 +91,23 @@ private:
 		mavlink_global_position_int_t value;
 		double arrival;
 	};
+	void invalidateNavigation(bool clock_aligned = false) {
+		if (!_navigation_pub || !_gps_hz) return;
+		agi_ros2::msg::Navigation out;
+		// Detection-time failure event only; it is never a position observation.
+		out.header.stamp = now();
+		out.header.frame_id = "gps_enu";
+		out.source_session = _source_session;
+		out.fix_type = _gps_fix_type;
+		out.altitude_reference = _altitude_source;
+		out.latitude = out.longitude = out.altitude = nan;
+		out.velocity.x = out.velocity.y = out.velocity.z = nan;
+		out.heading = nan;
+		out.heading_valid = false;
+		out.horizontal_accuracy = out.vertical_accuracy = out.velocity_accuracy = nan;
+		out.clock_aligned = clock_aligned;
+		_navigation_pub->publish(out);
+	}
 	void resetEpoch() {
 		_source_session = std::to_string(steady());
 		_sync_count = 0;
@@ -110,6 +127,7 @@ private:
 		_command_waiting = false;
 		_commands_failed = false;
 		_next_sync = 0;
+		invalidateNavigation();
 	}
 	void disconnect() {
 		if (_fd >= 0) {
@@ -391,6 +409,7 @@ private:
 				out.position_covariance_type = sensor_msgs::msg::NavSatFix::COVARIANCE_TYPE_APPROXIMATED;
 			}
 			_gps_fix_type = valid ? v.fix_type : 1;
+			if (!valid) invalidateNavigation(true);
 			_msl = v.alt * .001;
 			_ellipsoid_valid = std::isfinite(out.altitude);
 			_accuracy_valid = valid && v.h_acc && v.v_acc;
@@ -411,6 +430,7 @@ private:
 				heading.heading = heading.valid ? std::remainder(pi / 2 - v.hdg * pi / 18000, 2 * pi) : nan;
 				_heading_pub->publish(heading);
 				_heading_valid = heading.valid;
+				if (!heading.valid) invalidateNavigation(true);
 				_last_heading_receive = steady();
 				++_counts[4];
 			}
@@ -449,8 +469,9 @@ private:
 				++it;
 				continue;
 			}
-			const auto &v = it->value;
+			const auto& v = it->value;
 			geometry_msgs::msg::TwistStamped out;
+			if (v.vx == INT16_MAX || v.vy == INT16_MAX || v.vz == INT16_MAX) invalidateNavigation(true);
 			if (!_publisher_conflict && fix->value.fix_type >= 3 && fix->value.fix_type <= 6 &&
 			    std::abs(static_cast<int64_t>(fix->value.lat)) <= 900000000 &&
 			    std::abs(static_cast<int64_t>(fix->value.lon)) <= 1800000000 && v.vx != INT16_MAX && v.vy != INT16_MAX &&
@@ -487,7 +508,9 @@ private:
 		}
 	}
 	void diagnose() {
-		_publisher_conflict = count_publishers(_imu_pub->get_topic_name()) > 1;
+		const bool publisher_conflict = count_publishers(_imu_pub->get_topic_name()) > 1;
+		if (publisher_conflict && !_publisher_conflict) invalidateNavigation();
+		_publisher_conflict = publisher_conflict;
 		diagnostic_msgs::msg::DiagnosticArray out;
 		out.header.stamp = now();
 		diagnostic_msgs::msg::DiagnosticStatus s;

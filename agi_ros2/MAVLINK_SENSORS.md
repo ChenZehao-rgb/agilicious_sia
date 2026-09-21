@@ -3,7 +3,9 @@
 This driver reads a **dedicated** UART. `command_output_node` retains the existing
 MSP command/RC/status/battery channel. It does not publish `/authority`, `/health`,
 `/sensors/rtk`, control commands, ARM or flight-mode requests. Ordinary GPS topics
-alone do not satisfy the existing RTK fusion/heading contract.
+are combined with the GNSS adapter and measured readiness checks by the hardware flight entrypoint;
+they do not manufacture the separate RTK/PPS contract. Hardware startup uses the shared
+[`config/hardware.yaml`](config/hardware.yaml), described in [README.md](README.md).
 
 ## Build and run
 
@@ -18,39 +20,41 @@ Start telemetry only (replace the device with your actual UART):
 ros2 launch agi_ros2 mavlink_sensors.launch.py device:=/dev/serial/by-id/YOUR_MAVLINK_UART
 ```
 
-Optional settings:
+The launch reads `hardware.yaml` (no separate sensor parameter file). Edit its `mavlink` section or use:
 
 ```sh
 ros2 launch agi_ros2 mavlink_sensors.launch.py \
   device:=/dev/serial/by-id/YOUR_MAVLINK_UART baud:=921600 \
-  gps_mode:=gnss imu_rate_hz:=500 gps_rate_hz:=10 attitude_rate_hz:=100
+  mavlink_gps_mode:=gnss mavlink_imu_rate_hz:=500 mavlink_gps_rate_hz:=10 mavlink_attitude_rate_hz:=100
 ```
 
-`gps_mode:=rtk` requires a real `fix_type=6` before diagnostics report GPS ready;
+For standalone sensor-only diagnostics, `gps_mode:=rtk` (or direct-node `-p gps_mode:=rtk`) requires a real `fix_type=6` before diagnostics report GPS ready;
 float/ordinary fixes remain visible but are not reported as RTK ready. The setting
 does not configure a receiver, inject corrections, or manufacture RTK capability.
 Current quality decoding covers UBX PVT receiver flags. Other protocols and
 independent dual-antenna heading require a receiver-specific extension.
 
-For the existing flight launch, add:
+For combined hardware diagnostics before the vehicle model is available:
 
-```text
-mode:=hardware mavlink_enabled:=true mavlink_device:=/dev/serial/by-id/YOUR_MAVLINK_UART
+```sh
+./agi_ros2/scripts/launch.sh mode:=hardware diagnostic_only:=true \
+  device:=/dev/serial/by-id/YOUR_MSP_UART \
+  mavlink_device:=/dev/serial/by-id/YOUR_MAVLINK_UART
 ```
 
-Supply the existing hardware parameters, thrust calibration and **different** MSP
-`device` as before. MAVLink is disabled by default; it cannot be enabled in SITL
-flight mode. Existing simulator behavior stays unchanged. Starting a flight launch
-still requires the existing genuine RTK/authority/health inputs; these are not
-supplied by this sensor adapter. Use the standalone launch for ordinary GPS tests.
+This starts sensor/fusion, read-only MSP and evidence nodes without an MPC/output node.
+Once the real model is configured, `mode:=hardware` starts the six-node GNSS pipeline;
+`hardware.yaml` defaults to shadow computation. Explicit `shadow_only:=false` is the output-capable
+entrypoint and additionally requires the measured thrust table and all readiness evidence.
+See [README.md](README.md) and [SHADOW_EVALUATION.md](SHADOW_EVALUATION.md).
+MAVLink is required in hardware mode and rejected in SITL mode. The hardware launch disables
+MSP GPS/attitude/analog duplicates by its shared output configuration; MSP continues to carry
+physical receiver, mode, configuration and battery information.
+
 Do not simultaneously publish simulation and MAVLink IMU on the same topic.
 The driver detects another IMU publisher during the 1 Hz diagnostic check and
-suppresses sensor output until the conflict clears.
-
-When enabled, flight launch disables duplicate MSP GPS polling. MSP attitude
-polling is disabled only if MAVLink attitude is requested. MSP health continues
-to represent the command transport. Do not also launch `betaflight_msp_node` on
-the command output node's serial device.
+suppresses sensor output until the conflict clears. Do not launch a second MSP process on the
+command-output serial device. Sensor-only launch does not require a model or thrust table.
 
 ## Flight controller setup
 
@@ -141,6 +145,15 @@ Future stamps beyond 20 ms are discarded. These adapter limits do not relax the
 existing fusion/control freshness thresholds. Physical end-to-end latency must
 still fit those stricter thresholds before attempting closed-loop operation.
 
+An explicit no-fix, invalid heading/velocity, epoch reset, or detected source conflict publishes
+an invalid navigation event. Once a local origin exists, the GNSS adapter emits
+`LocalNavigation.observation_valid=false`; fusion immediately publishes revoked readiness.
+Control and MSP evidence consume that state on their next update, and output rechecks unhealthy
+evidence on receipt. They do not retain an earlier healthy fix until its 300 ms age limit.
+Failure events carry local detection time and never refresh the last accepted GPS or IMU
+acquisition time. Complete silence still uses freshness/watchdog checks. This propagation
+includes ROS scheduling and transport latency; it is not a zero-latency hardware guarantee.
+
 Inspect `sensors/mavlink/status` for sync, GPS freshness/fix type, field validity,
 CRC/source errors, stale/duplicate frames, rate ACK status and host-time publication
 rates. Link presence alone is not sensor health; stopped IMU produces a warning.
@@ -176,15 +189,26 @@ yaw into the GPS snapshot, so position, velocity and heading share an update tim
 When the firmware suppresses GLOBAL_POSITION_INT for unavailable GPS velocity,
 this topic also stops; it is not an independent 100 Hz heading source.
 
-The source is FC `attitude.yaw`, not COG or dual-antenna RTK heading. Field validity
-only describes representation, not true-north observability or convergence.
+The source is FC `attitude.yaw`, not COG or dual-antenna RTK heading. A valid field
+does not prove true-north observability or convergence.
 Without an absolute heading reference, FC yaw may have an arbitrary offset/drift.
-No changes are made to state_fusion_node or its RTK heading validity requirements.
+The hardware GNSS adapter requires an explicit confirmed heading basis and correction;
+the separate SITL/RTK contract retains its own heading validity requirements.
+
+The companion firmware now emits `UINT16_MAX` unless a physical MAG is present,
+`trust_mag=ON`, no calibration procedure is active, and magnetic samples plus the
+magnetic heading correction are fresh and valid. `trust_mag` and ROS
+`navigation.heading_confirmed` remain operator declarations after verifying sensor
+orientation, offsets, declination and true north. The FC has no persistent boolean
+proving calibration quality; an ended calibration procedure alone is not proof of
+success. The ROS driver consumes this validity signal and does not independently
+certify magnetometer calibration. Install the matching firmware before relying on it.
 
 
-## Validation result (2026-09-16)
+## Historical validation result (2026-09-16, before the hardware-hover adaptation)
 
-Humble build and all eight new sensor/launch pseudo-UART integration tests passed.
+This is a record of the earlier sensor-only implementation, not a regression claim for the
+current hardware-hover changes. That Humble build and its eight sensor/launch pseudo-UART tests passed.
 Final Betaflight SITL measured approximately 500.1 Hz fresh IMU samples, 100 Hz
 ATTITUDE and 9.8 Hz new GPS solutions. A deliberately 50 Hz sensor source produced
 48.8 Hz unique IMU output, not repeated 500 Hz data.
@@ -199,8 +223,10 @@ flight-pipeline regression pass. No physical flight controller was flashed/teste
 ## Ordinary GNSS shadow evaluation
 
 The driver additionally publishes atomic paired `sensors/navigation` messages.
+Invalid events on that topic carry NaN measurement fields and must not be treated as new fixes.
 `altitude_source=msl` explicitly enables MSL height for that new interface;
 NavSatFix continues to expose only known ellipsoid altitude. The optional
 [shadow entrypoint](SHADOW_EVALUATION.md) supplies the separate local-frame and
-MSP evidence adapters without granting hardware output authority. The default
-flight/RTK entrypoint retains its original requirements.
+MSP evidence adapters without granting hardware output authority. The standard hardware entrypoint now uses the same GNSS adapter and separate measured-readiness
+policy; it defaults to shadow mode. Simulation retains the RTK path. Neither path treats ordinary
+GNSS as dual-antenna RTK/PPS evidence.

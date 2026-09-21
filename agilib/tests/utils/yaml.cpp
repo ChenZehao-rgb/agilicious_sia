@@ -6,6 +6,13 @@
 
 using namespace agi;
 
+TEST(Yaml, ExplicitEmptyStringPaths) {
+	const Yaml yaml(std::string("trajectory: ''\nthrust_table: \"\"\n"));
+	EXPECT_EQ(yaml["trajectory"].as<std::string>(), "");
+	EXPECT_EQ(yaml["thrust_table"].as<std::string>(), "");
+	EXPECT_ANY_THROW(yaml["missing"].as<std::string>());
+}
+
 TEST(Yaml, Parsing) {
   std::string s{
     "int: 2   # a comment\n"

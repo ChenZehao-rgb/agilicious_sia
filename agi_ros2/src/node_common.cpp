@@ -52,6 +52,11 @@ msg::SafetyEvidence encodeEvidence(const agi::hardware::Evidence& evidence) {
 	message.imu_calibrated = evidence.imu_calibrated;
 	message.synchronized = evidence.synchronized;
 	message.converged = evidence.converged;
+	message.imu_ready = evidence.imu_ready;
+	message.estimator_ready = evidence.estimator_ready;
+	message.navigation_ready = evidence.navigation_ready;
+	message.clock_aligned = evidence.clock_aligned;
+	message.accuracy_known = evidence.accuracy_known;
 	message.config_verified = evidence.config_verified;
 	message.thrust_calibrated = evidence.thrust_calibrated;
 	message.geofence_ok = evidence.geofence_ok;
@@ -79,6 +84,11 @@ agi::hardware::Evidence decodeEvidence(const msg::SafetyEvidence& message) {
 	evidence.imu_calibrated = message.imu_calibrated;
 	evidence.synchronized = message.synchronized;
 	evidence.converged = message.converged;
+	evidence.imu_ready = message.imu_ready;
+	evidence.estimator_ready = message.estimator_ready;
+	evidence.navigation_ready = message.navigation_ready;
+	evidence.clock_aligned = message.clock_aligned;
+	evidence.accuracy_known = message.accuracy_known;
 	evidence.config_verified = message.config_verified;
 	evidence.thrust_calibrated = message.thrust_calibrated;
 	evidence.geofence_ok = message.geofence_ok;

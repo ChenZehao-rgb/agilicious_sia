@@ -82,32 +82,39 @@ bool MspDecoder::next(MspFrame* frame) {
   }
   return false;
 }
-BetaflightMspBridge::BetaflightMspBridge(const std::string& device, int baud)
-  : owner_(std::this_thread::get_id()) {
-  speed_t speed;
-  switch (baud) {
-    case 115200: speed = B115200; break;
-    case 460800: speed = B460800; break;
-    case 921600: speed = B921600; break;
-    default: throw std::runtime_error("baud must be 115200, 460800 or 921600");
-  }
-  fd_ = open(device.c_str(), O_RDWR | O_NOCTTY | O_NONBLOCK | O_CLOEXEC);
-  if (fd_ < 0) throw std::runtime_error("open " + device + ": " + strerror(errno));
-  termios settings{};
-  const auto fail = [&]() {
-    const std::string error = strerror(errno);
-    close(fd_);
-    fd_ = -1;
-    throw std::runtime_error("exclusive serial configuration: " + error);
-  };
-  if (ioctl(fd_, TIOCEXCL) || tcgetattr(fd_, &settings)) fail();
-  cfmakeraw(&settings);
-  settings.c_cflag |= CLOCAL | CREAD;
-  settings.c_cflag &= ~(CRTSCTS | CSTOPB | PARENB);
-  settings.c_cc[VMIN] = 0;
-  settings.c_cc[VTIME] = 0;
-  if (cfsetispeed(&settings, speed) || cfsetospeed(&settings, speed) ||
-      tcsetattr(fd_, TCSANOW, &settings) || tcflush(fd_, TCIOFLUSH)) fail();
+BetaflightMspBridge::BetaflightMspBridge(const std::string& device, int baud, NavigationPolicy policy)
+        : owner_(std::this_thread::get_id()), gate_(policy) {
+	speed_t speed;
+	switch (baud) {
+		case 115200:
+			speed = B115200;
+			break;
+		case 460800:
+			speed = B460800;
+			break;
+		case 921600:
+			speed = B921600;
+			break;
+		default:
+			throw std::runtime_error("baud must be 115200, 460800 or 921600");
+	}
+	fd_ = open(device.c_str(), O_RDWR | O_NOCTTY | O_NONBLOCK | O_CLOEXEC);
+	if (fd_ < 0) throw std::runtime_error("open " + device + ": " + strerror(errno));
+	termios settings{};
+	const auto fail = [&]() {
+		const std::string error = strerror(errno);
+		close(fd_);
+		fd_ = -1;
+		throw std::runtime_error("exclusive serial configuration: " + error);
+	};
+	if (ioctl(fd_, TIOCEXCL) || tcgetattr(fd_, &settings)) fail();
+	cfmakeraw(&settings);
+	settings.c_cflag |= CLOCAL | CREAD;
+	settings.c_cflag &= ~(CRTSCTS | CSTOPB | PARENB);
+	settings.c_cc[VMIN] = 0;
+	settings.c_cc[VTIME] = 0;
+	if (cfsetispeed(&settings, speed) || cfsetospeed(&settings, speed) || tcsetattr(fd_, TCSANOW, &settings) || tcflush(fd_, TCIOFLUSH))
+		fail();
 }
 BetaflightMspBridge::~BetaflightMspBridge() {
 	if (fd_ >= 0) {
@@ -209,13 +216,14 @@ bool BetaflightMspBridge::sendRequest(uint8_t code, double deadline) {
 	  case 114:
 	  case 119:
 	  case 130:
+	  case 150:
 		  return writeFrame(code, {}, deadline);
 	  default:
 		  return false;
   }
 }
 bool BetaflightMspBridge::readOverrideSetting(const std::string& name, double deadline) {
-	if (name != "msp_override_channels_mask" && name != "msp_override_failsafe") return false;
+	if (name != "msp_override_channels_mask" && name != "msp_override_failsafe" && name != "msp_override_timeout_ms") return false;
 	// NUL padding gives the firmware room for its reply buffer. No '=' is ever
 	// transmitted: MSP2_CLI_SETTING's write variant is intentionally inaccessible.
 	std::vector<uint8_t> payload(96, 0);

@@ -20,23 +20,22 @@ using FeedbackCallbackFunction = std::function<void(const Feedback&)>;
 
 class BridgeBase : public Module<BridgeBase> {
  public:
-  BridgeBase(const std::string& name, const TimeFunction time_function,
-             const Scalar timeout = 0.10, const int n_max_timeouts = 10,
-             const bool start_timeout_guard = true);
-  virtual ~BridgeBase();
+	 BridgeBase(const std::string& name, const TimeFunction time_function, const Scalar timeout = 0.10, const int n_max_timeouts = 10,
+	            const bool start_timeout_guard = true, const bool start_voltage_watchdog = true);
+	 virtual ~BridgeBase();
 
-  virtual bool send(const Command& command) final;
-  virtual bool activate() final;
-  virtual bool deactivate() final;
-  virtual void reset();
+	 virtual bool send(const Command& command) final;
+	 virtual bool activate() final;
+	 virtual bool deactivate() final;
+	 virtual void reset();
 
-  virtual bool active() const final;
-  virtual bool locked() const final;
-  virtual void setVoltage(const Scalar voltage) final;
-  virtual Scalar getVoltage() const final;
+	 virtual bool active() const final;
+	 virtual bool locked() const final;
+	 virtual void setVoltage(const Scalar voltage) final;
+	 virtual Scalar getVoltage() const final;
 
-  virtual bool getFeedback(Feedback* const feedback = nullptr);
-  virtual void registerFeedbackCallback(FeedbackCallbackFunction function);
+	 virtual bool getFeedback(Feedback* const feedback = nullptr);
+	 virtual void registerFeedbackCallback(FeedbackCallbackFunction function);
 
  protected:
   virtual bool sendCommand(const Command& command, const bool active) = 0;

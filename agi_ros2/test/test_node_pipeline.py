@@ -102,7 +102,8 @@ class Harness:
                 os.set_blocking(self.master, False)
                 table = self.path / 'thrust.csv'
                 table.write_text('0,1000,1500,2000\n12,0,10,20\n18,0,20,40\n')
-                args += ['-p', 'device:=' + os.ttyname(self.slave),
+                args += ['-p', 'navigation_source:=rtk',
+                         '-p', 'device:=' + os.ttyname(self.slave),
                          '-p', 'thrust_table:=' + str(table)]
         log = open(self.path / (executable + '.log'), 'w+')
         proc = subprocess.Popen(args, stdout=log, stderr=subprocess.STDOUT)
@@ -400,7 +401,7 @@ class NodePipelineTest(unittest.TestCase):
                 frames.append(struct.unpack('<4H', frame[5:-1]))
             else:
                 self.assertEqual(size, 0)
-                self.assertIn(code, (108,105,101,110,130,106))
+                self.assertIn(code, (108,105,150,110,130,106))
         self.assertTrue(frames)
         self.assertGreater(frames[-1][0], 1500)
         self.assertLess(frames[-1][1], 1500)  # FLU -> hardware FRD.

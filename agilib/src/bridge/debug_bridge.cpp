@@ -5,11 +5,8 @@
 
 namespace agi {
 
-DebugBridge::DebugBridge(const std::string& name,
-                         const TimeFunction time_function)
-  : BridgeBase(name, time_function) {
-  voltage_watchdog_.disable();  // not a real bridge
-}
+DebugBridge::DebugBridge(const std::string& name, const TimeFunction time_function)
+        : BridgeBase(name, time_function, 0.0, 0, false, false) {}
 
 bool DebugBridge::sendCommand(const Command& command, const bool active) {
   static Throttler timer_info_throttler(logger_, 1.0);

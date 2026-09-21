@@ -371,14 +371,15 @@ class Yaml {
   }
 
   [[nodiscard]] std::string as_string() const {
-    const size_t start = raw_.find_first_not_of(" \'\"");
-    const size_t end = raw_.find_last_not_of(" \'\"");
-    if (start < raw_.size() && end < raw_.size())
-      return raw_.substr(start, end - start + 1);
-    else
-      throw YamlException(getFullKeyName(),
-                          std::string("Is not a valid string: ") + raw_);
-    return "";
+	  // Explicit empty strings are valid optional paths; an absent key still fails.
+	  if (raw_ == "''" || raw_ == "\"\"") return "";
+	  const size_t start = raw_.find_first_not_of(" \'\"");
+	  const size_t end = raw_.find_last_not_of(" \'\"");
+	  if (start < raw_.size() && end < raw_.size())
+		  return raw_.substr(start, end - start + 1);
+	  else
+		  throw YamlException(getFullKeyName(), std::string("Is not a valid string: ") + raw_);
+	  return "";
   }
 
   template<typename T>

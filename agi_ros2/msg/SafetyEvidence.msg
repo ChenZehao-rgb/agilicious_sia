@@ -14,6 +14,11 @@ bool accuracy_ok
 bool imu_calibrated
 bool synchronized
 bool converged
+bool imu_ready
+bool estimator_ready
+bool navigation_ready
+bool clock_aligned
+bool accuracy_known
 bool config_verified
 bool thrust_calibrated
 bool geofence_ok

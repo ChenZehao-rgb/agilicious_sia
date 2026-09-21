@@ -40,6 +40,15 @@
 #include "agilib/utils/file_utils.hpp"
 
 namespace agi {
+namespace {
+bool loadModuleParameters(ParameterBase& parameters, const ModuleConfig& config) {
+	if (!config.file.empty() && config.parameters.isDefined()) {
+		throw ParameterException("Module configuration cannot combine file and parameters");
+	}
+	if (config.parameters.isDefined()) return parameters.load(config.parameters);
+	return config.file.empty() || parameters.load(config.file);
+}
+}  // namespace
 
 PilotParams::PilotParams(const fs::path& filename, const fs::path& directory,
                          const fs::path& quad_file)
@@ -87,11 +96,15 @@ bool PilotParams::load(const Yaml& yaml) {
   }
 
   // Quadrotor
-  quad_file_ = getQuadFile(yaml, quad_file_, directory_);
-
-  if (!quad_.load(quad_file_) || !quad_.valid())
-    throw ParameterException("Could not load Quadrotor parameters from: " +
-                             quad_file_.string());
+	if (yaml["quadrotor"].isNode()) {
+		if (!quad_file_.empty()) throw ParameterException("Inline quadrotor cannot be combined with a quadrotor file override");
+		if (!quad_.load(yaml["quadrotor"]) || !quad_.valid()) throw ParameterException("Invalid inline quadrotor parameters");
+	} else {
+		quad_file_ = getQuadFile(yaml, quad_file_, directory_);
+		if (!quad_.load(quad_file_) || !quad_.valid()) {
+			throw ParameterException("Could not load Quadrotor parameters from: " + quad_file_.string());
+		}
+	}
 
   // Pilot Params
   dt_min_ = yaml["dt_min"].as<Scalar>();
@@ -122,28 +135,24 @@ bool PilotParams::createEstimator(std::shared_ptr<EstimatorBase>& estimator,
   try {
     if (config.type == "EKF") {
       std::shared_ptr<EkfParameters> params = std::make_shared<EkfParameters>();
-      if (!config.file.empty() && !params->load(config.file))
-        throw ParameterException();
+			if (!loadModuleParameters(*params, config)) throw ParameterException();
       estimator = std::make_shared<Ekf>(quad_, params);
       return true;
     } else if (config.type == "EKFIMU") {
       std::shared_ptr<EkfImuParameters> params =
         std::make_shared<EkfImuParameters>();
-      if (!config.file.empty() && !params->load(config.file))
-        throw ParameterException();
+			if (!loadModuleParameters(*params, config)) throw ParameterException();
       estimator = std::make_shared<EkfImu>(params);
       return true;
     } else if (config.type == "Feedthrough") {
       std::shared_ptr<FeedthroughParameters> params =
         std::make_shared<FeedthroughParameters>();
-      if (!config.file.empty() && !params->load(config.file))
-        throw ParameterException();
+			if (!loadModuleParameters(*params, config)) throw ParameterException();
       estimator = std::make_shared<FeedthroughEstimator>(params);
       return true;
     } else if (config.type == "MockVIO") {
       std::shared_ptr<MockVioParams> params = std::make_shared<MockVioParams>();
-      if (!config.file.empty() && !params->load(config.file))
-        throw ParameterException();
+			if (!loadModuleParameters(*params, config)) throw ParameterException();
       estimator = std::make_shared<MockVio>(quad_, params);
       return true;
     }
@@ -161,28 +170,24 @@ bool PilotParams::createController(std::shared_ptr<ControllerBase>& controller,
   try {
     if (config.type == "MPC") {
       std::shared_ptr<MpcParameters> params = std::make_shared<MpcParameters>();
-      if (!config.file.empty() && !params->load(config.file))
-        throw ParameterException();
+			if (!loadModuleParameters(*params, config)) throw ParameterException();
       controller = std::make_shared<MpcController>(quad_, params, dt_min_);
       return true;
     } else if (config.type == "INDI") {
       std::shared_ptr<IndiParameters> params =
         std::make_shared<IndiParameters>();
-      if (!config.file.empty() && !params->load(config.file))
-        throw ParameterException();
+			if (!loadModuleParameters(*params, config)) throw ParameterException();
       controller = std::make_shared<IndiController>(quad_, params);
       return true;
     } else if (config.type == "GEO") {
       std::shared_ptr<GeometricControllerParams> params =
         std::make_shared<GeometricControllerParams>();
-      if (!config.file.empty() && !params->load(config.file))
-        throw ParameterException();
+			if (!loadModuleParameters(*params, config)) throw ParameterException();
       controller = std::make_shared<GeometricController>(quad_, params);
       return true;
     } else if (config.type == "PID") {
       std::shared_ptr<PidParameters> params = std::make_shared<PidParameters>();
-      if (!config.file.empty() && !params->load(config.file))
-        throw ParameterException();
+			if (!loadModuleParameters(*params, config)) throw ParameterException();
       controller = std::make_shared<PidController>(quad_, params);
       return true;
     }
@@ -201,14 +206,12 @@ bool PilotParams::createBridge(std::shared_ptr<BridgeBase>& bridge,
   try {
     if (config.type == "SBUS") {
       SbusParams params;
-      if (!config.file.empty() && !params.load(config.file))
-        throw ParameterException();
+			if (!loadModuleParameters(params, config)) throw ParameterException();
       bridge = std::make_shared<SbusBridge>(quad_, params, time_function);
       return true;
     } else if (config.type == "Laird") {
       LairdParams params;
-      if (!config.file.empty() && !params.load(config.file))
-        throw ParameterException();
+			if (!loadModuleParameters(params, config)) throw ParameterException();
       bridge = std::make_shared<LairdBridge>(params, time_function);
       return true;
     } else if (config.type == "Debug") {
@@ -216,14 +219,12 @@ bool PilotParams::createBridge(std::shared_ptr<BridgeBase>& bridge,
       return true;
     } else if (config.type == "MSP") {
       MspParams params;
-      if (!config.file.empty() && !params.load(config.file))
-        throw ParameterException();
+			if (!loadModuleParameters(params, config)) throw ParameterException();
       bridge = std::make_shared<MspBridge>(quad_, params, time_function);
       return true;
     } else if (config.type == "CTRL") {
       CtrlParams params;
-      if (!config.file.empty() && !params.load(config.file))
-        throw ParameterException();
+			if (!loadModuleParameters(params, config)) throw ParameterException();
       bridge = std::make_shared<CtrlBridge>(quad_, params, time_function);
       return true;
     }
@@ -253,8 +254,7 @@ bool PilotParams::createSampler(
       return true;
     } else if (config.type == "Position") {
       PositionSamplerParameters params;
-      if (!config.file.empty() && !params.load(config.file))
-        throw ParameterException();
+			if (!loadModuleParameters(params, config)) throw ParameterException();
       sampler = std::make_shared<PositionSampler>(
         params, controller->horizonLength(), controller->dt());
       return true;
@@ -306,8 +306,7 @@ bool PilotParams::createGuard(std::shared_ptr<GuardBase>& guard) const {
   try {
     if (guard_cfg_.type == "Position") {
       PositionGuardParams params;
-      if (!guard_cfg_.file.empty() && !params.load(guard_cfg_.file))
-        throw ParameterException();
+			if (!loadModuleParameters(params, guard_cfg_)) throw ParameterException();
       guard = std::make_shared<PositionGuard>(params);
       return true;
     } else if (guard_cfg_.type == "None") {

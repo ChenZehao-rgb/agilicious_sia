@@ -244,11 +244,26 @@ class SensorTests(unittest.TestCase):
         previous = len(h.values['navigation'])
         h.invalid_velocity = True
         h.drive(.4)
-        self.assertLessEqual(len(h.values['navigation']) - previous, 1)
+        failures = h.values['navigation'][previous:]
+        self.assertTrue(failures)
+        self.assertTrue(all(not n.heading_valid and math.isnan(n.velocity.x) for n in failures))
         h.invalid_velocity = False
         h.epoch = time.monotonic() - 2
         h.drive(2.)
         self.assertNotEqual(h.values['navigation'][-1].source_session, session)
+
+    def test_bad_fix_and_expired_clock_publish_revocation(self):
+        h = self.h
+        h.drive(1.6)
+        previous = len(h.values['navigation'])
+        h.fix_type = 1
+        h.drive(.15)
+        self.assertTrue(any(n.fix_type == 1 and not n.heading_valid for n in h.values['navigation'][previous:]))
+        h.fix_type = 3
+        h.sync = False
+        h.drive(2.3)
+        self.assertFalse(h.values['navigation'][-1].clock_aligned)
+        self.assertTrue(math.isnan(h.values['navigation'][-1].latitude))
 
     def test_delayed_sync_rejected(self):
         h=self.h; h.sync_delay=.04; h.drive(1.5)

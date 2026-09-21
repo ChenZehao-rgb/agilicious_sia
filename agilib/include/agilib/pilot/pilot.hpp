@@ -51,7 +51,7 @@ class Pilot {
   /// Reference the controller is tracking, as produced by the sampler.
   /// getOuterSetpoints() returns the controller's own prediction instead,
   /// whose first entry is the current state rather than the reference.
-  const SetpointVector getReferenceSetpoints() const;
+  const SetpointVector& getReferenceSetpoints() const;
   const SetpointVector getOuterSetpoints() const;
   const SetpointVector getInnerSetpoints() const;
   QuadState getRecentState() const;

@@ -25,7 +25,6 @@
 from __future__ import annotations
 
 import argparse
-import ast
 import configparser
 import math
 import os
@@ -265,21 +264,6 @@ def run_cli_command(connection: socket.socket, command: str) -> str:
     return read_cli_response(connection, command)
 
 
-def yaml_value(config_text: str, key: str) -> str:
-    """从桥接配置文本中抓取 `key: value` 的原始值（忽略行尾 # 注释）。
-
-    这里刻意用正则做轻量解析，避免为读几个标量而引入 YAML 依赖。
-    """
-    match = re.search(
-        rf"^\s*{re.escape(key)}\s*:\s*([^#\n]+?)\s*$",
-        config_text,
-        flags=re.MULTILINE,
-    )
-    if not match:
-        raise RuntimeError(f"missing {key!r} in Betaflight bridge configuration")
-    return match.group(1).strip()
-
-
 def integral_setting(value: float, description: str) -> int:
     """把浮点配置值转成 Betaflight CLI 需要的整数，非整数值直接报错。"""
     if not math.isfinite(value) or not math.isclose(value, round(value), abs_tol=1e-6):
@@ -295,17 +279,25 @@ def expected_betaflight_settings(bridge_config: Path) -> Dict[str, str]:
     该字典同时用于写入（apply_bridge_settings）和回读校验
     （validate_prearm_configuration），保证 “写什么就验什么”。
     """
+    import yaml
+
     try:
-        config_text = bridge_config.read_text(encoding="utf-8")
-    except OSError as exc:
+        config = yaml.safe_load(bridge_config.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
         raise RuntimeError(f"cannot read bridge configuration {bridge_config}: {exc}") from exc
+    if not isinstance(config, dict):
+        raise RuntimeError(f"bridge configuration must be a mapping: {bridge_config}")
+    if "bridge" in config:
+        if config.get("mode") != "sitl" or not isinstance(config["bridge"], dict):
+            raise RuntimeError("Betaflight SITL requires a simulation runtime profile")
+        config = config["bridge"]
 
     def vector(key: str) -> tuple[float, float, float]:
         """读取形如 [r, p, y] 的三元组，并校验元素个数与有限性。"""
         try:
-            parsed = ast.literal_eval(yaml_value(config_text, key))
+            parsed = config[key]
             values = tuple(float(value) for value in parsed)
-        except (SyntaxError, ValueError, TypeError) as exc:
+        except (KeyError, ValueError, TypeError) as exc:
             raise RuntimeError(f"invalid {key!r} in {bridge_config}") from exc
         if len(values) != 3 or not all(math.isfinite(value) for value in values):
             raise RuntimeError(f"{key!r} must contain three finite values")
@@ -314,8 +306,8 @@ def expected_betaflight_settings(bridge_config: Path) -> Dict[str, str]:
     def scalar_int(key: str) -> int:
         """读取单个标量并转成 CLI 所需的整数。"""
         try:
-            value = float(yaml_value(config_text, key))
-        except ValueError as exc:
+            value = float(config[key])
+        except (KeyError, ValueError, TypeError) as exc:
             raise RuntimeError(f"invalid {key!r} in {bridge_config}") from exc
         return integral_setting(value, key)
 
@@ -681,7 +673,12 @@ def main() -> int:
     parser.add_argument("--no-build", action="store_true")
     parser.add_argument("--ros2", action=argparse.BooleanOptionalAction, default=True,
                         help="start ROS 2 sensors only (default); --no-ros2 runs the standalone controller")
+    parser.add_argument("--runtime-config", type=Path,
+                        help="ROS 2 simulation profile shared with flight.launch.py (default: config/simulation.yaml)")
     args = parser.parse_args()
+
+    if args.runtime_config is not None and not args.ros2:
+        parser.error("--runtime-config is only supported with --ros2")
 
     # argparse 的 type=float 不拦截 nan/inf 和负数，这里补齐校验。
     if args.trajectory_source_mass < 0 or not math.isfinite(
@@ -701,9 +698,9 @@ def main() -> int:
         parser.error("--msp-rate must be finite and > 0")
 
     if args.ros2 and (args.controller != "mpc" or args.log is not None or args.trajectory_source_mass != 0):
-        parser.error("ROS 2 flight settings belong in agi_ros2/launch/flight.launch.py")
+        parser.error("ROS 2 flight settings belong in agi_ros2/config/simulation.yaml")
     if args.ros2 and (args.arm or args.trajectory is not None or args.rtk_msp):
-        parser.error("configure flight in agi_ros2/launch/flight.launch.py; ARM/AUTO use ROS receiver inputs")
+        parser.error("configure flight in agi_ros2/config/simulation.yaml; ARM/AUTO use ROS receiver inputs")
 
     # ---- 路径与产物布局 ----
     betaloop_home = args.betaloop_home.expanduser().resolve()
@@ -715,7 +712,11 @@ def main() -> int:
     plugin_build = build_root / "plugin"
     runtime = build_root / "runtime"
     params = REPO_ROOT / "agilib" / "params"
-    bridge_config = params / "betaflight_udp.yaml"
+    bridge_config = ((args.runtime_config or REPO_ROOT / "agi_ros2/config/simulation.yaml").expanduser().resolve()
+                     if args.ros2 else params / "betaflight_udp.yaml")
+    if args.ros2:
+        expected_betaflight_settings(bridge_config)  # Validate before generating runtime assets.
+        log(f"ROS 2 runtime configuration: {bridge_config}")
     # 生成模型 / 世界文件的叠加副本，同样不改动 Aeroloop 原始资源。
     # 把aeroloop中的世界和模型复制到runtime/assets中，并返回叠加后的世界文件路径
     overlay_world, _ = prepare_assets(aeroloop_home, source_world, runtime / "assets")
@@ -864,7 +865,7 @@ def main() -> int:
             str(REPO_ROOT / "agi_ros2/scripts/sensors.sh"),
             "--ros-args", "-p", "config_verified:=true",
         ]
-        log("start flight in another terminal: ./agi_ros2/scripts/launch.sh")
+        log(f"start flight in another terminal: ./agi_ros2/scripts/launch.sh runtime_config:={bridge_config}")
 
     betaloop_process: Optional[subprocess.Popen] = None
     controller_process: Optional[subprocess.Popen] = None

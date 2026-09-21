@@ -10,6 +10,7 @@
 #include <stdexcept>
 
 #include "agi_ros2/node_common.h"
+#include "agi_ros2/runtime_config.h"
 #include "agilib/bridge/betaflight/betaflight_msp_bridge.hpp"
 #include "agilib/reference/trajectory_csv.hpp"
 #include "rclcpp/create_timer.hpp"
@@ -30,8 +31,14 @@ ControlNode::ControlNode()
           _output_receive_time(kUnknownTime) {
 	rcl_interfaces::msg::ParameterDescriptor shadow_descriptor;
 	shadow_descriptor.read_only = true;
-	_shadow_only = declare_parameter<bool>("shadow_only", false, shadow_descriptor);
-	_mode = declare_parameter<std::string>("mode", "sitl");
+	_mode = declare_parameter<std::string>("mode", "sitl", shadow_descriptor);
+	const auto profile = loadRuntimeConfig(*this, _mode);
+	_shadow_only = declare_parameter<bool>("shadow_only", profile ? profile->section("flight")["shadow_only"].as<bool>() : false,
+	                                       shadow_descriptor);
+	const auto navigation =
+	        declare_parameter<std::string>("navigation_source", _mode == "hardware" ? "gnss" : "rtk", shadow_descriptor);
+	if (navigation != "gnss" && navigation != "rtk") throw std::invalid_argument("navigation_source must be gnss or rtk");
+	_navigation_policy = navigation == "gnss" ? agi::hardware::NavigationPolicy::Gnss : agi::hardware::NavigationPolicy::Rtk;
 	if (_shadow_only && _mode != "hardware") throw std::invalid_argument("shadow_only requires hardware mode");
 	if (_mode != "sitl" && _mode != "hardware") {
 		throw std::invalid_argument("mode must be sitl or hardware");
@@ -40,7 +47,8 @@ ControlNode::ControlNode()
 		throw std::invalid_argument("Hardware requires use_sim_time=false");
 	}
 	_simulation_time = _mode == "sitl" && get_parameter("use_sim_time").as_bool();
-	const bool delay_test = declare_parameter<bool>("sitl_delay_test", false);
+	const bool delay_test = declare_parameter<bool>(
+	        "sitl_delay_test", profile ? profile->section("flight")["sitl_delay_test"].as<bool>() : false, shadow_descriptor);
 	if (delay_test && !_simulation_time) {
 		throw std::invalid_argument("sitl_delay_test requires mode=sitl and use_sim_time=true");
 	}
@@ -49,10 +57,14 @@ ControlNode::ControlNode()
 
 	const auto params_dir = declare_parameter<std::string>("params_dir", "");
 	const auto pilot_file = declare_parameter<std::string>("pilot_config", "pilot_ros2.yaml");
-	const auto trajectory = declare_parameter<std::string>("trajectory", "");
-	_params = std::make_unique<agi::PilotParams>(std::filesystem::path(params_dir) / pilot_file, params_dir);
+	const auto trajectory = declare_parameter<std::string>(
+	        "trajectory", profile ? profile->resolvePath(profile->section("flight")["trajectory"].as<std::string>()) : "",
+	        shadow_descriptor);
+	_params = profile ? profile->createPilotParams()
+	                  : std::make_unique<agi::PilotParams>(std::filesystem::path(params_dir) / pilot_file, params_dir);
 	_pilot = std::make_unique<agi::hardware::HardwarePilot>(
-	        *_params, [this] { return _control_time; }, [this] { return _simulation_time ? _control_time : monotonicSeconds(); });
+	        *_params, [this] { return _control_time; }, [this] { return _simulation_time ? _control_time : monotonicSeconds(); },
+	        _navigation_policy);
 	if (!trajectory.empty()) {
 		const auto rows = agi::trajectory_csv::readTrajectoryRows(trajectory);
 		const auto points = agi::trajectory_csv::loadTrajectory(rows, 0, agi::Vector<3>::Zero(), 0,
@@ -110,6 +122,7 @@ void ControlNode::onOutputStatus(msg::OutputStatus::ConstSharedPtr message) {
 }
 
 void ControlNode::tick() {
+	const auto cycle_start = std::chrono::steady_clock::now();
 	const auto timely = [this](double now, double sample, double limit) {
 		return SafetyGate::fresh(now, sample, limit, _timing_checks);
 	};
@@ -156,6 +169,14 @@ void ControlNode::tick() {
 	                          timely(wall, _output.steady_time, _simulation_time ? kSitlWallTimeout : 0.05);
 	evidence.imu_calibrated = health_fresh && _health.imu_calibrated;
 	evidence.converged = health_fresh && _health.converged && _state.initialized;
+	evidence.imu_ready = health_fresh && _health.imu_ready && _state.imu_ready;
+	evidence.estimator_ready = health_fresh && _health.estimator_ready && _state.estimator_ready;
+	evidence.clock_aligned = _state.clock_aligned;
+	evidence.accuracy_known = _state.accuracy_known;
+	evidence.navigation_ready = health_fresh && _health.navigation_ready && _state.navigation_ready &&
+	                            _state.navigation_source == "gnss" && _state.fix_type >= 3 && _state.fix_type <= 6 &&
+	                            timely(wall, _state.rtk_receive_time, .3);
+	if (_navigation_policy == agi::hardware::NavigationPolicy::Gnss) evidence.accuracy_ok = _state.navigation_accuracy_ok;
 	evidence.config_verified = health_fresh && _health.config_verified;
 	evidence.thrust_calibrated = health_fresh && _health.thrust_calibrated && output_fresh && _output.thrust_calibrated;
 	evidence.geofence_ok = health_fresh && _health.geofence_ok;
@@ -163,7 +184,9 @@ void ControlNode::tick() {
 	const bool navigation_valid = _state.navigation_source == "gnss" && _state.navigation_valid && _state.clock_aligned &&
 	                              _state.heading_valid && timely(_control_time, stampSeconds(_state.rtk_stamp), .3) &&
 	                              timely(wall, _state.rtk_receive_time, .3) && timely(wall, _state.imu_receive_time, .010);
-	publishDecision(_pilot->tick(state, evidence, _shadow_only, navigation_valid), state);
+	const auto decision = _pilot->tick(state, evidence, _shadow_only, navigation_valid);
+	_cycle_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - cycle_start).count();
+	publishDecision(decision, state);
 }
 
 void ControlNode::publishDecision(const agi::hardware::ControlDecision& decision, const agi::QuadState& state) {
@@ -194,7 +217,13 @@ void ControlNode::publishDecision(const agi::hardware::ControlDecision& decision
 	computation.trajectory_active = decision.trajectory_active;
 	computation.reference_elapsed = decision.reference_elapsed;
 	computation.solve_seconds = decision.evidence.solve_seconds;
-	computation.reason = decision.evidence.command_valid ? "MPC computed" : "State/navigation/kill or MPC check failed";
+	computation.cycle_seconds = _cycle_seconds;
+	computation.state_age = _control_time - state.t;
+	computation.navigation_age = _control_time - stampSeconds(_state.rtk_stamp);
+	computation.imu_age = decision.evidence.now - decision.evidence.imu_time;
+	computation.reason = decision.reason;
+	if (!_state.readiness_reason.empty()) computation.reason += "; fusion: " + _state.readiness_reason;
+	if (!_health.reason.empty()) computation.reason += "; health: " + _health.reason;
 	_computation_pub->publish(computation);
 
 	std_msgs::msg::Float64MultiArray diagnostic;

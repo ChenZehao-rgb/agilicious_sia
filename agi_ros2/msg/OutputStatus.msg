@@ -9,3 +9,6 @@ uint64 fault_count
 float64 session_start
 bool override_active
 string reason
+string last_fault
+float64 write_seconds
+float64 command_age

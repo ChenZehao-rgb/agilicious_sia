@@ -11,7 +11,7 @@ bool TimeSampler::getAt(const QuadState &state,
                         SetpointVector *const setpoints,
                         int horizon_len) const {
   // some sanity checks of inputs
-  if (!state.valid() || setpoints == nullptr) return false;
+  if (!state.valid() || setpoints == nullptr || references.empty()) return false;
 
   setpoints->clear();
 
@@ -31,10 +31,10 @@ bool TimeSampler::getAt(const QuadState &state,
   if (active_reference == references.end()) {
     Setpoint setpoint = references.back()->getSetpoint(state);
     for (int i = 0; i < horizon_len; ++i) {
-      setpoint.state.t += t_curr;
-      setpoint.input.t += t_curr;
-      setpoints->push_back(setpoint);
-      t_curr += horizon_dt_;
+	    setpoint.state.t = t_curr;
+	    setpoint.input.t = t_curr;
+	    setpoints->push_back(setpoint);
+	    t_curr += horizon_dt_;
     }
     return true;
   }

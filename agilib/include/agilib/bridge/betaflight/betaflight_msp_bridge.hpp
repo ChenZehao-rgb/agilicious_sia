@@ -33,7 +33,7 @@ private:
 // No constructor/destructor/watchdog ever sends disarm or AUX channels.
 class BetaflightMspBridge {
 public:
-	explicit BetaflightMspBridge(const std::string& device, int baud = 921600);
+	explicit BetaflightMspBridge(const std::string& device, int baud = 921600, NavigationPolicy policy = NavigationPolicy::Rtk);
 	~BetaflightMspBridge();
 	BetaflightMspBridge(const BetaflightMspBridge&) = delete;
 	BetaflightMspBridge& operator=(const BetaflightMspBridge&) = delete;

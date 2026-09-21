@@ -10,6 +10,7 @@ namespace agi {
 struct ModuleConfig {
   std::string type;
   fs::path file;
+	Yaml parameters;
 
   bool loadIfUndefined(const Yaml& yaml);
 

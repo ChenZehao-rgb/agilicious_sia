@@ -1,16 +1,14 @@
 #include "agilib/bridge/bridge_base.hpp"
 
 namespace agi {
-BridgeBase::BridgeBase(const std::string& name,
-                       const TimeFunction time_function, const Scalar timeout,
-                       const int n_max_timeouts,
-                       const bool start_timeout_guard)
-  : Module(name),
-    timeout_(timeout),
-    n_max_timeouts_(n_max_timeouts),
-    time_function_(time_function),
-    voltage_watchdog_(std::bind(&BridgeBase::voltageTimeout, this), 30.0) {
-  if (start_timeout_guard) startTimeoutGuard();
+BridgeBase::BridgeBase(const std::string& name, const TimeFunction time_function, const Scalar timeout, const int n_max_timeouts,
+                       const bool start_timeout_guard, const bool start_voltage_watchdog)
+        : Module(name),
+          timeout_(timeout),
+          n_max_timeouts_(n_max_timeouts),
+          time_function_(time_function),
+          voltage_watchdog_(std::bind(&BridgeBase::voltageTimeout, this), 30.0, start_voltage_watchdog) {
+	if (start_timeout_guard) startTimeoutGuard();
 }
 
 BridgeBase::~BridgeBase() {

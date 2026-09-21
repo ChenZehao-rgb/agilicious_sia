@@ -21,34 +21,43 @@ EkfImu::EkfImu(const std::shared_ptr<EkfImuParameters>& params)
 EkfImu::~EkfImu() { printTimings(); }
 
 bool EkfImu::getAt(const Scalar t, QuadState* const state) {
-  if (state == nullptr) return false;
-  if (!std::isfinite(t)) return false;
+	if (state == nullptr) return false;
+	if (!std::isfinite(t)) return false;
 
-  const Vector<4> motors = motor_speeds_;
-  const Vector<4> motor_des = state->motdes;
-  state->setZero();
-  state->t = t;
+	const Vector<4> motors = motor_speeds_;
+	const Vector<4> motor_des = state->motdes;
+	state->setZero();
+	state->t = t;
 
-  std::lock_guard<std::mutex> lock(mutex_);
-  if (!std::isfinite(t_posterior_)) return false;
-  if (params_->update_on_get) process();
+	std::lock_guard<std::mutex> lock(mutex_);
+	if (!std::isfinite(t_posterior_)) return false;
+	if (params_->update_on_get) process();
 
-  // Catch trivial cases...
-  if (t <= t_posterior_) {
-    return vectorToState(t_posterior_, posterior_, state);
-  }
+	// Catch trivial cases...
+	if (t <= t_posterior_) {
+		return vectorToState(t_posterior_, posterior_, state);
+	}
 
-  bool ret = true;
-  ret &= propagatePrior(t);
-  ret &= vectorToState(t_prior_, prior_, state);
-  // Prediction must not advance the state associated with posterior covariance.
-  t_prior_ = t_posterior_;
-  prior_ = posterior_;
+	// Queries reuse the last prediction without advancing posterior covariance.
+	const Scalar saved_time = t_prior_;
+	const StateVector saved_prior = prior_;
+	const bool reuse = std::isfinite(_prediction_time) && _prediction_time >= t_posterior_ && _prediction_time <= t;
+	t_prior_ = reuse ? _prediction_time : t_posterior_;
+	prior_ = reuse ? _prediction : posterior_;
+	bool ret = propagatePrior(t);
+	if (ret) ret = vectorToState(t_prior_, prior_, state);
+	// Extrapolated states must be recomputed when later IMU samples arrive.
+	if (ret && !imus_.empty() && t <= imus_.back().t) {
+		_prediction_time = t_prior_;
+		_prediction = prior_;
+	}
+	t_prior_ = saved_time;
+	prior_ = saved_prior;
 
-  if (motors.allFinite()) state->mot = motors;
-  if (motor_des.allFinite()) state->motdes = motor_des;
+	if (motors.allFinite()) state->mot = motors;
+	if (motor_des.allFinite()) state->motdes = motor_des;
 
-  return ret;
+	return ret;
 }
 
 bool EkfImu::initialize(const QuadState& state) {
@@ -62,30 +71,30 @@ bool EkfImu::initialize(const QuadState& state) {
 }
 
 bool EkfImu::init(const QuadState& state) {
-  if (!state.valid()) return false;
+	if (!state.valid()) return false;
 
-  if (!poses_.empty()) {
-    const auto first_valid_pose = std::lower_bound(
-      poses_.begin(), poses_.end(), state.t,
-      [](const Pose& pose, const Scalar t) { return pose.t < t; });
+	if (!poses_.empty()) {
+		const auto first_valid_pose = std::lower_bound(poses_.begin(), poses_.end(), state.t,
+		                                               [](const Pose& pose, const Scalar t) { return pose.t < t; });
 
-    poses_.erase(poses_.begin(), first_valid_pose);
-  }
+		poses_.erase(poses_.begin(), first_valid_pose);
+	}
 
-  if (!imus_.empty()) {
-    const auto first_valid_imu = std::lower_bound(
-      imus_.begin(), imus_.end(), state.t,
-      [](const ImuSample& imu, const Scalar t) { return imu.t < t; });
+	if (!imus_.empty()) {
+		const auto first_valid_imu = std::lower_bound(imus_.begin(), imus_.end(), state.t,
+		                                              [](const ImuSample& imu, const Scalar t) { return imu.t < t; });
 
-    imus_.erase(imus_.begin(), first_valid_imu);
-  }
+		imus_.erase(imus_.begin(), first_valid_imu);
+	}
 
-  P_ = Q_init_;
-  stateToVector(state, &t_posterior_, &posterior_);
-  t_prior_ = t_posterior_;
-  prior_ = posterior_;
+	P_ = Q_init_;
+	_prediction_time = NAN;
+	_navigation_quality = NavigationQuality{};
+	stateToVector(state, &t_posterior_, &posterior_);
+	t_prior_ = t_posterior_;
+	prior_ = posterior_;
 
-  return true;
+	return true;
 }
 
 bool EkfImu::addPose(const Pose& pose) {
@@ -132,78 +141,99 @@ bool EkfImu::addImu(const ImuSample& imu) {
   return true;
 }
 
-bool EkfImu::addRtk(const Scalar t, const Vector<3>& position,
-                    const Vector<3>& velocity, const Scalar heading,
-                    const bool heading_valid, const Vector<3>& position_variance,
-                    const Vector<3>& velocity_variance, const Scalar heading_variance) {
-  if (!std::isfinite(t) || !position.allFinite() || !velocity.allFinite() ||
-      !position_variance.allFinite() || !velocity_variance.allFinite() ||
-      (position_variance.array() <= 0).any() || (velocity_variance.array() <= 0).any() ||
-      (heading_valid && (!std::isfinite(heading) || !std::isfinite(heading_variance) || heading_variance <= 0))) return false;
-  std::lock_guard<std::mutex> lock(mutex_);
-  if (!std::isfinite(t_posterior_) || t <= t_posterior_ ||
-      imus_.empty() || t > imus_.back().t) return false;
-  const StateMatrix saved_covariance = P_;
-  t_prior_ = t_posterior_;
-  prior_ = posterior_;
-  if (!propagatePriorAndCovariance(t)) {
-    P_ = saved_covariance;
-    t_prior_ = t_posterior_;
-    prior_ = posterior_;
-    return false;
-  }
-  Vector<7> residual = Vector<7>::Zero();
-  Matrix<7, IDX::SIZE> H = Matrix<7, IDX::SIZE>::Zero();
-  residual.head<3>() = prior_.segment<3>(IDX::POS) - position;
-  residual.segment<3>(3) = prior_.segment<3>(IDX::VEL) - velocity;
-  H.block<3, 3>(0, IDX::POS).setIdentity();
-  H.block<3, 3>(3, IDX::VEL).setIdentity();
-  if (heading_valid) {
-    const Scalar w = prior_(ATTW), x = prior_(ATTX), y = prior_(ATTY), z = prior_(ATTZ);
-    const Scalar a = 2 * (w*z + x*y), b = 1 - 2 * (y*y + z*z);
-    const Scalar d = a*a + b*b;
-    // Yaw is undefined when the body x axis is vertical.
-    if (d > 1e-8) {
-      residual(6) = std::atan2(std::sin(std::atan2(a,b) - heading),
-                               std::cos(std::atan2(a,b) - heading));
-      H.block<1,4>(6, ATT) << 2*z*b/d, 2*y*b/d,
-                              (2*x*b + 4*y*a)/d, (2*w*b + 4*z*a)/d;
-    }
-  }
-  Vector<7> variances;
-  variances << position_variance, velocity_variance, heading_valid ? heading_variance : 1.0;
-  const Matrix<7, 7> R = variances.asDiagonal();
-  const Matrix<7, 7> S = H * P_ * H.transpose() + R;
-  const Matrix<IDX::SIZE, 7> K =
-    P_ * H.transpose() * S.ldlt().solve(Matrix<7, 7>::Identity());
-  StateVector corrected = prior_ - K * residual;
-  if (!corrected.allFinite() || corrected.segment<4>(ATT).norm() < 1e-8) {
-    P_ = saved_covariance;
-    t_prior_ = t_posterior_;
-    prior_ = posterior_;
-    return false;
-  }
-  // Joseph form followed by the quaternion normalization Jacobian.
-  const StateMatrix A = StateMatrix::Identity() - K * H;
-  const StateMatrix covariance = A * P_ * A.transpose() + K * R * K.transpose();
-  if (!covariance.allFinite()) {
-    P_ = saved_covariance;
-    t_prior_ = t_posterior_;
-    prior_ = posterior_;
-    return false;
-  }
-  const Vector<4> q = corrected.segment<4>(ATT).normalized();
-  StateMatrix J = StateMatrix::Identity();
-  J.block<4, 4>(ATT, ATT) =
-    (Matrix<4, 4>::Identity() - q * q.transpose()) /
-    corrected.segment<4>(ATT).norm();
-  P_ = J * covariance * J.transpose();
-  P_ = (0.5 * (P_ + P_.transpose())).eval();
-  corrected.segment<4>(ATT) = q;
-  posterior_ = prior_ = corrected;
-  t_posterior_ = t_prior_ = t;
-  while (imus_.size() > 1 && imus_[1].t <= t) imus_.pop_front();
-  return true;
+bool EkfImu::addRtk(const Scalar t, const Vector<3>& position, const Vector<3>& velocity, const Scalar heading, const bool heading_valid,
+                    const Vector<3>& position_variance, const Vector<3>& velocity_variance, const Scalar heading_variance,
+                    const Scalar max_innovation_squared) {
+	if (!std::isfinite(t) || !position.allFinite() || !velocity.allFinite() || !position_variance.allFinite() ||
+	    !velocity_variance.allFinite() || (position_variance.array() <= 0).any() || (velocity_variance.array() <= 0).any() ||
+	    !(max_innovation_squared > 0) ||
+	    (heading_valid && (!std::isfinite(heading) || !std::isfinite(heading_variance) || heading_variance <= 0)))
+		return false;
+	std::lock_guard<std::mutex> lock(mutex_);
+	if (!std::isfinite(t_posterior_) || t <= t_posterior_ || imus_.empty() || t > imus_.back().t) return false;
+	const StateMatrix saved_covariance = P_;
+	const auto reject = [&]() {
+		P_ = saved_covariance;
+		t_prior_ = t_posterior_;
+		prior_ = posterior_;
+		++_navigation_quality.rejected_updates;
+		return false;
+	};
+	t_prior_ = t_posterior_;
+	prior_ = posterior_;
+	if (!propagatePriorAndCovariance(t)) {
+		return reject();
+	}
+	Vector<7> residual = Vector<7>::Zero();
+	Matrix<7, IDX::SIZE> H = Matrix<7, IDX::SIZE>::Zero();
+	residual.head<3>() = prior_.segment<3>(IDX::POS) - position;
+	residual.segment<3>(3) = prior_.segment<3>(IDX::VEL) - velocity;
+	H.block<3, 3>(0, IDX::POS).setIdentity();
+	H.block<3, 3>(3, IDX::VEL).setIdentity();
+	if (heading_valid) {
+		const Scalar w = prior_(ATTW), x = prior_(ATTX), y = prior_(ATTY), z = prior_(ATTZ);
+		const Scalar a = 2 * (w * z + x * y), b = 1 - 2 * (y * y + z * z);
+		const Scalar d = a * a + b * b;
+		// Yaw is undefined when the body x axis is vertical.
+		if (d > 1e-8) {
+			residual(6) = std::atan2(std::sin(std::atan2(a, b) - heading), std::cos(std::atan2(a, b) - heading));
+			H.block<1, 4>(6, ATT) << 2 * z * b / d, 2 * y * b / d, (2 * x * b + 4 * y * a) / d, (2 * w * b + 4 * z * a) / d;
+		} else {
+			return reject();
+		}
+	}
+	Vector<7> variances;
+	variances << position_variance, velocity_variance, heading_valid ? heading_variance : 1.0;
+	const Matrix<7, 7> R = variances.asDiagonal();
+	const Matrix<7, 7> S = H * P_ * H.transpose() + R;
+	const auto factor = S.ldlt();
+	if (factor.info() != Eigen::Success || !factor.vectorD().allFinite() || (factor.vectorD().array() <= 0).any()) return reject();
+	_navigation_quality.innovation_squared = residual.dot(factor.solve(residual));
+	if (!std::isfinite(_navigation_quality.innovation_squared) || _navigation_quality.innovation_squared < 0 ||
+	    _navigation_quality.innovation_squared > max_innovation_squared)
+		return reject();
+	const Matrix<IDX::SIZE, 7> K = P_ * H.transpose() * factor.solve(Matrix<7, 7>::Identity());
+	StateVector corrected = prior_ - K * residual;
+	if (!corrected.allFinite() || corrected.segment<4>(ATT).norm() < 1e-8) {
+		return reject();
+	}
+	// Joseph form followed by the quaternion normalization Jacobian.
+	const StateMatrix A = StateMatrix::Identity() - K * H;
+	const StateMatrix covariance = A * P_ * A.transpose() + K * R * K.transpose();
+	if (!covariance.allFinite()) {
+		return reject();
+	}
+	const Vector<4> q = corrected.segment<4>(ATT).normalized();
+	StateMatrix J = StateMatrix::Identity();
+	J.block<4, 4>(ATT, ATT) = (Matrix<4, 4>::Identity() - q * q.transpose()) / corrected.segment<4>(ATT).norm();
+	P_ = J * covariance * J.transpose();
+	P_ = (0.5 * (P_ + P_.transpose())).eval();
+	corrected.segment<4>(ATT) = q;
+	posterior_ = prior_ = corrected;
+	t_posterior_ = t_prior_ = t;
+	_prediction_time = NAN;
+	++_navigation_quality.accepted_updates;
+	while (imus_.size() > 1 && imus_[1].t <= t) imus_.pop_front();
+	return true;
+}
+
+EkfImu::NavigationQuality EkfImu::navigationQuality() {
+	std::lock_guard<std::mutex> lock(mutex_);
+	NavigationQuality result = _navigation_quality;
+	result.stamp = t_posterior_;
+	result.position_variance = P_.diagonal().segment<3>(POS);
+	result.velocity_variance = P_.diagonal().segment<3>(VEL);
+	const Scalar w = posterior_(ATTW), x = posterior_(ATTX), y = posterior_(ATTY), z = posterior_(ATTZ);
+	const Scalar a = 2 * (w * z + x * y), b = 1 - 2 * (y * y + z * z), d = a * a + b * b;
+	if (d > 1e-8) {
+		Vector<4> jacobian;
+		jacobian << 2 * z * b / d, 2 * y * b / d, (2 * x * b + 4 * y * a) / d, (2 * w * b + 4 * z * a) / d;
+		result.heading_variance = jacobian.dot(P_.block<4, 4>(ATT, ATT) * jacobian);
+	}
+	result.valid = std::isfinite(result.stamp) && result.position_variance.allFinite() && result.velocity_variance.allFinite() &&
+	               (result.position_variance.array() >= 0).all() && (result.velocity_variance.array() >= 0).all() &&
+	               std::isfinite(result.heading_variance) && result.heading_variance >= 0;
+	return result;
 }
 
 bool EkfImu::addMotorSpeeds(const Vector<4>& speeds) {
@@ -344,6 +374,7 @@ bool EkfImu::updatePose(const Pose& pose) {
   t_posterior_ = t_prior_;
   posterior_ = new_posterior;
   prior_ = new_posterior;
+	_prediction_time = NAN;
   P_ = 0.5 * (P_new + P_new.transpose());
 
   return true;
@@ -547,6 +578,7 @@ bool EkfImu::updateParameters(const std::shared_ptr<EkfImuParameters>& params) {
   std::lock_guard<std::mutex> lock(mutex_);
 
   params_ = params;
+	_prediction_time = NAN;
 
   Q_ = (StateVector() << params_->Q_pos, params_->Q_att, params_->Q_vel,
         params_->Q_bome, params_->Q_bacc)

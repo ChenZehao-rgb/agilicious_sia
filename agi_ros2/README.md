@@ -1,362 +1,370 @@
 # ROS 2 Betaflight 控制入口
 
-控制链路由三个独立进程组成，Gazebo 传感器适配器只在仿真中启动：
+标准入口只维护两份完整配置：[simulation.yaml](config/simulation.yaml) 和
+[hardware.yaml](config/hardware.yaml)。仿真保留已经使用的分层部署方式：开发机运行
+Gazebo、Betaflight SITL 和传感器适配器，CM5、Jetson 或开发机运行融合、控制、输出三节点。
+实机使用两条独立 UART：MAVLink 接收 IMU/GPS，MSP 查询实体授权、配置和电池并发送 AETR Override。
 
 ```text
-Gazebo IMU/odometry → gazebo_sensors ─┐
-真实 IMU / RTK 驱动 ────────────────┴→ state_fusion_node
-    → /fused_state [p, v, q, w, a]
-    → control_node [轨迹跟踪 + HardwarePilot 状态机 + MPC]
-    → /control_command [总推力 N + 机体角速度 rad/s + 授权证据]
-    → command_output_node → UDP / UART MSP → Betaflight SITL / 实体飞控
+仿真：Gazebo → gazebo_sensors → IMU / RTK ────────────────────┐
+实机：FC MAVLink → mavlink_sensor_node → IMU ─────────────────┤
+                                    → GPS → gnss_adapter.py ┤
+                                                           ↓
+                                                  state_fusion_node
+                                                           ↓ /fused_state
+                                                   control_node / MPC
+                                                           ↓ /control_command
+                                                  command_output_node
+                                             仿真 UDP / 实机 UART MSP
+                                                           ↓
+                                                  Betaflight 角速度内环
+
+实体接收机 → FC → MSP 遥测 → msp_evidence.py → /authority、/health
+                             ↑ 配置/模式/电池       ↓ 同时供控制与输出独立复查
 ```
 
-- `state_fusion_node`：随 IMU 回调进行传播和发布（1 kHz 输入时目标约 1 kHz）；
-  RTK 校正和 CompanionAhrs 均由本节点单线程执行，同时保留 `/state` 里程计评估接口。
-- `control_node`：100 Hz 定时采样融合状态，执行轨迹、MPC 预热和状态机；不订阅原始
-  IMU/RTK，不打开 UDP 或串口。源文件为 `src/control_node.cpp`。
-- `command_output_node`：收到新控制结果即检查、映射并输出；5 ms 墙钟看门狗检查
-  控制停流并发布 `/output_status`（实机 25 ms 墙钟；SITL 25 ms 仿真时间，
-  另有 250 ms 墙钟停流上限）。故障计数及进程重启反馈给控制状态机。
-  SITL 使用 UDP；实机 MSP 仅发送 AETR，不写 ARM/AUTO/KILL AUX。
-- `/authority` 和 `/health` 同时供控制与输出节点使用，最新 KILL、ARM low 或 AUTO low
-  可直接撤销输出，不必等待下一次 MPC。
+本次软件适配的目标是**先人工起飞，再通过实体 AUTO 开关捕获当前位置和航向、执行 MPC 悬停**。
+入口不自动 ARM、不自动起飞或降落。默认空轨迹；`hardware.yaml` 默认 `shadow_only: true`，
+只计算与录包、不发送控制帧。实机机体、精度门限、围栏和推力数据需要填入实测值，
+仓库中的零值是未配置标记，不是飞行参数。历史 SITL/伪串口结果不代表当前固件已刷入飞控，
+也不代表已经完成 CM5 时延验收或真实飞行验证。
 
-ROS 1 `agiros`、旧 `run.py` 默认路径和 `betaflight_hw` 诊断工具保留。
-
-已进行 ROS 2 SITL 轨迹调试；每次执行结果与 bag 位于仓库 `bags/cpc33_z1_ros2_attempt*`，
-最终结果见本次 bag 目录中的测试报告。尚未进行实机或真实飞行验证。本机是 ROS 2 Humble；
-Jazzy/ARM64 需要在目标平台重新编译，不能复用本机 acados 二进制。
-
-## 编译
+## 编译和配置来源
 
 在仓库根目录：
 
 ```bash
-source /opt/ros/humble/setup.bash  # Ubuntu 24.04 用 /opt/ros/jazzy/setup.bash
+source /opt/ros/humble/setup.bash  # 目标机使用实际安装版本，例如 jazzy
 ./agi_ros2/scripts/build.sh
 source install/agi_ros2/local_setup.bash
 ```
 
-构建只选取 ROS 2 包，不扫描旧 catkin 包。产物位于 `build/ros2` 和
-`install/agi_ros2`，脚本不执行测试或启动任何飞控。
-现有 Eigen、acados 和 Gazebo Harmonic 开发依赖继续复用。
-也可用 `colcon build --base-paths agi_ros2 --cmake-args -DACADOS_ROOT=绝对路径`。
-
-CM5 不需要 Gazebo 库：
+脚本只选择 `agi_ros2`，生成目录是工作区 `build/agi_ros2`，安装目录是 `install/agi_ros2`；
+不执行测试、不启动或刷写飞控。C++17、Eigen/acados 和原有依赖不变。
+CM5/Jetson 需使用目标架构的 acados 库，不能复制 x86 二进制：
 
 ```bash
-source /opt/ros/jazzy/setup.bash
-ACADOS_ROOT=/path/to/arm64/acados ./agi_ros2/scripts/build.sh -DAGI_ROS2_GAZEBO=OFF
+ACADOS_ROOT=/path/to/arm64/acados ./agi_ros2/scripts/build.sh \
+  -DAGI_ROS2_GAZEBO=OFF -DAGILIB_ARM_CPU=cortex-a76
 ```
 
-## 开发机 SITL
+`cortex-a76` 是 CM5 选项；Jetson 根据实际 CPU 选择或省略该选项。
+ARM64 默认不构建 Gazebo 适配器，核心三节点和 MAVLink/MSP 节点仍正常构建。
 
-终端 1：
+- `./agi_ros2/scripts/launch.sh` 加载源码 launch 和源码 `agi_ros2/config/`。修改配置后重启即可；
+  修改 C++、Python 节点或消息后仍须重新构建安装。
+- `ros2 launch agi_ros2 flight.launch.py` 加载安装包内 launch 和同包 `config/`；修改源码后重新安装。
+- `runtime_config:=/absolute/path/simulation.yaml` 可以选择另一份同结构配置；启动日志打印最终绝对路径。
+  相对轨迹、推力 CSV 和 bag 路径都相对该配置所在目录解析。
+- 配置内直接包含 Pilot、机体、MPC、桥接和融合参数，不生成拆分的 Pilot/MPC/quad YAML。
+  `params_dir/pilot_config/bridge_config` 保留给旧直接节点入口，统一 launch 拒绝与新配置混用。
+- `flight.launch.py`、`shadow.launch.py`、`msp.launch.py`、`mavlink_sensors.launch.py` 共享同一组装代码；
+  后三者是诊断/影子薄封装，不拥有第三套参数。旧 `agilib/params` 继续供 standalone/历史工具使用。
+
+配置段对应关系：
+
+| 段 | 内容及读取者 |
+|---|---|
+| `flight` | 轨迹、推力表、shadow/diagnostic 开关、SITL 延迟实验、录包；launch 读取 |
+| `pilot` | 内嵌 `quadrotor` 和 `pipeline.controller.parameters`；控制器加载，输出端读取同一机体 |
+| `bridge` | ACTUAL rates/deadband/min_check；输出端映射、MSP 配置回读和 SITL EEPROM 共用 |
+| `fusion` | IMU 噪声、初始化及导航质量门限；launch 传给融合节点 |
+| `output` | MSP UART 和查询周期；控制输出/只读 MSP 节点 |
+| `mavlink`、`navigation` | 传感器 UART/消息频率、高度/航向声明、原点和精度门限 |
+| `evidence` | 实体 AUX/RX map、PID/rate profile、围栏和电池时效 |
+
+数组请写为 `[x, y, z]`；Agilib 的现有 YAML 读取器不支持 PyYAML 默认的无额外缩进多行数组。
+
+## SITL：保持分层部署
+
+终端 1，在开发机：
 
 ```bash
-cd /home/sia/agilicious_internal-main
-source /opt/ros/humble/setup.bash
 python3 betaflight_sitl/run.py
+# 后续可使用 --no-build；--no-gazebo 关闭 GUI；--duration 限制模拟器墙钟运行时长。
 ```
 
-此入口复用原脚本的模型叠加、隔离 EEPROM 配置和回读、Betaloop 启动、退出清理。
-首次启动会构建 Gazebo 插件及 ROS 2 包；之后可加 `--no-build`。
-此命令只启动 Betaflight SITL、Gazebo（默认显示 GUI）和 gazebo_sensors，不启动 flight。
-**不会自动 ARM 或起飞**。无界面运行可加 `--no-gazebo`；旧版独立控制器使用 `--no-ros2`。
-Gazebo 与 Betaflight 已由上述脚本启动时，不要再开第二个控制节点或 UDP 遥控写入程序。
+只启动 Gazebo、Betaflight SITL、`gazebo_sensors`，不会启动 flight 或自动 ARM。
+ROS2 分支从 `config/simulation.yaml` 的 `bridge` 段写入并回读**隔离的 SITL EEPROM**。
+如使用自选配置，同时给模拟器和控制机指定同一份配置内容：
 
-终端 2，启动 flight（无需命令行参数）：
+```bash
+python3 betaflight_sitl/run.py --runtime-config /absolute/path/simulation.yaml
+./agi_ros2/scripts/launch.sh runtime_config:=/absolute/path/simulation.yaml
+```
+
+终端 2，在运行融合/控制/输出的主机：
 
 ```bash
 ./agi_ros2/scripts/launch.sh
 ```
 
-在 `agi_ros2/launch/flight.launch.py` 的 `FLIGHT_CONFIG` 中修改模式、轨迹、配置路径及录包参数。
-脚本直接加载源码 launch，修改后重启 flight 即可生效。
-flight 不启动或检查 gazebo_sensors 进程，只订阅 ROS topic；保留消息新鲜度和有效性检查。
+默认 `mode:=sitl`、空轨迹、正常时效检查。不同主机共享 ROS_DOMAIN_ID 和 DDS 网络设置；
+控制机 `simulation.yaml` 的 `bridge.host` 指向运行 Betaflight 的开发机 IP。
+不要把运行于 CM5/Jetson 的联合仿真改成 hardware 模式；真实传感器来源才决定切换。
+融合、控制、输出三节点必须共处同一 Linux 主机，因为它们交换 boot ID 和单调时钟证据；
+Gazebo 与传感器适配器可以在另一台主机，用 `/clock` 统一仿真时间。
 
-终端 3，启动唯一的模拟遥控消息源：
+终端 3，启动唯一模拟接收机：
 
 ```bash
-source /opt/ros/humble/setup.bash
 source install/agi_ros2/local_setup.bash
 ros2 run agi_ros2 sim_rc.py --ros-args -p use_sim_time:=true
 ```
 
-终端 4，逐步操作：
+随后在已 source 的终端操作：
 
 ```bash
-source /opt/ros/humble/setup.bash
-source install/agi_ros2/local_setup.bash
 ros2 topic echo /status
-# 在另一个已 source 的终端执行以下参数命令：
+# 在另一终端逐项执行：
 ros2 param set /sim_rc kill false
-# 等待 Betaflight 启动校准完成，建议仿真时间超过 12 秒，再低油门 ARM。
+# 等 Betaflight 启动校准完成，AUTO 保持 false，低油门 ARM。
 ros2 param set /sim_rc armed true
-# AUTO 保持 false；需要起飞时，逐步调整人工油门，例如（当前模型悬停油门约 1411）：
-ros2 param set /sim_rc throttle 1420
-# 确认状态为 AUTO_STANDBY 且机体到达预期位置后再切 AUTO：
-# 切换前确认当前 /status 仍为 AUTO_STANDBY；出现 RC timeout / MPC warming 时不要切换。
+ros2 param set /sim_rc throttle 1420  # 仅当前仿真模型示例，不是实机油门
+# 到达合适高度，确认 AUTO_STANDBY 后：
 ros2 param set /sim_rc auto_switch true
-# 撤销接管：先将人工油门设为需要的值，再把 auto_switch 设为 false。
-# KILL：
+# 撤销时先设好人工油门，再 AUTO low；KILL：
 ros2 param set /sim_rc kill true
 ```
 
-1450 仅为模拟输入示例，不保证起飞高度或稳定悬停。AUTO 无轨迹时捕获当前位置并悬停；
-启动高电平或故障后保持高电平不允许恢复，必须先观察健康的 AUTO low，再切 high。
+需要 CSV 时在 `simulation.yaml` 的 `flight.trajectory` 填路径，或传 `trajectory:=路径`。
+轨迹在**授权成功的 AUTO 边沿**对齐当前时刻、位置和航向；未 ARM、启动 AUTO high 或
+故障恢复时不会提前消耗轨迹时间。恢复须健康预热并重新观察 AUTO low→high。
 
-使用原有 30 列 CSV：在 launch 文件的 `FLIGHT_CONFIG` 中设置
-`trajectory='/absolute/path/trajectory.csv'`，然后重启 flight。
+`flight.sitl_delay_test` 默认 false。显式 `sitl_delay_test:=true` 仅用于保留的仿真延迟实验：
+取消多项年龄/耗时/停流检查并重发旧命令，不能用该运行结果作为严格保护验收。
+hardware 模式拒绝启用此开关。旧独立控制器仍可用 `run.py --no-ros2`。
 
-新旧入口复用 `agilib/reference/trajectory_csv.hpp`。ROS 2 在 AUTO 上升沿将轨迹起点
-平移到当前位置、朝向对齐当前航向，并开始执行。需要先手动到达适当高度。
-`run.py --duration` 仅限制模拟器及 sensor 的墙钟运行时长；flight 独立运行。
+## CM5 实机：诊断、影子、悬停
 
-也可以在已 source ROS 和工作区的终端执行 `ros2 launch agi_ros2 flight.launch.py`；
-这种方式使用安装目录内的 launch，修改源码后需重新构建安装。
+先在 `hardware.yaml` 填写 `output.device` 与 `mavlink.device`，使用两条独立 UART，
+不能是同一设备的两个软链接。飞控连接及 MAVLink 时间/单位细节见 [MAVLINK_SENSORS.md](MAVLINK_SENSORS.md)。
 
-CM5 接开发机的模拟输入时，保持 launch 中 `mode='sitl'`；
-共享 ROS_DOMAIN_ID，CM5 的桥接 YAML `host` 指向开发机 IP。
-开发机只运行 `run.py`，CM5 运行 flight。外部输入应提供 IMU、RTK、health 和 /clock；
-配置验证状态通过 health topic 传递，由 run.py 完成隔离 EEPROM 回读后设置。
+1. **模型尚未准备好时读取实机数据：**
 
-## SITL 延迟测试
+   ```bash
+   ./agi_ros2/scripts/launch.sh mode:=hardware diagnostic_only:=true
+   ```
 
-当前源码 launch 的 `FLIGHT_CONFIG` 设置 `sitl_delay_test='true'`，
-用于 Jetson–本机分层仿真的延迟实验。改成 `'false'` 并重启 flight 恢复原保护。
-节点单独运行时默认仍为 false；hardware launch 始终关闭该测试开关。
+   启动 MAVLink、GNSS adapter、融合、MSP monitor、证据节点，不构造 MPC，不启动输出节点，
+   不发送 MSP code 200。原始 IMU/GPS/MSP 可先读；航向、高度、配置或静止初始化条件未满足时，
+   本地导航/融合会继续报告等待原因。此时没有 output_status，health 不会假装整条飞行链已就绪。
 
-开启时不以状态/IMU、RTK、RC、health、命令及输出状态的年龄、
-控制周期间隔或 8 ms 求解耗时为由退出 AUTO，也不因 IMU 正向时间间隔超过
-25 ms 而主动重置融合器。实际延迟仍原样写入 `/control_diagnostics`。
-输出节点每 5 ms 重发最后有效命令，因此数据停止更新时也会保持旧输出，直到
-新命令、ARM/KILL/链路标志撤销、无效数据或节点退出改变输出。
+2. **真实模型填完后运行影子 MPC：**
 
-仍需先完成 50 个有效预热周期，再从 AUTO=false 切到 true；
-保留配置验证、有限数值、时钟域、时钟回退、融合器实际故障及命令有效性检查。
-估计器本身的积分/历史缓存约束没有取消；此开关不保证任意延迟下都能跟踪轨迹。
+   ```bash
+   ./agi_ros2/scripts/launch.sh mode:=hardware
+   # 等价只读封装，仍读取同一hardware.yaml：
+   # ros2 launch agi_ros2 shadow.launch.py
+   ```
 
-同步源码到 Jetson 后执行 `./agi_ros2/scripts/build.sh`，
-再按原命令 `./agi_ros2/scripts/launch.sh` 启动，无需追加参数。
+   hardware 默认 shadow。核心三节点与 MAVLink/GNSS/evidence 合共六个节点；输出节点只查询 MSP。
+   `shadow.launch.py` 即使接到 `shadow_only:=false` 也拒绝，运行中不能切换只读参数。
+   推力表可暂缺，真实模型不可缺；详见 [SHADOW_EVALUATION.md](SHADOW_EVALUATION.md)。
 
-## 实机入口与驱动契约
+3. **实测模型、推力表、质量门限和飞控回读全部就绪后，显式启用输出入口：**
 
-```bash
-./agi_ros2/scripts/launch.sh mode:=hardware \
-  params_dir:=/absolute/path/hardware_params \
-  pilot_config:=pilot_hardware.yaml bridge_config:=betaflight_hardware.yaml \
-  device:=/dev/ttyAMA0 baud:=921600 thrust_table:=/absolute/path/thrust.csv
+   ```bash
+   ./agi_ros2/scripts/launch.sh mode:=hardware shadow_only:=false
+   ```
+
+   这仅允许程序在证据满足时发送四通道 AETR，不会 ARM。静止、未解锁时先完成原点和 IMU 初始化；
+   观察导航/估计/配置/推力/围栏就绪以及 50 个健康 MPC 预热周期；人工起飞到目标高度，
+   在实体 AUTO low 状态确认 AUTO_STANDBY 后切 high。空轨迹捕获当前三维位置和 yaw 悬停。
+   退出 AUTO、KILL、失联、导航/控制/输出故障时停止 Override；恢复需新的健康 low→high。
+   实体接收机的当前 AETR、飞控模式及 failsafe 决定停止 Override 后的真实行为。
+
+单独检查时可用 `msp.launch.py`（只读 monitor）或 `mavlink_sensors.launch.py`，均读同一 hardware 配置。
+完整 flight 已独占这两条串口，不应同时再开诊断节点。原有 bench 固定 RC 能力仍在
+`betaflight_msp_node` 直接入口，需要显式 `mode:=bench` 和 `props_removed:=true`；不属于飞行 launch。
+
+## 实机配置必须填写的数据
+
+不能把零占位替换为 Iris 参数来绕过检查。启动聚合报告不合法模型字段；真实模型缺失时请使用 diagnostic。
+
+| 位置 | 单位/来源 |
+|---|---|
+| `pilot.quadrotor.mass` | 含电池/负载的起飞总质量，kg |
+| `tbm_fr/tbm_bl/tbm_br/tbm_fl` | 相对质心的四电机位置，机体 FLU，m；索引须符合 Agilib 机体模型约定 |
+| `inertia` | 绕机体轴的正惯量对角项，kg·m²；不接受零或负数 |
+| `motor_omega_min/max`、`motor_tau` | 电机角速度 rad/s、响应时间常数 s；需对应实机电机/桨模型 |
+| `thrust_map` | 单电机 `F = a*ω²+b*ω+c`，F 为 N、ω 为 rad/s；三个系数 |
+| `kappa`、`thrust_min/max` | 反扭矩/推力比（m）、**每电机**推力界限（N） |
+| `omega_max` | MPC 允许机体角速度上限，rad/s；不能超过实际 rate/profile/机体能力 |
+| `aero_coeff_1/aero_coeff_3/aero_coeff_h` | 当前全零表示暂忽略气动阻力的模型假设，不是已辨识参数；仅以低速悬停为本轮目标 |
+| `bridge.center_rate_deg_s/max_rate_deg_s/expo_percent` | FC ACTUAL rate 三轴参数，deg/s、deg/s、%；必须与当前回读 profile 一致 |
+| `bridge.deadband/yaw_deadband/min_check` | FC RC deadband/min_check 原始设置；readback 精确匹配 |
+| `flight.thrust_table` | 实测电压—PWM—**全机总推力 N** 表的路径，格式见下 |
+| `mavlink.altitude_source` | 确认后填 `msl` 或 `ellipsoid`；默认 `unknown` 不提供可用三维高度 |
+| `navigation.heading_confirmed/heading_correction_rad` | 确认绝对航向来源与安装方向后声明；修正量加在 ENU 航向上，rad |
+| `navigation.fc_declination_applied` | 记录 FC 是否已经处理磁偏角，避免重复修正；本身不授予导航健康 |
+| `navigation.max_horizontal_accuracy/max_vertical_accuracy/max_velocity_accuracy` | 允许的接收机报告精度，m/m/(m/s)；任一为 0 表示未配置，不授权 |
+| `fusion.max_horizontal_position_stddev/max_vertical_position_stddev/max_velocity_stddev/max_heading_stddev` | 允许的 EKF 后验标准差，m/m/(m/s)/rad；0 表示未配置，不授权 |
+| `evidence.geofence_min/geofence_max` | 本地 ENU 包围盒，m；每轴 min<max，包含原点和预定悬停范围 |
+| `evidence.expected_pid_profile/expected_rate_profile` | 当前期望 FC profile 的零基编号；飞行中改变 profile 撤销授权 |
+| `evidence.expected_override_timeout_ms` | ms；本轮硬件策略固定为 50，不能通过参数放宽，必须与固件回读相等 |
+| `evidence.arm_aux/auto_aux/kill_aux` | 零基 AUX 序号，0～13 对应 AUX1～AUX14，三者须不同；默认 0/1/2 |
+| `evidence.aux_low/aux_high/rx_map` | 实体 ARM/AUTO/KILL 范围及接收机映射，与飞控回读一致 |
+
+硬件 `bridge.host/port/hover_throttle/motor_idle` 仅为既有映射类型的兼容字段；
+硬件油门始终查实测表，不用仿真的平方根/悬停油门模型。MPC 权重只是起始调参值，未经过真实机体飞行验收。
+
+推力 CSV 是纯数字矩形网格，不带字符串表头：
+
+```text
+0,PWM_1,PWM_2,...,PWM_n
+电压_1,总推力_11,总推力_12,...,总推力_1n
+电压_2,总推力_21,总推力_22,...,总推力_2n
+...
 ```
 
-准备真实机体/MPC 参数目录，以 `pilot_ros2.yaml` 为结构模板，使用 External
-估计器与桥接。不要把 Iris 机体和仿真推力标定用于真实机体。
-`bridge_config` 使用现有 `BetaflightUdpBridgeParams` YAML 格式读取 ACTUAL rates/deadband；
-硬件分支不使用它的平方根油门模型。推力 CSV 首行 `0,pwm1,pwm2,...`，
-后续行 `电压,总推力N1,总推力N2,...`，至少两个电压、两个 PWM，均须实测。
-硬件 FLU 到 Betaflight FRD 映射为 roll 同号、pitch/yaw 反号，需匹配飞控安装与配置。
+这里的中文/符号是格式说明，实际文件必须填写数字。至少两个正电压与两个 PWM；电压和 PWM 严格递增，
+PWM 在 1000～2000；每个电压行推力非负、有限且严格随 PWM 增长。查表按电压和推力插值；
+电压或指令超出测量范围就拒绝输出，不外推，不静默截断。表内必须覆盖实际电池电压和所需悬停/纠偏推力。
 
-ROS 2 节点提供驱动接入口，**仓库尚无真实 SPI IMU/RTK/实体接收机驱动**。
-硬件模式不启动模拟传感器或模拟遥控，也不伪造健康证据。驱动需要发布：
+CSV 的 PWM 列实际是发给 Betaflight 的 **RC 油门通道值**，不是电调 PWM/DShot 输出。
+单电机推力台的电调输入不能直接当作这列：必须标定同一 FC 油门曲线、限幅、怠速与混控设置下的
+RC 输入到全机总推力关系。以克力记录时用 `N = gf × 0.00980665`；只有测量对象是单个电机且
+已经确认四套动力一致、整机映射成立时，才可用单电机结果乘 4。整机称重/总推力测量不能再次乘 4。
+在实验记录中保存电机、桨、电调/固件、电池与负载、测量电压、测量对象和夹具、FC 版本/profile、
+油门曲线/限幅/怠速/混控设置及单位换算。CSV 不添加文字元数据行；配置变更后重新确认表是否仍适用。
 
-| 话题 | 类型 | 契约 |
-|---|---|---|
-| `/sensors/imu` | `sensor_msgs/msg/Imu` | `base_link` FLU，specific force m/s²、角速率 rad/s，建议 1 kHz；忽略消息姿态 |
-| `/sensors/rtk` | `agi_ros2/msg/Rtk` | `odom` ENU，米、m/s，双天线航向从东逆时针 rad；fixed/heading/accuracy/sync 有效性 |
-| `/authority` | `agi_ros2/msg/Authority` | 实体 ARM/AUTO/KILL/link，至少 20 Hz；实机不采用 manual_aetr 输出 |
-| `/health` | `agi_ros2/msg/Health` | 标定、收敛、配置回读、围栏、传输健康、电压；至少 10 Hz |
-| `/fused_state` | `agi_ros2/msg/FusedState` | 高频 p/v/a 为 ENU，q 将 FLU 旋转到 ENU，w 为 FLU rad/s；附采集时间、融合重置计数和传感器有效性 |
-| `/control_command` | `agi_ros2/msg/ControlCommand` | 总推力为 N（控制端将 Agilib 的 m/s² 乘机体质量），角速度为 FLU rad/s；附不可刷新的计算/传感器时间与授权证据 |
-| `/output_status` | `agi_ros2/msg/OutputStatus` | 输出健康、校准可用性、故障计数、进程实例和实际输出授权状态 |
-| `/state` | `nav_msgs/msg/Odometry` | 公共估计状态，pose ENU、twist body FLU |
-| `/status` | `std_msgs/msg/String` | 状态机模式与拒绝原因 |
-| `/ground_truth` | `nav_msgs/msg/Odometry` | 仅仿真评估，不输入控制器 |
+## 飞控超时与授权回读
 
-消息 stamp 必须是采集时间，并映射到节点 ROS 时间域。实机 `use_sim_time=false`，
-驱动应将 PPS/设备时间映射到系统 ROS 时间，不能把 CLOCK_MONOTONIC 直接写入 header。
-控制和轨迹使用 ROS 时间；实机串口截止、接收停流、命令陈旧使用 CLOCK_MONOTONIC。
-SITL 且 `use_sim_time=true` 时，控制定时器按仿真时间以 100 Hz 运行，仿真暂停时
-不重复执行同一时刻的 MPC。状态、IMU、RTK、遥控和命令的有效期按仿真时间检查；
-独立的输出墙钟看门狗在命令停流超过 250 ms 时仍撤销授权，长暂停或节点失联不会
-无限保持输出。短暂停顿恢复后保留原悬停目标和授权；长暂停、传感器停流（仿真时间
-继续前进）或时钟回拨仍触发故障，恢复需要健康预热和 AUTO low→high。
-融合节点使用有界 IMU 队列（256），采集时间回退或 IMU 时间间隔超过 25 ms 时
-重置估计器；控制节点观察重置计数，清除预热/授权。控制本身继续检查 10 ms 状态和
-IMU 新鲜度、300 ms RTK、100 ms 遥控、8 ms 求解耗时和 50 个健康预热周期。
-融合/控制/输出节点必须运行在同一台 Linux 主机：跨进程证据保留原始
-CLOCK_MONOTONIC 时间，附 Linux boot ID 校验，异机消息会被拒绝。SITL 的
-`ControlCommand.clock_id` 使用 `boot ID + ':ros'`，明确标记 SafetyEvidence 中的
-仿真时间；输出节点拒绝不匹配的时间域。`FusedState` 的接收/发布时间和
-`OutputStatus.steady_time` 始终为主机单调时间，MPC 求解耗时始终按墙钟计算。
-Gazebo 传感器源
-可以在另一台机器，但其采集时间必须与消费端 ROS 时间域一致；本约束不将不同主机的
-单调时钟混用。拆分不表示三个节点可以直接跨主机部署。
-命令证据的时间不会在输出回调或看门狗中刷新；输出进程重启时 AUTO 已为 high，
-也必须先观察健康的 low，再 high 才能输出。三个节点均由单线程 executor 拥有其状态；
-任一进程退出时 launch 关闭其余飞行节点。
-Health 中的 converged 必须来自真实估计质量判断；AHRS 初始化不等于收敛。
+本地 `/home/sia/betaflight` 的配套修改增加 `msp_override_timeout_ms`：固件保留默认 **300 ms**，
+本轮 ROS 硬件策略要求操作员显式设置为 **50 ms**。接收机刷新时动态检查最近完整 AETR MSP 帧，
+超时退回实体接收机。修改源码不会让已安装固件自动更新。
+构建/刷写由操作员单独完成；ROS2 launch 和诊断程序**不自动刷写、不执行 CLI 写配置、不修改实体 EEPROM**。
+只有 SITL `run.py` 会写它自己的隔离 EEPROM。
 
-融合当前是复用 CompanionAhrs 的姿态/航向滤波、IMU 惯性传播和 RTK 位置速度校正，
-延迟 RTK 用速度外推到当前积分时刻；尚不是带协方差和历史重放的完整 ESKF。
-仿真 RTK 默认 10 Hz、80 ms 延迟并加噪声，可通过 `/gazebo_sensors` 参数调整或故障注入：
-`drop_imu`、`drop_rtk`、`rtk_fixed`、`heading_valid`。
-仿真健康是明确的模拟模型，不是硬件可用性的证明。
+固件升级与配置按以下顺序由操作员执行；这里提供操作步骤，本次软件修改没有执行刷写：
 
-SITL 手动模式透传模拟 AETR；AUTO 故障时模拟通道撤销 ARM。
-硬件故障停止 MSP Override，交还实体接收机。两者失效语义不同，
-此迁移不代表 UDP 已实现实体接收机授权或 MSP 陈旧回退的等价仿真。
+1. 拆桨、退出 ROS 串口占用，在 FC CLI 保存 `version`、`status`、`diff all` 和 `dump all` 输出；
+   记录实际板卡 target、接收机/串口/传感器配置、profile、模式和电机方向，保留原固件及可恢复的备份。
+2. 在 `/home/sia/betaflight` 使用该板卡对应的工具链和 target 构建。下面的 target 是占位符，
+   必须替换成刚记录的实际值，不能拿 `SITL` 或其他 H7/F4 板卡代替：
 
-## 轨迹调试话题
+   ```bash
+   cd /home/sia/betaflight
+   make TARGET=实际板卡TARGET -j4
+   ```
 
-`/reference` (`nav_msgs/msg/Odometry`) 记录控制器实际采样的参考位置和姿态。
-`/control_diagnostics` (`std_msgs/msg/Float64MultiArray`) 每个控制周期记录：
+   核对该构建包含本次 Override 超时/只读回读和磁航向有效性修改，以及
+   `USE_TELEMETRY_MAVLINK`、`USE_ACC`、`USE_GPS`、实际磁罗盘所需的 `USE_MAG`/驱动。
+   使用该板卡的刷写方式或 Configurator 的本地固件入口选择对应构建产物；不调用 ROS launch 代刷。
+3. 刷后先核对 `version` 和板卡标识，再逐项恢复所需配置；参数组升级可能重置 RX/telemetry，
+   不把旧 `dump` 当作已验证的新配置。选择与 `hardware.yaml` 一致的 `profile`、`rateprofile`，
+   核对 `map`、`aux`、ACTUAL rates、deadband/min_check、UART、传感器、安装方向及电机方向。
+   `aux` 的 ARM/MSP OVERRIDE/FAILSAFE 通道和范围要与 `evidence` 对应。
+4. 在 CLI 明确写入以下三项，再 `save` 重启；以下是操作员执行的配置命令，不是 ROS 自动写入：
 
-| 索引 | 含义 |
+   ```text
+   set msp_override_channels_mask = 15
+   set msp_override_failsafe = OFF
+   set msp_override_timeout_ms = 50
+   save
+   ```
+
+   重连 CLI 后读取 `profile`、`rateprofile`、`map`、`aux`、`get rates_type`、各轴 ACTUAL rates/deadband，
+   并逐项 `get msp_override_channels_mask`、`get msp_override_failsafe`、`get msp_override_timeout_ms`。
+   确认是 15/OFF/50 后退出 CLI，让 ROS diagnostic/shadow 从 MSP 重新回读；以
+   `/msp/decoded_state` 和 `/health/status` 的实际结果核对，不把 CLI 截图替代程序回读。
+
+实机配置回读必须同时确认：
+
+- 已支持的 BTFL API 1.48；`MSP_STATUS_EX` 布局、当前 PID/rate profile 与预期一致。
+- `msp_override_channels_mask=15`、`msp_override_failsafe=OFF`、`msp_override_timeout_ms=50`。
+  三项通过 MSP v2 `0x3010` **只读**查询；旧固件不支持 timeout 时保持未就绪，不绕过检查。
+- `map AETR1234`，内部 RX map `[0,1,3,2,4,5,6,7]`；AUX1 ARM、AUX2 MSP OVERRIDE、AUX3 FAILSAFE；
+  通过 `evidence.arm_aux/auto_aux/kill_aux` 可选其他三条 AUX。默认范围 `[1700,2100)`，
+  每模式单个直接 OR 范围，不接受链接/AND 模式。
+- ACTUAL rates/deadband/min_check 与配置一致；AUTO 时拒绝 ANGLE/HORIZON 等会改变控制解释的模式。
+- RC/STATUS 新鲜、实体 AUX 与 FC ARM/AUTO/FAILSAFE 模式一致、FC IMU 状态可用。
+
+MSP RC/STATUS_EX 默认 25 Hz、电池 2 Hz、配置 1 Hz。`MSP_RC` 的 AETR 可能已被 Override，
+程序只把确认不在覆盖 mask 内的 AUX 当作实体开关证据。`config_verified` 表示回读匹配，
+不是对未知接收机失效行为或真实动力学的替代验收。
+
+## 融合、时效与故障定位
+
+MAVLink IMU 为 `base_link` FLU specific force（m/s²，静止水平约 +g）与角速度（rad/s）；
+GPS 配对观测经 GNSS adapter 转成固定本地 `odom` ENU。ENU yaw 从东轴逆时针为正。
+真北/磁偏角确认、有效速度及高度基准不可用时，不伪造零速度/高度/航向。
+原点默认从 3 秒、至少 30 个独立静止导航样本建立，速度上限 0.3 m/s。
+
+本轮悬停要求已确认的磁航向。FC `trust_mag=ON` 与 `navigation.heading_confirmed=true`
+都依赖操作者确认真实磁罗盘的方向、偏置、磁偏角和真北一致性；默认不会替操作者确认。
+配套固件仅在 MAG 存在、trust 声明成立、不处于校准过程、磁采样和磁航向校正新鲜有效时，
+才输出有效 MAVLink 航向，否则 `hdg=UINT16_MAX`。固件没有持久化的“标定质量合格”布尔证据；
+“校准流程已结束”也不代表标定成功。这些运行检查不能自动证明磁标定质量，COG 也不能替代静止机头航向。
+
+GNSS 融合在新鲜、未 ARM 的实体授权下采集静止 IMU，默认至少 3 秒/1000 样本；
+检查陀螺偏置/方差、加速度方差和重力模长。初始化只确定初始倾角、gyro bias 与导航状态；
+不会声称完成六面加速度标定。随后 `EkfImu` 传播 p/v/q/bias，用原始测量时间进行 GPS/航向更新，
+检验导航创新、连续接受更新数和后验协方差。IMU 实时预测缓存与后验历史分开，查询不反复重放全部历史。
+
+EKF 运行参数也只在 `fusion` 段：`ekf_process_*_variance` 对应位置、四元数姿态、速度、
+陀螺与加速度偏置过程噪声；`ekf_initial_*_variance` 对应初始姿态及两类偏置协方差。
+姿态数组为 4 个四元数分量，其余为 3 轴；这些字段是方差，不是标准差。
+初始位置/速度协方差采用首个导航观测，`imu_*_variance` 是 IMU 测量噪声的唯一来源。
+不再额外加载 `agilib/params/ekf_imu.yaml`；诊断应核对当前 profile 的实际参数。
+
+普通 GNSS 的 `rtk_fixed`、`synchronized`、旧 `imu_calibrated/converged` 不伪置为 true。
+硬件通过独立的 `imu_ready/estimator_ready/navigation_ready` 和精度/配置/推力/围栏证据授权；
+固定源策略由本地只读 `navigation_source=gnss` 决定，命令消息不能切换策略。
+TIMESYNC 是近似时钟对齐，仍包括 FC 滤波和 GPS 串口/解算延迟，不等于 PPS 测量同步。
+
+显式 no-fix、无效航向/速度、时钟失效或源会话重置会传播导航失效事件；原点建立后，GNSS adapter
+发布 `LocalNavigation.observation_valid=false`，融合立即发布撤销 readiness 的状态，控制下一周期和
+证据节点下一次更新撤销授权，输出收到不健康证据即复查。不会继续把旧好定位保留到 300 ms 才失效。
+失效事件使用本地检测时间，不刷新最后有效 GPS/IMU 的采集时间；完全停流仍由年龄检查处理。
+实际撤销包含 ROS 调度、消息传递与飞控回退时间，不能解释为物理零延迟。
+
+控制定时器为 100 Hz：SITL 用 ROS 仿真时钟，hardware 用墙钟；MPC 计算耗时始终用单调墙钟。
+默认保持 10 ms 状态/IMU、300 ms 导航、100 ms RC、8 ms 计算预算和 50 个健康预热周期。
+输出还检查 25 ms 命令年龄；SITL 有独立 250 ms 墙钟停流保护。消息证据时间不会在转发/看门狗时刷新。
+串口独占、进程重启、融合重置、旧导航会话/旧命令、时钟回退都会影响就绪或撤销授权。
+新鲜度不满足应先检查观测和调度原因，不以放宽门限代替目标机测量。
+
+| 定位入口 | 查看内容 |
 |---|---|
-| 0 | ROS 控制时间，秒 |
-| 1 | 安全检查时间，秒：实机为单调时间，SITL 为本周期仿真时间 |
-| 2 | IMU 年龄，秒：实机按接收单调时间，SITL 按采集仿真时间 |
-| 3 | 状态采样年龄（ROS 时间），秒 |
-| 4 | RTK 采集年龄（ROS 时间），秒 |
-| 5 | 遥控采集年龄，秒（与本周期安全检查时间域一致） |
-| 6 | 本周期控制计算耗时，秒；未计算为 NaN |
-| 7 | 连续健康 MPC 周期数（最多 50） |
-| 8 | 本周期是否授权输出（0/1） |
-| 9 | 模式枚举：Boot=0、SensorCheck=1、ReadyManual=2、AutoStandby=3、AutoActive=4、ManualFallback=5 |
+| `/sensors/mavlink/status` | IMU/GPS 频率、TIMESYNC、串口/CRC/源ID错误及迟到样本 |
+| `/navigation/status`、`/navigation/origin` | 原点、高度/航向声明、精度未知或超限原因 |
+| `/fused_state` | initialized、readiness_reason、navigation_accepted_updates 连续合格次数、拒绝计数、后验协方差及其时间戳 |
+| `/msp/decoded_state`、`/health/status` | 配置、实体 AUX、profile、模式冲突、电压、50 ms timeout 回读 |
+| `/computation_status` | MPC 结果、预热、参考是否活动、参考时间、solve_seconds、cycle_seconds 和各输入年龄 |
+| `/output_status` | override_active、当前 reason、保留的 last_fault、write_seconds、command_age |
+| `/reference`、`/state` | 实际采样参考和估计状态；`/ground_truth` 仅供仿真评估 |
 
-控制周期使用最近融合消息，再等待最多 3 ms 对齐可能滞后的仿真 `/clock`。
-输出节点收到新指令即执行，实机串口及安全门限保持不变。CSV 接管替换悬停参考列表，避免同一开始时间的
-无限悬停参考遮挡轨迹。
+`/control_diagnostics` 保留原十个元素：控制时间、安全时间、IMU年龄、状态年龄、导航年龄、
+RC年龄、计算耗时、预热数、授权位、状态机枚举；新分析优先使用带字段名称的状态消息。
+硬件 `ComputationStatus.cycle_seconds` 包含控制回调内的时间对齐与决策构造，
+`OutputStatus.write_seconds` 用于区分串口写出开销；这些字段的统计需要目标机录包。
 
+所有入口默认录制全部及隐藏话题到 `~/agi_bags/hardware_*` 或 `sitl_*`；可用
+`record_bag:=false` 或 `bag_output:=路径` 覆盖。任一业务组件或 recorder 退出会关闭整组。
 
-## 节点拆分验证与代码风格
+## 软件检查与实际验收边界
 
 ```bash
 ./agi_ros2/scripts/build.sh
 ./agi_ros2/scripts/test.sh
-```
-
-进程测试使用合成 IMU/RTK、回环 UDP 和 PTY 伪串口，不打开实体飞控。
-覆盖融合状态、MPC 预热/AUTO、IMU 停流与恢复、控制超时、启动时 AUTO high 锁止、
-无效推力、陈旧/异机命令拒绝、MSP AETR 字节和 FLU→FRD 符号、KILL 后停止串口输出。
-测试需要本地 DDS/UDP socket 权限。新 `.h/.cpp` 文件遵循 Google C++ 命名与格式，
-包内 `.clang-format` 固定 `BasedOnStyle: Google`，头文件自包含并使用 include guard。
-保留 ROS 2 Humble/agilib 的 C++17 和已有异常接口兼容性。
-
-本次拆分保持 RTK 匀速外推校正算法；高频发布不等于解决了延迟 RTK 的锯齿问题。
-后续历史回放/ESKF 改动应集中在 `state_fusion_node`，并单独比较跟踪误差。
-
-### RTK / IMU EKF
-
-`state_fusion_node` uses `agi::EkfImu` to propagate ENU position, velocity,
-body-to-ENU attitude and IMU biases. The AHRS supplies initial tilt only;
-initial yaw and velocity come from a valid RTK fix. Startup assumes a nearly
-stationary vehicle for gravity alignment. RTK antenna position/velocity must
-already refer to the estimator's body origin (apply antenna lever-arm
-compensation upstream if needed).
-
-RTK position and velocity update independently of heading validity after
-initialization. Heading is a separate wrapped yaw observation, not a full
-attitude measurement. Measurements use their original timestamps, with retained
-IMU samples replayed from the last posterior; fixes older than that posterior
-are rejected. The library retains up to 4096 IMU samples and rejects propagation
-when the required history has been discarded. The node retains its existing
-0.3 s RTK freshness and 25 ms IMU-gap reset checks. Initial position alone is
-extrapolated to the initialization IMU timestamp at the measured velocity.
-
-The following positive ROS parameters configure measurement variances (not
-standard deviations); defaults are starting values requiring sensor-specific
-validation:
-
-| Parameter | Default | Units |
-| --- | ---: | --- |
-| `rtk_position_variance` | 0.0004 | m², each ENU axis |
-| `rtk_velocity_variance` | 0.0025 | (m/s)², each ENU axis |
-| `rtk_heading_variance` | 0.0001 | rad² |
-| `imu_acceleration_variance` | 0.1 | (m/s²)² |
-| `imu_angular_velocity_variance` | 0.0001 | (rad/s)² |
-
-Published body rates and world acceleration are corrected for estimated biases.
-The existing fused-state quality flags and control safety checks remain in use.
-
-## 树莓派 MSP 通信与 topic 记录
-
-MSP 串口库、ROS 节点及消息已包含在 `agi_ros2` 构建中，**不需要单独编译
-`betaflight_hw`**。ARM 平台首次配置默认关闭 Gazebo 适配器；完整控制包仍需要
-对应平台的 Eigen/acados 等原有依赖。
-
-```bash
-./agi_ros2/scripts/build.sh
 source install/agi_ros2/local_setup.bash
-ros2 launch agi_ros2 msp.launch.py
+/usr/bin/python3 agi_ros2/test/test_runtime_config.py
+/usr/bin/python3 agi_ros2/test/test_runtime_profile_nodes.py
+/usr/bin/python3 agi_ros2/test/test_shadow_support.py
+/usr/bin/python3 agi_ros2/test/test_hardware_pipeline.py
+/usr/bin/python3 agi_ros2/test/test_shadow_pipeline.py
+/usr/bin/python3 agi_ros2/test/test_mavlink_sensor.py
 ```
 
-启动前编辑 `agi_ros2/launch/msp.launch.py` 的 `MSP_CONFIG`，然后重新运行构建以安装
-launch 文件。也可直接 `ros2 launch agi_ros2/launch/msp.launch.py` 使用源文件配置。
-串口、波特率、模式、每类 `enabled` 和 `rate_hz` 均在文件内，不需要命令行传参。
-默认只读 monitor；无桨固定 RC 测试改 `mode='bench'`、`props_removed=True` 并设置
-`bench_aetr`（A,E,T,R），发送频率固定 100 Hz。该模式不消费 MPC，不用于飞行。
-参数在节点启动时读取，修改配置后重启节点。
+测试使用合成数据、DDS、回环 UDP、PTY 伪串口及库级单元测试；需要本地 socket 权限。
+这些命令是复查方法；本次实际结果、环境限制和未完成验收见
+[软件验证记录](HARDWARE_ADAPTATION_VALIDATION.zh-CN.md)。
+用户已经完成的 Jetson 单独串口实验与 SITL 联合仿真继续有效，但此次实现仍需在 CM5 上核对
+周期/延迟、真实传感质量、飞控停流 50 ms 回退、人工接管，以及逐级悬停行为。
+本次软件改动本身没有完成实机飞行，也不会自动部署或刷写实体飞控。
 
-完整控制链路使用 `flight.launch.py` 中的 `MSP_CONFIG`；实机时由
-`command_output_node` 独占串口，同时发送授权后的 RC 和查询遥测。
-不要同时启动独立 `msp.launch.py`。实机 RC 随 control_node 的 100 Hz 控制回调立即输出，避免再等待一个独立周期导致
-IMU 授权证据过期；独立的 1 ms 定时器穿插遥测。命令新鲜度、授权撤销和 SafetyGate
-保留，SITL 仍由命令回调输出。台架模式使用独立 100 Hz 定时发送。
-飞行模式任何已开启遥测类别发生超时/错误均使本次输出会话 transport health 失效，
-需要排查并重启；没有 GPS 的实机应在 launch 中关闭 GPS 类别。
-台架模式则停用超时/不支持的类别，其他查询及固定 RC 继续。
-
-| Topic | 内容 | 默认频率 |
-|---|---|---|
-| `/msp/attitude` | MSP_ATTITUDE 原始回复 | 10 Hz |
-| `/msp/rc` | MSP_RC 原始回复（FC 返回的所有通道） | 10 Hz |
-| `/msp/status` | MSP_STATUS 原始回复 | 5 Hz |
-| `/msp/analog` | MSP_ANALOG 原始回复 | 2 Hz |
-| `/msp/battery` | MSP_BATTERY_STATE 原始回复 | 2 Hz |
-| `/msp/gps` | MSP_RAW_GPS 原始回复 | 2 Hz |
-| `/msp/config` | 启动配置快照（std_msgs/String，1 Hz 重发，含类别/频率/串口） | 1 Hz |
-| `/msp/events` | 所有 TX、RX、RC ACK、错误、超时、迟到回复；RC TX 包含实际四通道字节 | 随事件 |
-
-除 `/msp/config` 外，以上类型均为 `agi_ros2/msg/MspEvent`，包含 ROS 时间戳（bag 对齐）、本机 monotonic
-时间（串口间隔）、MSP code、完整 payload、错误累计数以及请求响应延迟（秒，
-无对应请求时为 NaN）。分类 topic 只发布成功且匹配未完成请求的回复；错误仍保留在
-`/msp/events`，不会作为有效样本。保留协议原始值，不假定具体固件的 STATUS/BATTERY
-布局；姿态等工程单位尚未在此消息内解码。MSP 遥测不会替代伴随 IMU/RTK 估计器，
-也不会自动生成可信的 `/authority` 或配置验证 `/health`。
-
-两个 launch 均默认记录 `--all --include-hidden-topics`，包括上述 topic、
-`/parameter_events`、`/rosout`，以及控制链路的 `/control_command`、`/output_status`、
-`/authority`、`/health`、`/fused_state` 和传感器 topic。bag 默认保存于
-`~/agi_bags/`，可在 launch 修改路径及是否记录。录制器退出会结束 launch，
-避免录制已停止而测试仍持续；Ctrl-C 会停止节点并正常关闭 bag。
-启动时 DDS discovery 可能漏掉最早的样本，验收统计使用发现完成后的稳定时段。
-发布队列有界，事件队列深度 1000；这不是磁盘故障情况下无损记录或 Linux 硬实时保证。
-
-实际请求频率取决于串口带宽和 FC 响应；每类最多一个未完成请求，默认 100 ms 超时。
-接收非阻塞，RC 优先，过期周期跳过，不补发积压指令。通过 `/msp/events` 的
-`steady_time` 按 code/event 统计 RC TX 及各类请求、响应的频率和间隔；`latency_seconds`
-用于检查查询响应时间。RC ACK 不是执行或 ARM/MSP Override 生效的证明。
-
-本机 ROS 2 + PTY + rosbag 回归：
-
-```bash
-source install/agi_ros2/local_setup.bash
-ROS_LOG_DIR=/tmp/agi_ros2_msp_logs ROS_DOMAIN_ID=89 ROS_LOCALHOST_ONLY=1 \
-  /usr/bin/python3 agi_ros2/test/test_msp_node.py
-```
-
-测试只访问伪串口，检查 100 Hz RC、自选遥测频率/类别、原始帧 topic、延迟和时间戳、
-GPS 超时隔离及实际 bag 消息。树莓派物理串口、目标固件和真实飞行仍需实机验收。
-
-## MAVLink 实机传感器接入
-
-新增独立 `mavlink_sensor_node`，保留 MSP 控制与状态通道。
-见 [MAVLink 配置、topic、时间语义和测试说明](MAVLINK_SENSORS.md)。
-普通 GPS topic 不替代现有 `/sensors/rtk` 融合接口。
-
-## 普通 GNSS 无输出评估
-
-使用 MSP 实体授权回传和 MAVLink IMU/GPS/磁罗盘辅助航向运行融合与 MPC，
-但强制禁止实机控制帧。入口、质量语义和测试见 [无输出评估说明](SHADOW_EVALUATION.md)。
+新增和修改的 C++ 遵循根 [AGENTS.md](../AGENTS.md)：真实 Tab、8 列缩进、140 列行宽、
+lowerCamelCase 方法及下划线前缀私有成员；不格式化生成/第三方代码。原架构审阅保留为
+[RUNTIME_WALKTHROUGH.zh-CN.md](RUNTIME_WALKTHROUGH.zh-CN.md)，其正文行号属于审阅时源码快照。

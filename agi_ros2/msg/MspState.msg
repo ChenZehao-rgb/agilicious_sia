@@ -11,5 +11,10 @@ bool auto_switch
 bool kill
 bool rc_link
 bool transport_healthy
+bool imu_ready
+bool control_mode_ok
+uint8 pid_profile
+uint8 rate_profile
+uint32 override_timeout_ms
 float64 battery_voltage
 string reason

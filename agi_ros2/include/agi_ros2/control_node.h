@@ -35,6 +35,8 @@ private:
 	bool _shadow_only = false;
 	bool _simulation_time = false;
 	bool _timing_checks = true;
+	agi::hardware::NavigationPolicy _navigation_policy = agi::hardware::NavigationPolicy::Rtk;
+	double _cycle_seconds = 0.0;
 	std::unique_ptr<agi::PilotParams> _params;
 	std::unique_ptr<agi::hardware::HardwarePilot> _pilot;
 	double _control_time = 0.0;

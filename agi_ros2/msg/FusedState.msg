@@ -25,3 +25,18 @@ uint8 fix_type
 bool clock_aligned
 bool accuracy_known
 bool navigation_valid
+# Readiness derives from measured checks; original RTK/PPS flags remain untouched.
+bool imu_ready
+bool estimator_ready
+bool navigation_ready
+bool navigation_accuracy_ok
+string readiness_reason
+# Posterior covariance at covariance_stamp (not propagated to header.stamp).
+builtin_interfaces/Time covariance_stamp
+float64[3] position_variance
+float64[3] velocity_variance
+float64 heading_variance
+float64 navigation_innovation_squared
+uint64 navigation_rejections
+# Consecutive accepted accurate updates, capped at the configured readiness count.
+uint32 navigation_accepted_updates

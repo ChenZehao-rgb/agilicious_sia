@@ -81,7 +81,7 @@ def main():
                     reply = b'$M>'+bytes([len(payload),code])+payload+bytes([check])
                     os.write(master,reply[:4])
                     os.write(master,reply[4:])
-            for code,hz in [(200,100),(108,20),(101,5)]:
+            for code,hz in [(200,100),(108,20),(150,5)]:
                 times = received[code]
                 measured = (len(times)-1)/(times[-1]-times[0])
                 assert abs(measured-hz)<hz*.08, (code,measured)
@@ -90,7 +90,7 @@ def main():
             assert not received[105] and not received[110] and not received[130]
             assert attitude and all(m.code==108 and m.event=='rx' and len(m.payload)==6 for m in attitude)
             assert any(m.code==200 and m.event=='tx' and len(m.payload)==8 for m in events)
-            assert any(m.code==200 and m.event=='rx' for m in events)
+            assert any(m.code==200 and m.event=='ack' for m in events)
             # Discovery may miss the initial timeout, but cumulative error persists.
             assert any(m.errors>=1 for m in events)
             assert any(m.code==108 and m.latency_seconds>=0 for m in attitude)

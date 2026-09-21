@@ -1,0 +1,177 @@
+# Complete hardware profile: replace zero model/rate/accuracy/geofence placeholders with measured values.
+# Zero readiness thresholds never authorize override. Unknown altitude and heading remain unconfirmed.
+# Use diagnostic_only:=true to inspect sensors/MSP before the vehicle model is available.
+# Dedicated MSP and MAVLink UARTs are mandatory. thrust_table is measured CSV relative to this file.
+# bridge host/port/hover_throttle/motor_idle are compatibility fields; hardware uses the thrust table.
+mode: hardware
+flight:
+  trajectory: ''
+  thrust_table: ''
+  sitl_delay_test: false
+  shadow_only: true
+  diagnostic_only: false
+  record_bag: true
+  bag_output: ''
+pilot:
+  pipeline:
+    estimator:
+      type: External
+    sampler:
+      type: Time
+    controller:
+      type: MPC
+      parameters:
+        timing: true
+        threaded_preparation: false
+        Q_pos_x: 200
+        Q_pos_y: 200
+        Q_pos_z: 500
+        Q_att_x: 5
+        Q_att_y: 5
+        Q_att_z: 200
+        Q_vel: 1.0
+        Q_omega_xy: 1.0
+        Q_omega_z: 1.0
+        R: 6.0
+        exp_decay: 1.0
+        max_wait_time_before_preparation: 0.1
+        max_wait_time_after_preparation: 0.01
+        cog_enable: false
+        cog_abs_velocity_limit: 0.25
+        cog_abs_omega_limit: 0.5
+        cog_rel_hover_thrust_limit: 0.5
+        cog_height_limit: 0.5
+        Q_cog_omega: 1e0
+        Q_cog_legnths: 1e-9
+        Q_cog_omega_init: 1e2
+        Q_cog_legnths_init: 1e-10
+        R_cog: 0.1
+    bridge:
+      type: External
+  quadrotor:
+    mass: 0.0
+    tbm_fr: [0.0, 0.0, 0.0]
+    tbm_bl: [0.0, 0.0, 0.0]
+    tbm_br: [0.0, 0.0, 0.0]
+    tbm_fl: [0.0, 0.0, 0.0]
+    inertia: [0.0, 0.0, 0.0]
+    motor_omega_min: 0.0
+    motor_omega_max: 0.0
+    motor_tau: 0.0
+    omega_max: [0.0, 0.0, 0.0]
+    thrust_map: [0.0, 0.0, 0.0]
+    kappa: 0.0
+    thrust_min: 0.0
+    thrust_max: 0.0
+    rotors_config: cross
+    aero_coeff_1: [0.0, 0.0, 0.0]
+    aero_coeff_3: [0.0, 0.0, 0.0]
+    aero_coeff_h: 0.0
+  dt_min: 0.01
+  outerloop_divisor: 1
+  dt_telemetry: 0.1
+  traj_type: poly_min_snap
+  velocity_in_bodyframe: false
+  takeoff_height: 1.0
+  takeoff_threshold: 1.0
+  start_land_speed: 0.5
+  brake_deceleration: 3.0
+  go_to_pose_mean_vel: 1.0
+  stop_after_feedthrough: true
+  feedthrough_timeout: 0.1
+  viz_sampler_dt: 0.1
+  sphere_size: 0.15
+  pub_log_var: false
+  guard:
+    type: None
+bridge:
+  host: 127.0.0.1
+  port: 9004
+  timeout: 0.1
+  n_timeouts_for_lock: 4
+  center_rate_deg_s: [0.0, 0.0, 0.0]
+  max_rate_deg_s: [0.0, 0.0, 0.0]
+  expo_percent: [0.0, 0.0, 0.0]
+  deadband: 0
+  yaw_deadband: 0
+  motor_idle: 0.0
+  hover_throttle: 0.5
+  min_check: 1050
+fusion:
+  imu_acceleration_variance: 0.1
+  imu_angular_velocity_variance: 0.0001
+  ekf_process_position_variance: [1.0e-6, 1.0e-6, 1.0e-6]
+  ekf_process_attitude_variance: [1.0e-6, 1.0e-6, 1.0e-6, 1.0e-6]
+  ekf_process_velocity_variance: [0.001, 0.001, 0.001]
+  ekf_process_gyro_bias_variance: [1.0e-9, 1.0e-9, 1.0e-9]
+  ekf_process_acceleration_bias_variance: [1.0e-9, 1.0e-9, 1.0e-9]
+  ekf_initial_attitude_variance: [0.01, 0.01, 0.01, 0.01]
+  ekf_initial_gyro_bias_variance: [0.001, 0.001, 0.001]
+  ekf_initial_acceleration_bias_variance: [0.01, 0.01, 0.01]
+  rtk_position_variance: 0.0004
+  rtk_velocity_variance: 0.0025
+  rtk_heading_variance: 0.0001
+  imu_initialization_duration: 3.0
+  imu_initialization_samples: 1000
+  imu_max_gyro_stddev: 0.02
+  imu_max_gyro_bias: 0.15
+  imu_max_acceleration_stddev: 0.2
+  imu_gravity_tolerance: 0.5
+  imu_initialization_max_speed: 0.3
+  navigation_ready_updates: 30
+  navigation_nis_threshold: 24.322
+  max_horizontal_position_stddev: 0.0
+  max_vertical_position_stddev: 0.0
+  max_velocity_stddev: 0.0
+  max_heading_stddev: 0.0
+output:
+  device: ''
+  baud: 921600
+  msp.response_timeout_ms: 100.0
+  msp.read_configuration: true
+  msp.rc.enabled: true
+  msp.rc.rate_hz: 25.0
+  msp.status.enabled: true
+  msp.status.rate_hz: 25.0
+  msp.battery.enabled: true
+  msp.battery.rate_hz: 2.0
+  msp.attitude.enabled: false
+  msp.analog.enabled: false
+  msp.gps.enabled: false
+mavlink:
+  device: ''
+  baud: 921600
+  gps_mode: gnss
+  altitude_source: unknown
+  imu_rate_hz: 500
+  gps_rate_hz: 10
+  attitude_rate_hz: 0
+navigation:
+  origin_duration: 3.0
+  origin_samples: 30
+  origin_max_speed: 0.3
+  heading_confirmed: false
+  heading_correction_rad: 0.0
+  fc_declination_applied: false
+  horizontal_stddev: 1.0
+  vertical_stddev: 2.0
+  velocity_stddev: 0.3
+  heading_stddev: 0.17453292519943295
+  max_horizontal_accuracy: 0.0
+  max_vertical_accuracy: 0.0
+  max_velocity_accuracy: 0.0
+evidence:
+  # Zero-based AUX indices: AUX1=0, ..., AUX14=13; choose three distinct channels.
+  arm_aux: 0
+  auto_aux: 1
+  kill_aux: 2
+  aux_low: 1700
+  aux_high: 2100
+  rx_map: [0, 1, 3, 2, 4, 5, 6, 7]
+  battery_timeout: 1.5
+  geofence_min: [0.0, 0.0, 0.0]
+  geofence_max: [0.0, 0.0, 0.0]
+  expected_pid_profile: 0
+  expected_rate_profile: 0
+  # Fixed at 50 ms for this hardware policy; cannot be relaxed through configuration.
+  expected_override_timeout_ms: 50

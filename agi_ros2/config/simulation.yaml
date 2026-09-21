@@ -1,0 +1,137 @@
+# Complete ROS 2 simulation profile. Keep this copy identical on all simulation hosts.
+# bridge.host is the machine running Betaflight SITL; no generated parameter files are used.
+# An empty trajectory captures the current hover point on authorized AUTO entry.
+mode: sitl
+flight:
+  trajectory: ''
+  thrust_table: ''
+  sitl_delay_test: false
+  shadow_only: false
+  diagnostic_only: false
+  record_bag: true
+  bag_output: ''
+pilot:
+  pipeline:
+    estimator:
+      type: External
+    sampler:
+      type: Time
+    controller:
+      type: MPC
+      parameters:
+        timing: true
+        threaded_preparation: false
+        Q_pos_x: 300
+        Q_pos_y: 300
+        Q_pos_z: 650
+        Q_att_x: 5
+        Q_att_y: 5
+        Q_att_z: 200
+        Q_vel: 3.0
+        Q_omega_xy: 10.0
+        Q_omega_z: 1.0
+        R: 6.0
+        exp_decay: 1.0
+        max_wait_time_before_preparation: 0.1
+        max_wait_time_after_preparation: 0.01
+        cog_enable: false
+        cog_abs_velocity_limit: 0.25
+        cog_abs_omega_limit: 0.5
+        cog_rel_hover_thrust_limit: 0.5
+        cog_height_limit: 0.5
+        Q_cog_omega: 1e0
+        Q_cog_legnths: 1e-9
+        Q_cog_omega_init: 1e2
+        Q_cog_legnths_init: 1e-10
+        R_cog: 0.1
+    bridge:
+      type: External
+  quadrotor:
+    mass: 0.54
+    tbm_fr: [0.13, -0.22, 0.0]
+    tbm_bl: [-0.13, 0.2, 0.0]
+    tbm_br: [-0.13, -0.2, 0.0]
+    tbm_fl: [0.13, 0.22, 0.0]
+    inertia: [0.0065, 0.006, 0.0115]
+    motor_omega_min: 0.0
+    motor_omega_max: 2394.3
+    motor_tau: 0.012
+    omega_max: [17.45, 17.45, 17.45]
+    thrust_map: [1.332e-06, 0.0, 0.0]
+    kappa: 0.1
+    thrust_min: 0.0
+    thrust_max: 7.64
+    rotors_config: cross
+    aero_coeff_1: [0.0, 0.0, 0.0]
+    aero_coeff_3: [0.0, 0.0, 0.0]
+    aero_coeff_h: 0.0
+  dt_min: 0.01
+  outerloop_divisor: 1
+  dt_telemetry: 0.1
+  traj_type: poly_min_snap
+  velocity_in_bodyframe: false
+  takeoff_height: 1.0
+  takeoff_threshold: 1.0
+  start_land_speed: 0.5
+  brake_deceleration: 3.0
+  go_to_pose_mean_vel: 1.0
+  stop_after_feedthrough: true
+  feedthrough_timeout: 0.1
+  viz_sampler_dt: 0.1
+  sphere_size: 0.15
+  pub_log_var: false
+  guard:
+    type: None
+bridge:
+  host: 127.0.0.1
+  port: 9004
+  timeout: 0.1
+  n_timeouts_for_lock: 4
+  center_rate_deg_s: [70.0, 70.0, 70.0]
+  max_rate_deg_s: [1000.0, 1000.0, 1000.0]
+  expo_percent: [0.0, 0.0, 0.0]
+  deadband: 0
+  yaw_deadband: 0
+  motor_idle: 0.055
+  hover_throttle: 0.38
+  min_check: 1050
+  p_roll: 45
+  i_roll: 80
+  d_roll: 30
+  f_roll: 120
+  p_pitch: 47
+  i_pitch: 84
+  d_pitch: 34
+  f_pitch: 125
+  p_yaw: 2
+  i_yaw: 4
+  d_yaw: 0
+  f_yaw: 6
+fusion:
+  imu_acceleration_variance: 0.1
+  imu_angular_velocity_variance: 0.0001
+  ekf_process_position_variance: [1.0e-6, 1.0e-6, 1.0e-6]
+  ekf_process_attitude_variance: [1.0e-6, 1.0e-6, 1.0e-6, 1.0e-6]
+  ekf_process_velocity_variance: [0.001, 0.001, 0.001]
+  ekf_process_gyro_bias_variance: [1.0e-9, 1.0e-9, 1.0e-9]
+  ekf_process_acceleration_bias_variance: [1.0e-9, 1.0e-9, 1.0e-9]
+  ekf_initial_attitude_variance: [0.01, 0.01, 0.01, 0.01]
+  ekf_initial_gyro_bias_variance: [0.001, 0.001, 0.001]
+  ekf_initial_acceleration_bias_variance: [0.01, 0.01, 0.01]
+  rtk_position_variance: 0.0004
+  rtk_velocity_variance: 0.0025
+  rtk_heading_variance: 0.0001
+  imu_initialization_duration: 3.0
+  imu_initialization_samples: 1000
+  imu_max_gyro_stddev: 0.02
+  imu_max_gyro_bias: 0.15
+  imu_max_acceleration_stddev: 0.2
+  imu_gravity_tolerance: 0.5
+  imu_initialization_max_speed: 0.3
+  navigation_ready_updates: 30
+  navigation_nis_threshold: 24.322
+  max_horizontal_position_stddev: 0.0
+  max_vertical_position_stddev: 0.0
+  max_velocity_stddev: 0.0
+  max_heading_stddev: 0.0
+output: {}

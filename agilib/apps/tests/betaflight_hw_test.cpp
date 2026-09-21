@@ -87,6 +87,44 @@ void parserTests() {
   decoder.append(flood.data(), flood.size());
   decoder.append(v1, sizeof(v1)); require(decoder.next(&frame));
 }
+void gnssPolicyTests() {
+	auto e = healthy();
+	e.rtk_fixed = e.synchronized = e.imu_calibrated = e.converged = false;
+	e.imu_ready = e.estimator_ready = e.navigation_ready = e.clock_aligned = e.accuracy_known = true;
+	require(!SafetyGate::inputsHealthy(e));
+	require(SafetyGate::inputsHealthy(e, NavigationPolicy::Gnss));
+	for (int failure = 0; failure < 5; ++failure) {
+		SafetyGate gate(NavigationPolicy::Gnss);
+		e.auto_switch = false;
+		require(!gate.update(e));
+		e.auto_switch = true;
+		require(gate.update(e));
+		auto bad = e;
+		switch (failure) {
+			case 0:
+				bad.imu_ready = false;
+				break;
+			case 1:
+				bad.estimator_ready = false;
+				break;
+			case 2:
+				bad.navigation_ready = false;
+				break;
+			case 3:
+				bad.clock_aligned = false;
+				break;
+			case 4:
+				bad.accuracy_known = false;
+				break;
+		}
+		require(!gate.update(bad));
+		require(!gate.update(e));
+		e.auto_switch = false;
+		require(!gate.update(e));
+		e.auto_switch = true;
+		require(gate.update(e));
+	}
+}
 void thrustTests() {
   ThrustTable table({12,16}, {1000,1500,2000}, {{0,10,20},{0,20,40}});
   require(table.collectiveThrustToRc(15, 1, 14) == 1500);
@@ -140,9 +178,13 @@ void transportTests() {
 }
 int main() {
   try {
-    safetyTests(); parserTests(); thrustTests(); transportTests();
-    std::cout << "PASS: safety, MSP v1/v2, calibrated thrust, pseudo-terminal transport\n";
-    return 0;
+	  safetyTests();
+	  gnssPolicyTests();
+	  parserTests();
+	  thrustTests();
+	  transportTests();
+	  std::cout << "PASS: safety, MSP v1/v2, calibrated thrust, pseudo-terminal transport\n";
+	  return 0;
   } catch (const std::exception& e) {
     std::cerr << e.what() << '\n'; return 1;
   }

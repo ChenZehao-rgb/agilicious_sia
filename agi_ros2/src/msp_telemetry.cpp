@@ -19,7 +19,7 @@ MspTelemetry::MspTelemetry(rclcpp::Node& node) : _node(node) {
 	if (!std::getline(boot_file, boot_id) || boot_id.empty()) throw std::runtime_error("Cannot identify MSP clock host");
 	_session_id = boot_id + ":" + std::to_string(monotonicSeconds());
 	const std::array<std::string, 6> names{"attitude", "rc", "status", "analog", "battery", "gps"};
-	const std::array<uint8_t, 6> codes{108, 105, 101, 110, 130, 106};
+	const std::array<uint8_t, 6> codes{108, 105, 150, 110, 130, 106};
 	const std::array<double, 6> rates{10, 10, 5, 2, 2, 2};
 	for (size_t i = 0; i < names.size(); ++i) {
 		const auto prefix = "msp." + names[i];
@@ -28,14 +28,15 @@ MspTelemetry::MspTelemetry(rclcpp::Node& node) : _node(node) {
 		if (!std::isfinite(hz) || hz < 0 || hz > 100) throw std::invalid_argument(prefix + ".rate_hz must be 0..100");
 		_polls.push_back({codes[i], enabled ? hz : 0, monotonicSeconds() + .001 * i, 0, false,
 		                  node.create_publisher<msg::MspEvent>("msp/" + names[i], rclcpp::QoS(100).reliable()), "",
-		                  builtin_interfaces::msg::Time{}});
+		                  builtin_interfaces::msg::Time{}, codes[i] == 105 || codes[i] == 150 || codes[i] == 130});
 	}
 	if (node.declare_parameter<bool>("msp.read_configuration", false, descriptor)) {
 		for (uint16_t code : {1, 2, 3, 34, 238, 64, 44, 119, 111, 125}) {
-			_polls.push_back({code, 1., monotonicSeconds(), 0, false, nullptr, "", builtin_interfaces::msg::Time{}});
+			_polls.push_back({code, 1., monotonicSeconds(), 0, false, nullptr, "", builtin_interfaces::msg::Time{}, true});
 		}
-		for (const std::string setting : {"msp_override_channels_mask", "msp_override_failsafe"}) {
-			_polls.push_back({0x3010, 1., monotonicSeconds(), 0, false, nullptr, setting, builtin_interfaces::msg::Time{}});
+		for (const std::string setting : {"msp_override_channels_mask", "msp_override_failsafe", "msp_override_timeout_ms"}) {
+			_polls.push_back(
+			        {0x3010, 1., monotonicSeconds(), 0, false, nullptr, setting, builtin_interfaces::msg::Time{}, true});
 		}
 	}
 }
@@ -94,11 +95,17 @@ void MspTelemetry::tick(agi::hardware::BetaflightMspBridge& bridge, double write
 				p.pending = false;
 				if (frame.error) {
 					p.hz = 0;
-					_healthy = false;
+					if (p.critical)
+						_healthy = false;
+					else
+						event = "optional_error";
 				}
 				break;
 			}
-			if (!matched && frame.code != 200) event = "late";
+			if (!matched) {
+				event = frame.code == 200 ? (frame.error ? "error" : "ack") : "late";
+				if (frame.code == 200 && frame.error) _healthy = false;
+			}
 			emit(event, frame, bridge.errors(), latency, matched);
 		}
 		for (auto& p : _polls) {
@@ -107,8 +114,8 @@ void MspTelemetry::tick(agi::hardware::BetaflightMspBridge& bridge, double write
 				p.pending = false;
 				p.hz = 0;  // Never match a delayed reply to a newer request of the same code.
 				++_timeouts;
-				_healthy = false;
-				emit("timeout", {p.code, false, {}}, bridge.errors(), NAN, &p);
+				if (p.critical) _healthy = false;
+				emit(p.critical ? "timeout" : "optional_timeout", {p.code, false, {}}, bridge.errors(), NAN, &p);
 				for (auto& other : _polls)
 					if (other.code == p.code) other.hz = 0;
 			}
