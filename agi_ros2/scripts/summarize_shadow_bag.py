@@ -33,6 +33,7 @@ def summarize(path):
     code200 = permits = active = success = computations = 0
     errors = collections.Counter()
     configurations, origins = [], []
+    controllers = collections.Counter()
     latest_mavlink_diagnostics = {}
     while reader.has_next():
         topic, raw, timestamp = reader.read_next()
@@ -53,7 +54,8 @@ def summarize(path):
             s['ages'].append(received-acquisition)
         if typ == 'agi_ros2/msg/ComputationStatus':
             computations += 1
-            success += message.mpc_success
+            success += getattr(message, 'controller_success', message.mpc_success)
+            controllers[getattr(message, 'controller_type', '') or 'legacy/unknown'] += 1
             solve.append(message.solve_seconds)
             warm.append(message.warm_cycles)
         elif typ == 'agi_ros2/msg/MspEvent':
@@ -104,8 +106,10 @@ def summarize(path):
                              bag_receive_age_seconds=stats(s['ages']))
     extents = [max(p[i] for p in positions)-min(p[i] for p in positions) for i in range(3)] if positions else None
     yaw_offsets = [math.remainder(y-yaw[0], 2*math.pi) for y in yaw] if yaw else []
-    return dict(streams=streams, mpc=dict(cycles=computations, successes=success, solve_seconds=stats(solve),
-                max_warm_cycles=max(warm, default=0)), evidence_ages_seconds=dict(imu=stats(imu_age), navigation=stats(nav_age), rc=stats(rc_age)),
+    computation = dict(cycles=computations, successes=success, solve_seconds=stats(solve),
+                       max_warm_cycles=max(warm, default=0), controller_types=dict(controllers))
+    return dict(streams=streams, controller=computation, mpc=dict(computation, deprecated_alias=True),
+                evidence_ages_seconds=dict(imu=stats(imu_age), navigation=stats(nav_age), rc=stats(rc_age)),
                 timesync_rtt_ms=stats(rtt), latest_mavlink_diagnostics=latest_mavlink_diagnostics, msp_errors=dict(errors),
                 output_isolation=dict(code200_tx_events=code200, permitted_commands=permits, active_statuses=active,
                     note='Zero recorded events is not proof of complete UART capture; check bag discovery/coverage.'),

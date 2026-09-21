@@ -141,7 +141,7 @@ RC/STATUS 分别检查 100 ms 有效期，组合取较早时间，重发不刷�
 
 `/status` 报告当前状态与原因；缺失质量或配置证据时应结合 `/health/status` 和
 `/fused_state.readiness_reason` 定位。普通 GPS 不再被伪装为 RTK；硬件使用独立 GNSS 就绪策略。
-`/computation_status` 独立报告 state_valid、mpc_success、warm_cycles、AUTO 参考活动状态、
+`/computation_status` 独立报告 state_valid、controller_type、controller_success、warm_cycles、AUTO 参考活动状态、
 reference_elapsed、solve_seconds、cycle_seconds 及状态/IMU/导航年龄。`trajectory_active` 表示 AUTO 参考已激活，空 CSV 时为悬停。
 `/control_command.permit_override` 和 `/output_status.override_active` 在本入口始终为 false。
 
@@ -188,3 +188,7 @@ TIMESYNC RTT、MPC 耗时/成功数/预热、MSP 错误、位置范围和航向�
 影子串口测试测量 RC/STATUS 查询约 25 Hz，影子路径实际发送的 code 200 数量为零。
 独立 bench 回归在伪串口上发送测试 RC 是原测试的预期行为，不能与影子入口混淆。
 本次未访问真实串口、刷写飞控或执行真实飞行；真实数据录包及误差/时延验收尚待目标硬件执行。
+
+MPC/GEO 可通过统一入口 `controller:=GEO` 或配置 type 选择；两者的 shadow 都禁止 MSP 200。
+旧 `mpc_success` 是 controller_success 的兼容别名，GEO 的 solve_seconds 指控制计算耗时。
+模型要求按所选控制器区分，详见 [README 控制器选择](README.md)。

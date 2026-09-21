@@ -43,11 +43,12 @@ class RuntimeProfiles(unittest.TestCase):
         path, profile = runtime.load_profile('sitl')
         params = ROOT / 'agilib/params'
         self.assertEqual(profile['pilot']['quadrotor'], yaml.safe_load((params / 'quads/betaloop_iris.yaml').read_text()))
-        self.assertEqual(profile['pilot']['pipeline']['controller']['parameters'],
+        self.assertEqual(profile['pilot']['pipeline']['controller']['parameter_sets']['MPC'],
                          yaml.safe_load((params / 'mpc_betaflight_sitl.yaml').read_text()))
         self.assertEqual(sitl.expected_betaflight_settings(path), sitl.expected_betaflight_settings(params / 'betaflight_udp.yaml'))
         self.assertEqual(profile['flight']['trajectory'], '')
         self.assertFalse(profile['flight']['sitl_delay_test'])
+        self.assertEqual({p.name for p in path.parent.glob('*.yaml')}, {'simulation.yaml', 'hardware.yaml'})
 
     def test_simulation_remains_three_independent_core_nodes(self):
         nodes = self.actions()
@@ -58,6 +59,116 @@ class RuntimeProfiles(unittest.TestCase):
             self.assertEqual(Path(parameters['runtime_config']).name, 'simulation.yaml')
             self.assertNotIn('params_dir', parameters)
         self.assertEqual(nodes['control_node']['trajectory'], '')
+        self.assertEqual(nodes['control_node']['controller'], 'MPC')
+        self.assertEqual(nodes['command_output_node']['controller'], 'MPC')
+
+    def test_controller_override_reaches_control_and_output(self):
+        for controller in ('geo', 'GEO', 'Geo', 'mpc'):
+            with self.subTest(controller=controller):
+                nodes = self.actions(controller=controller)
+                self.assertEqual(nodes['control_node']['controller'], controller.upper())
+                self.assertEqual(nodes['command_output_node']['controller'], controller.upper())
+        with self.assertRaisesRegex(ValueError, 'MPC or GEO'):
+            self.actions(controller='pid')
+
+    def test_profile_controller_wins_without_override(self):
+        with tempfile.TemporaryDirectory() as directory:
+            _, profile = runtime.load_profile('sitl')
+            profile['pilot']['pipeline']['controller']['type'] = 'GEO'
+            path = Path(directory) / 'simulation.yaml'
+            path.write_text(yaml.safe_dump(profile))
+            nodes = self.actions(runtime_config=str(path))
+            self.assertEqual(nodes['control_node']['controller'], 'GEO')
+            self.assertEqual(nodes['command_output_node']['controller'], 'GEO')
+            self.assertEqual(self.actions(runtime_config=str(path), controller='mpc')['control_node']['controller'], 'MPC')
+            selected, arguments = sitl.ros2_flight_selection(path)
+            self.assertEqual(selected, 'GEO')
+            self.assertEqual(arguments, ['runtime_config:=' + str(path)])
+            selected, arguments = sitl.ros2_flight_selection(path, 'mpc')
+            self.assertEqual(selected, 'MPC')
+            self.assertEqual(arguments[-1], 'controller:=MPC')
+
+    def test_only_selected_parameter_set_is_required(self):
+        _, profile = runtime.load_profile('sitl')
+        configuration = profile['pilot']['pipeline']['controller']
+        configuration['parameter_sets']['GEO'] = None
+        self.assertEqual(runtime.selected_controller(profile)[0], 'MPC')
+        with self.assertRaisesRegex(ValueError, 'parameter set: GEO'):
+            runtime.selected_controller(profile, 'geo')
+        configuration['parameter_sets']['GEO'] = {'drag_compensation': True}
+        self.assertEqual(runtime.selected_controller(profile)[0], 'MPC')
+        with self.assertRaisesRegex(ValueError, 'rotor RPM'):
+            runtime.selected_controller(profile, 'geo')
+        del configuration['parameter_sets']['MPC']
+        with self.assertRaisesRegex(ValueError, 'parameter set: MPC'):
+            runtime.selected_controller(profile)
+
+    def test_parameter_sources_are_exclusive_and_legacy_type_cannot_switch(self):
+        for legacy in ('parameters', 'file'):
+            with self.subTest(legacy=legacy):
+                _, profile = runtime.load_profile('sitl')
+                configuration = profile['pilot']['pipeline']['controller']
+                configuration[legacy] = {} if legacy == 'parameters' else 'old.yaml'
+                with self.assertRaisesRegex(ValueError, 'cannot be combined'):
+                    runtime.selected_controller(profile)
+                del configuration['parameter_sets']
+                self.assertEqual(runtime.selected_controller(profile, 'mpc')[0], 'MPC')
+                with self.assertRaisesRegex(ValueError, 'Changing controller'):
+                    runtime.selected_controller(profile, 'geo')
+
+    def test_geo_requires_only_its_active_model_fields(self):
+        _, profile = runtime.load_profile('hardware')
+        profile['pilot']['quadrotor'] = {
+            'mass': 1.0, 'omega_max': [1.0, 1.0, 1.0], 'thrust_min': 0.1, 'thrust_max': 5.0}
+        runtime.checked_model(profile, 'GEO')
+        with self.assertRaisesRegex(ValueError, 'motor_omega_max'):
+            runtime.checked_model(profile, 'MPC')
+        for key, value in (('mass', 0.0), ('mass', 100.0), ('mass', float('nan')),
+                           ('thrust_min', -0.1), ('thrust_min', 5.0), ('thrust_max', 0.1),
+                           ('omega_max', [1.0, 0.0, 1.0])):
+            previous = profile['pilot']['quadrotor'][key]
+            profile['pilot']['quadrotor'][key] = value
+            with self.subTest(key=key, value=value), self.assertRaisesRegex(ValueError, 'measured'):
+                runtime.checked_model(profile, 'GEO')
+            profile['pilot']['quadrotor'][key] = previous
+
+    def test_geo_hardware_still_rejects_missing_mass_limits_or_thrust_table(self):
+        values = dict(mode='hardware', device='/dev/null', mavlink_device='/dev/zero', controller='geo')
+        with self.assertRaisesRegex(ValueError, 'measured'):
+            self.actions(**values)
+        with tempfile.TemporaryDirectory() as directory:
+            _, profile = runtime.load_profile('hardware')
+            profile['pilot']['quadrotor'] = {
+                'mass': 1.0, 'omega_max': [1.0, 1.0, 1.0], 'thrust_min': 0.0, 'thrust_max': 5.0}
+            path = Path(directory) / 'hardware.yaml'
+            path.write_text(yaml.safe_dump(profile))
+            nodes = self.actions(**values, runtime_config=str(path))
+            self.assertEqual(len(nodes), 6)
+            self.assertTrue(nodes['command_output_node']['shadow_only'])
+            with self.assertRaisesRegex(ValueError, 'measured flight.thrust_table'):
+                self.actions(**values, runtime_config=str(path), shadow_only='false')
+
+    def test_geo_rejects_pipeline_that_requires_unavailable_full_model(self):
+        for module in ('estimator', 'bridge', 'inner_controller'):
+            _, profile = runtime.load_profile('sitl')
+            profile['pilot']['pipeline'][module] = {'type': 'Other'}
+            with self.subTest(module=module), self.assertRaises(ValueError):
+                runtime.selected_controller(profile, 'GEO')
+        _, profile = runtime.load_profile('sitl')
+        profile['pilot']['guard'] = {'type': 'Other'}
+        with self.assertRaisesRegex(ValueError, 'guard'):
+            runtime.selected_controller(profile, 'GEO')
+
+    def test_simulation_geo_gains_have_explicit_runtime_limits(self):
+        _, profile = runtime.load_profile('sitl')
+        params = profile['pilot']['pipeline']['controller']['parameter_sets']['GEO']
+        legacy = yaml.safe_load((ROOT / 'agilib/params/geo_betaflight_sitl.yaml').read_text())
+        for key in ('kpacc', 'kdacc', 'kpatt_xy', 'kpatt_z', 'kprate', 'p_err_max', 'v_err_max'):
+            self.assertEqual(params[key], legacy[key])
+        self.assertEqual(params['filter_sampling_frequency'], 100)
+        self.assertEqual(params['filter_cutoff_frequency'], 10)
+        self.assertEqual(params['max_tilt_rad'], 0.35)
+        self.assertFalse(params['drag_compensation'])
 
     def test_hardware_placeholders_reject_control_but_allow_diagnostics(self):
         values = dict(mode='hardware', device='/dev/null', mavlink_device='/dev/zero')

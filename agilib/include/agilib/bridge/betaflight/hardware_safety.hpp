@@ -62,7 +62,7 @@ public:
 			_mode = _mode == Mode::AutoActive || _mode == Mode::ManualFallback ? Mode::ManualFallback : Mode::SensorCheck;
 			_reason = failure              ? failure
 			          : e.kill             ? "receiver KILL"
-			          : !e.controller_warm ? "MPC warming"
+			          : !e.controller_warm ? "controller warming"
 			                               : "command invalid/expired";
 			return false;
 		}

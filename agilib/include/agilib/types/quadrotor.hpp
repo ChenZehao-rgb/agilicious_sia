@@ -32,6 +32,9 @@ struct Quadrotor : public ParameterBase {
   using ParameterBase::load;
   bool load(const Yaml& node) override;
   bool valid() const override;
+	// The external rate loop only needs mass and command bounds. Unused physics stay unknown.
+	bool loadRatesThrust(const Yaml& node);
+	bool validRatesThrust() const;
 
   // Helpers to apply limits.
   Vector<4> clampThrust(const Vector<4> thrusts) const;

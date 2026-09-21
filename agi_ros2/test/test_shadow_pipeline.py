@@ -56,7 +56,9 @@ class ShadowHarness(Harness):
         os.set_blocking(self.master, False)
 
     def start_node(self, executable, **params):
-        defaults = dict(params_dir=str(PARAMS), mode='hardware')
+        defaults = dict(mode='hardware')
+        if not params.get('runtime_config'):
+            defaults['params_dir'] = str(PARAMS)
         defaults.update(params)
         args = [str(BIN / executable), '--ros-args', '-r', '__ns:=' + self.namespace]
         for k, v in defaults.items():

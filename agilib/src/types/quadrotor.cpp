@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <iostream>
+#include <limits>
 
 #include "agilib/math/math.hpp"
 
@@ -181,6 +182,34 @@ bool Quadrotor::load(const Yaml& node) {
   node["aero_coeff_h"].getIfDefined(aero_coeff_h_);
 
   return valid();
+}
+
+bool Quadrotor::loadRatesThrust(const Yaml& node) {
+	const Scalar unknown = std::numeric_limits<Scalar>::quiet_NaN();
+	m_ = thrust_min_ = thrust_max_ = unknown;
+	omega_max_.setConstant(unknown);
+	t_BM_.setConstant(unknown);
+	J_.setConstant(unknown);
+	J_inv_.setConstant(unknown);
+	motor_omega_min_ = motor_omega_max_ = motor_tau_inv_ = unknown;
+	thrust_map_.setConstant(unknown);
+	torque_map_.setConstant(unknown);
+	kappa_ = unknown;
+	aero_coeff_1_.setConstant(unknown);
+	aero_coeff_3_.setConstant(unknown);
+	aero_coeff_h_ = unknown;
+	if (!node["mass"].getIfDefined(m_) || !node["thrust_min"].getIfDefined(thrust_min_) ||
+	    !node["thrust_max"].getIfDefined(thrust_max_) || node["omega_max"].size() != 3 ||
+	    !node["omega_max"].getIfDefined(omega_max_)) {
+		return false;
+	}
+	return validRatesThrust();
+}
+
+bool Quadrotor::validRatesThrust() const {
+	return std::isfinite(m_) && m_ > 0.0 && m_ < 100.0 && std::isfinite(thrust_min_) && thrust_min_ >= 0.0 &&
+	       std::isfinite(thrust_max_) && thrust_max_ > thrust_min_ && omega_max_.allFinite() &&
+	       (omega_max_.array() > 0.0).all() && std::isfinite(collective_thrust_max());
 }
 
 bool Quadrotor::valid() const {

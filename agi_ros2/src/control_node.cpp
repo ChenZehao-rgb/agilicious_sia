@@ -62,6 +62,8 @@ ControlNode::ControlNode()
 	        shadow_descriptor);
 	_params = profile ? profile->createPilotParams()
 	                  : std::make_unique<agi::PilotParams>(std::filesystem::path(params_dir) / pilot_file, params_dir);
+	RCLCPP_INFO(get_logger(), "Controller: %s; period=0.010 s; computation budget=0.008 s",
+	            _params->pipeline_cfg_.outer_controller_cfg.type.c_str());
 	_pilot = std::make_unique<agi::hardware::HardwarePilot>(
 	        *_params, [this] { return _control_time; }, [this] { return _simulation_time ? _control_time : monotonicSeconds(); },
 	        _navigation_policy);
@@ -93,7 +95,7 @@ ControlNode::ControlNode()
 	_diagnostic_pub = create_publisher<std_msgs::msg::Float64MultiArray>("control_diagnostics", 10);
 	_status_pub = create_publisher<std_msgs::msg::String>("status", 1);
 	if (_simulation_time) {
-		// A paused /clock must not run duplicate MPC ticks or consume warmup.
+		// A paused /clock must not run duplicate control ticks or consume warmup.
 		_timer = rclcpp::create_timer(this, get_clock(), rclcpp::Duration::from_seconds(0.01), std::bind(&ControlNode::tick, this));
 	} else {
 		_timer = create_wall_timer(std::chrono::milliseconds(10), std::bind(&ControlNode::tick, this));
@@ -213,6 +215,8 @@ void ControlNode::publishDecision(const agi::hardware::ControlDecision& decision
 	computation.shadow_only = _shadow_only;
 	computation.state_valid = decision.state_valid;
 	computation.mpc_success = decision.evidence.command_valid;
+	computation.controller_type = _params->pipeline_cfg_.outer_controller_cfg.type;
+	computation.controller_success = decision.evidence.command_valid;
 	computation.warm_cycles = _pilot->warmCycles();
 	computation.trajectory_active = decision.trajectory_active;
 	computation.reference_elapsed = decision.reference_elapsed;

@@ -23,6 +23,8 @@ class PilotParams : public ParameterBase {
 
   using ParameterBase::load;
   bool load(const Yaml& node) override;
+	bool load(const Yaml& node, const std::string& controller_override);
+	bool usesRatesThrustModel() const;
 
   bool valid() const override;
 

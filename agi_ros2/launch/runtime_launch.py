@@ -13,7 +13,7 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
-DEFAULTS = dict(mode='sitl', runtime_config='', trajectory='', thrust_table='',
+DEFAULTS = dict(mode='sitl', runtime_config='', controller='', trajectory='', thrust_table='',
                 shadow_only='', diagnostic_only='', sitl_delay_test='', record_bag='', bag_output='',
                 device='', baud='', mavlink_device='', mavlink_baud='', mavlink_enabled='',
                 mavlink_gps_mode='', mavlink_altitude_source='', mavlink_imu_rate_hz='',
@@ -54,6 +54,48 @@ def resolve_data_path(path, filename):
     return str((value if value.is_absolute() else path.parent / value).resolve())
 
 
+def selected_controller(profile, override=''):
+    configuration = profile['pilot'].get('pipeline', {}).get('controller', {})
+    if not isinstance(configuration, dict):
+        raise ValueError('pilot.pipeline.controller must be a mapping')
+    configured = configuration.get('type', '')
+    if configured not in ('MPC', 'GEO'):
+        raise ValueError('pilot.pipeline.controller.type must be MPC or GEO')
+    selected = str(override).upper() if override else configured
+    if selected not in ('MPC', 'GEO'):
+        raise ValueError('controller must be MPC or GEO')
+    if 'parameter_sets' in configuration:
+        if 'parameters' in configuration or 'file' in configuration:
+            raise ValueError('controller parameter_sets cannot be combined with parameters or file')
+        sets = configuration['parameter_sets']
+        if not isinstance(sets, dict) or not isinstance(sets.get(selected), dict) or not sets[selected]:
+            raise ValueError('Missing controller parameter set: ' + selected)
+        parameters = sets[selected]
+        source = 'pilot.pipeline.controller.parameter_sets.' + selected
+    else:
+        if selected != configured:
+            raise ValueError('Changing controller requires parameter_sets for the selected controller')
+        if 'parameters' in configuration and 'file' in configuration:
+            raise ValueError('controller parameters cannot be combined with file')
+        parameters = configuration.get('parameters')
+        if parameters is not None and not isinstance(parameters, dict):
+            raise ValueError('controller parameters must be a mapping')
+        if parameters is None and not configuration.get('file'):
+            raise ValueError('controller requires parameter_sets, parameters or file')
+        source = 'pilot.pipeline.controller.' + ('parameters' if parameters is not None else 'file')
+    if selected == 'GEO' and parameters is not None and boolean(parameters.get('drag_compensation', False)):
+        raise ValueError('GEO drag_compensation requires rotor RPM feedback unavailable in this ROS 2 pipeline')
+    if selected == 'GEO':
+        pipeline = profile['pilot']['pipeline']
+        if any(pipeline.get(module, {}).get('type') != 'External' for module in ('estimator', 'bridge')):
+            raise ValueError('GEO runtime requires External estimator and bridge')
+        if pipeline.get('inner_controller', {}).get('type', 'None') != 'None':
+            raise ValueError('GEO runtime does not support an inner controller')
+        if profile['pilot'].get('guard', {}).get('type', 'None') != 'None':
+            raise ValueError('GEO runtime does not support a guard')
+    return selected, source
+
+
 def checked_devices(output, mavlink):
     device, sensor_device = output.get('device', ''), mavlink.get('device', '')
     if not device or not sensor_device:
@@ -65,15 +107,24 @@ def checked_devices(output, mavlink):
         raise ValueError('MSP and MAVLink must use different serial devices')
 
 
-def checked_model(profile):
+def checked_model(profile, controller=''):
+    controller, _ = selected_controller(profile, controller)
     model = profile['pilot'].get('quadrotor', {})
     if not isinstance(model, dict):
         raise ValueError('pilot.quadrotor must contain the measured model')
     def finite(value):
         return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
-    invalid = [key for key in ('mass', 'motor_omega_max', 'motor_tau', 'kappa', 'thrust_max')
+    required = ('mass', 'thrust_max') if controller == 'GEO' else ('mass', 'motor_omega_max', 'motor_tau', 'kappa', 'thrust_max')
+    invalid = [key for key in required
                if not finite(model.get(key)) or model[key] <= 0]
-    for key in ('inertia', 'omega_max', 'thrust_map', 'tbm_fr', 'tbm_bl', 'tbm_br', 'tbm_fl'):
+    if finite(model.get('mass')) and model['mass'] >= 100:
+        invalid.append('mass')
+    if (not finite(model.get('thrust_min')) or model['thrust_min'] < 0 or
+            (finite(model.get('thrust_max')) and model['thrust_min'] >= model['thrust_max'])):
+        invalid.append('thrust_min/max')
+    vectors = ('omega_max',) if controller == 'GEO' else (
+        'inertia', 'omega_max', 'thrust_map', 'tbm_fr', 'tbm_bl', 'tbm_br', 'tbm_fl')
+    for key in vectors:
         value = model.get(key)
         if not isinstance(value, list) or len(value) != 3 or not all(finite(x) for x in value):
             invalid.append(key)
@@ -95,6 +146,7 @@ def assemble(context, forced_shadow=False, sensor_only=False, msp_only=False):
         if arg(legacy):
             raise ValueError(legacy + ' is a legacy direct-node option; use runtime_config for the unified launch')
     path, profile = load_profile(mode, arg('runtime_config'))
+    controller, controller_parameters = selected_controller(profile, arg('controller'))
     flight = dict(profile['flight'])
     for key in ('trajectory', 'thrust_table', 'bag_output'):
         if arg(key):
@@ -119,7 +171,7 @@ def assemble(context, forced_shadow=False, sensor_only=False, msp_only=False):
     thrust_table = resolve_data_path(path, flight.get('thrust_table', ''))
     navigation_source = 'rtk' if mode == 'sitl' else 'gnss'
     common = dict(mode=mode, use_sim_time=mode == 'sitl', runtime_config=str(path),
-                  navigation_source=navigation_source, sitl_delay_test=delay_test)
+                  controller=controller, navigation_source=navigation_source, sitl_delay_test=delay_test)
     output = dict(profile['output'])
     mavlink = dict(profile.get('mavlink', {}))
     navigation = dict(profile.get('navigation', {}))
@@ -153,7 +205,7 @@ def assemble(context, forced_shadow=False, sensor_only=False, msp_only=False):
         if not sensor_only and mavlink.get('gps_mode') != 'gnss':
             raise ValueError('The hardware profile requires gps_mode=gnss')
     if not (diagnostic or sensor_only or msp_only):
-        checked_model(profile)
+        checked_model(profile, controller)
         if mode == 'hardware' and not shadow and not thrust_table:
             raise ValueError('Hardware output requires a measured flight.thrust_table; use diagnostic_only:=true for sensor checks')
 
@@ -177,6 +229,7 @@ def assemble(context, forced_shadow=False, sensor_only=False, msp_only=False):
         if not sensor_only:
             processes.append(node('msp_evidence.py', {**evidence, 'runtime_config': str(path), 'use_sim_time': False}))
     actions = [LogInfo(msg=f'Runtime configuration: {path}; mode={mode}; navigation={navigation_source}; '
+                           f'controller={controller}; controller_parameters={controller_parameters}; '
                            f'reference={trajectory or "hover"}; shadow={shadow}; diagnostic={diagnostic}')] + processes
     if boolean(flight.get('record_bag', True)):
         bag_output = resolve_data_path(path, flight.get('bag_output', ''))

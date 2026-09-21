@@ -660,7 +660,7 @@ bool Pilot::getFeedback(Feedback* const feedback) const {
 }
 
 bool Pilot::getQuadrotor(Quadrotor* const quad) const {
-  if (!params_.quad_.valid()) return false;
+	if (!params_.valid()) return false;
   *quad = params_.quad_;
   return true;
 }

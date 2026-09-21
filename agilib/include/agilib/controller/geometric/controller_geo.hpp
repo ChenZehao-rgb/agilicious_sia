@@ -1,57 +1,46 @@
 #pragma once
 
-#include <cmath>
+#include <memory>
 #include <mutex>
-#include <thread>
 
 #include "agilib/controller/controller_base.hpp"
 #include "agilib/controller/geometric/geo_params.hpp"
 #include "agilib/math/gravity.hpp"
-#include "agilib/math/math.hpp"
 #include "agilib/math/types.hpp"
 #include "agilib/types/command.hpp"
 #include "agilib/types/imu_sample.hpp"
 #include "agilib/types/quad_state.hpp"
 #include "agilib/types/quadrotor.hpp"
-#include "agilib/utils/logger.hpp"
 #include "agilib/utils/low_pass_filter.hpp"
-#include "agilib/utils/timer.hpp"
 
 namespace agi {
 
-
 class GeometricController : public ControllerBase {
- public:
-  EIGEN_MAKE_ALIGNED_OPERATOR_NEW
-  GeometricController(const Quadrotor& quad,
-                      const std::shared_ptr<GeometricControllerParams>& params);
-  ~GeometricController();
+public:
+	EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+	GeometricController(const Quadrotor& quad, const std::shared_ptr<GeometricControllerParams>& params, const Scalar exec_dt = 0.01);
+	~GeometricController();
 
-  virtual bool getCommand(const QuadState& state,
-                          const SetpointVector& references,
-                          SetpointVector* const setpoints) override;
+	bool getCommand(const QuadState& state, const SetpointVector& references, SetpointVector* const setpoints) override;
 
-  bool updateParameters(
-    const Quadrotor& quad,
-    const std::shared_ptr<GeometricControllerParams> params);
-  bool updateParameters(const Quadrotor& params);
-  bool updateParameters(
-    const std::shared_ptr<GeometricControllerParams> params);
-  std::shared_ptr<GeometricControllerParams> getParameters();
+	bool updateParameters(const Quadrotor& quad, const std::shared_ptr<GeometricControllerParams> params);
+	bool updateParameters(const Quadrotor& params);
+	bool updateParameters(const std::shared_ptr<GeometricControllerParams> params);
+	std::shared_ptr<GeometricControllerParams> getParameters();
 
-  bool addImu(const ImuSample& imu);
+	void addImuSample(const ImuSample& imu) override;
+	bool addImu(const ImuSample& imu);
 
- private:
-  Vector<3> tiltPrioritizedControl(const Quaternion& q,
-                                   const Quaternion& q_des);
-  Vector<4> qTimeDerivative(const Quaternion& q, const Scalar& t);
+private:
+	Vector<3> tiltPrioritizedControl(const Quaternion& q, const Quaternion& q_des);
 
-  Quadrotor quad_;
-  std::shared_ptr<GeometricControllerParams> params_;
-  LowPassFilter<3> filterAcc_;
-  LowPassFilter<4> filterMot_;
-
-  ImuSample imu_;
+	Quadrotor _quad;
+	std::shared_ptr<GeometricControllerParams> _params;
+	bool _has_full_model;
+	std::unique_ptr<LowPassFilter<3>> _filter_acc;
+	std::unique_ptr<LowPassFilter<4>> _filter_mot;
+	std::mutex _imu_mutex;
+	ImuSample _imu;
 };
 
 }  // namespace agi

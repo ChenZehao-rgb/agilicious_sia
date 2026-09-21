@@ -5,19 +5,22 @@ No physical devices, Gazebo or fabricated Authority/Health publishers are used.
 Source ROS and the built workspace first; pymavlink is required.
 """
 import os
+from pathlib import Path
 import pty
 import time
 import unittest
 
 import rclpy
+import yaml
 from pymavlink.dialects.v20 import common as mav
 from std_msgs.msg import String
 from agi_ros2.msg import ComputationStatus, FusedState, Health, MspState, OutputStatus
 from test_shadow_pipeline import ShadowHarness
+from test_runtime_profile_nodes import dump_profile
 
 
 class HardwareHarness(ShadowHarness):
-    def __init__(self, shadow=False, override_timeout='50'):
+    def __init__(self, shadow=False, override_timeout='50', controller='MPC'):
         super().__init__()
         self.response_armed = False
         self.config_frames[119] = bytes((27, 50, 0, 1))  # Include ANGLE in the FC's stable BOXIDS list.
@@ -39,8 +42,24 @@ class HardwareHarness(ShadowHarness):
             self.subscribe(topic, cls)
         table = self.path / 'test_thrust.csv'
         table.write_text('0,1000,1500,2000\n12,0,10,20\n18,0,20,40\n')
+        control_parameters = {}
+        mapping_parameters = dict(bridge_config=str(self.bridge))
+        if controller == 'GEO':
+            configs = Path(__file__).resolve().parents[1] / 'config'
+            profile = yaml.safe_load((configs / 'hardware.yaml').read_text())
+            synthetic = yaml.safe_load((configs / 'simulation.yaml').read_text())['pilot']['quadrotor']
+            profile['pilot']['quadrotor'] = {key: synthetic[key] for key in
+                                             ('mass', 'omega_max', 'thrust_min', 'thrust_max')}
+            profile['bridge'] = yaml.safe_load(self.bridge.read_text())
+            profile['flight']['shadow_only'] = shadow
+            profile['flight']['thrust_table'] = str(table)
+            path = self.path / 'hardware.yaml'
+            path.write_text(dump_profile(profile))
+            # Exercise a launch-style override of the default MPC selection and no legacy model files.
+            control_parameters = dict(runtime_config=str(path), controller='GEO')
+            mapping_parameters = control_parameters
         self.start_node('command_output_node', shadow_only=shadow, navigation_source='gnss',
-                        device=os.ttyname(self.slave), bridge_config=str(self.bridge), thrust_table=str(table),
+                        device=os.ttyname(self.slave), thrust_table=str(table), **mapping_parameters,
                         **{'msp.read_configuration': True, 'msp.rc.rate_hz': 25., 'msp.status.rate_hz': 25.,
                            'msp.battery.rate_hz': 2., 'msp.attitude.enabled': False,
                            'msp.analog.enabled': False, 'msp.gps.enabled': False})
@@ -55,7 +74,7 @@ class HardwareHarness(ShadowHarness):
                         imu_initialization_samples=100, navigation_ready_updates=5,
                         max_horizontal_position_stddev=2., max_vertical_position_stddev=3.,
                         max_velocity_stddev=.6, max_heading_stddev=.5)
-        self.start_node('control_node', shadow_only=shadow, navigation_source='gnss')
+        self.start_node('control_node', shadow_only=shadow, navigation_source='gnss', **control_parameters)
 
     def write(self, data):
         os.write(self.mav_master, data)
@@ -126,8 +145,15 @@ class HardwarePipelineTests(unittest.TestCase):
         return h
 
     def test_real_gnss_hover_authorization_and_recovery(self):
-        h = self.harness()
+        self.check_real_gnss_hover('MPC')
+
+    def test_geo_gnss_hover_authorization_and_recovery(self):
+        self.check_real_gnss_hover('GEO')
+
+    def check_real_gnss_hover(self, controller):
+        h = self.harness(controller=controller)
         h.wait_ready()
+        self.assertTrue(all(s.controller_type == controller for s in h.received['computation_status']))
         self.assertFalse(h.has_output())
         # AUTO raised while disarmed must not be reused after ARM becomes high.
         h.response_auto = True
@@ -165,11 +191,19 @@ class HardwarePipelineTests(unittest.TestCase):
         self.assertTrue(any('conflicts' in s.reason for s in h.received['msp/decoded_state']))
 
     def test_diagnostic_shadow_never_writes_control(self):
-        h = self.harness(shadow=True)
+        self.check_shadow('MPC')
+
+    def test_geo_shadow_never_writes_control(self):
+        self.check_shadow('GEO')
+
+    def check_shadow(self, controller):
+        h = self.harness(shadow=True, controller=controller)
         h.wait_ready()
         h.response_armed = h.response_auto = True
         h.run(.3)
         self.assertTrue(any(s.mpc_success for s in h.received['computation_status']))
+        self.assertTrue(any(s.controller_success and s.controller_type == controller
+                            for s in h.received['computation_status']))
         self.assertFalse(h.has_output())
         self.assertTrue(all(not s.override_active for s in h.received['output_status']))
 

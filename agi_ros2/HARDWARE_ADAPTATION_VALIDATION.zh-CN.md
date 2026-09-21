@@ -4,7 +4,60 @@
 没有访问实体 UART、刷写实体飞控、在 CM5 上测量或进行实际飞行。
 实机模型和标定数据仍待填写，`hardware.yaml` 默认 shadow，并保留拒绝飞行的未配置值。
 
-## 已执行检查
+## MPC/GEO 选择适配：本轮新增验证
+
+同一 `simulation.yaml` / `hardware.yaml` 内保存 `parameter_sets.MPC/GEO`；默认仍为 MPC，
+启动参数 `controller:=GEO` 选择对应参数和 GEO 最小模型校验。未增加第三份运行配置。
+硬件默认 shadow，真实机体数据仍未填写。本轮没有访问实体串口或刷写飞控。
+
+| 检查 | 本轮结果 |
+|---|---|
+| 核心与 ROS2 Release 构建、安装 | 通过；包括新诊断消息、MPC/GEO 参数选择和最小模型 |
+| 核心 GTest | 28 项通过：GEO 控制 10、GEO 接管/故障/影子/显式轨迹 4、参数加载 9、采样 3、Pilot 2 |
+| 旧硬件控制测试程序 | `hardware_pilot_test`、`betaflight_hw_test` 通过，保留真实 MPC 路径与门限 |
+| 配置/launch/模拟器参数选择 | 16 项通过：默认与覆盖、对应参数组、缺失/冲突拒绝、最小模型、三/六节点 |
+| 真实 ROS 核心进程 | 3 项通过：MPC/GEO 空轨迹接管及 KILL、控制/输出禁止运行中切换、缺少参数不得用默认增益启动 |
+| 双 PTY 六节点 | 7 项通过：MPC/GEO 普通 GNSS 接管与故障恢复，两者 shadow 均不发 MSP 200，配置/导航/ACK 故障撤权 |
+| 录包摘要 | 1 项通过：GEO controller_type/controller_success、计算耗时及原始证据统计；保留弃用 mpc 别名 |
+| Gazebo＋Betaflight SITL，GEO | 独立分区复测通过，400 个授权命令，KILL 后输出关闭；未放宽时效检查 |
+| Gazebo＋Betaflight SITL，MPC | 通过，402 个授权命令，控制器类型确认 MPC，KILL 后输出关闭 |
+
+GEO 第一次 Gazebo 运行因 TCP 5761 在原有 45 秒启动期限内未就绪而失败，尚无融合/控制数据；
+Gazebo 服务日志显示世界与插件加载，但没有定位固件未进入 TCP 就绪的根因。
+更换独立分区、启用无缓冲日志后，相同代码复测通过。这与前次验证中出现的启动问题相似，
+不能据此声称已修复模拟器启动可靠性。首次记录 `/tmp/agi_geo_sitl_smoke/result.json`，
+复测记录 `/tmp/agi_geo_sitl_retry/result.json`；MPC 记录 `/tmp/agi_mpc_selection_sitl/result.json`。
+
+相关日志：`/tmp/agi_geo_core_tests.log`、`/tmp/agi_geo_standalone_tests.log`、
+`/tmp/agi_geo_profiles.log`、`/tmp/agi_geo_profile_nodes.log`、`/tmp/agi_geo_hardware_pipeline.log`、
+`/tmp/agi_geo_ros_build.log`、`/tmp/agi_geo_bag.log`。日志为本机临时产物，复现命令如下：
+
+```bash
+# 先按 README 构建并 source ROS 与本工作区。
+export ROS_LOG_DIR=/tmp/agi_geo_ros_logs
+export ROS_LOCALHOST_ONLY=1
+export ROS_DOMAIN_ID=91
+python3 agi_ros2/test/test_runtime_config.py
+python3 agi_ros2/test/test_runtime_profile_nodes.py
+python3 agi_ros2/test/test_hardware_pipeline.py
+python3 agi_ros2/test/test_shadow_bag.py
+build/betaflight_sitl/agilib/tests \
+  --gtest_filter='GeometricController.*:HardwareGeo.*:RuntimeConfig.*:TimeBasedSampler.*:Pilot.*'
+GZ_PARTITION=agi_geo_check python3 agi_ros2/test/test_sitl_smoke.py --controller GEO
+GZ_PARTITION=agi_mpc_check python3 agi_ros2/test/test_sitl_smoke.py --controller MPC
+```
+
+测试只使用合成数据、伪串口与本机仿真。ROS 进程测试需要 DDS/回环套接字权限；
+受限沙箱首次尝试因不允许 socket 而未执行，获准本机通信后通过。
+重新配置 CMake 后收集了新增测试；沿用已有构建树直接 CMake 构建，不声称重新验证了 colcon 干净构建。
+找到并使用 clang-format 23.1.1，GEO 实现、相关头文件与新增测试完整格式检查通过；
+其余历史文件检查本次修改行，Tab 展开后均不超过140列，`git diff --check` 和 Python 语法检查通过。
+未运行 clang-tidy。新消息要求仿真机和伴随计算机统一重编译。
+
+以上不证明实机悬停精度、CM5 完整周期或真实飞控回退时间；GEO 初始增益仍需实机调试。
+当前 GEO 只验证低速非倒飞控制范围，未引入角速度前馈、位置积分或 RPM 气动补偿。
+
+## 此前完整悬停适配检查（保留记录）
 
 | 检查 | 结果与范围 |
 |---|---|

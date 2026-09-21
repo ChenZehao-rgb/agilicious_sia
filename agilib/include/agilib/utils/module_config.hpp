@@ -12,7 +12,7 @@ struct ModuleConfig {
   fs::path file;
 	Yaml parameters;
 
-  bool loadIfUndefined(const Yaml& yaml);
+	bool loadIfUndefined(const Yaml& yaml, const std::string& type_override = "");
 
   friend std::ostream& operator<<(std::ostream& os, const ModuleConfig& config);
 };

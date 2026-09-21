@@ -27,12 +27,12 @@ HardwarePilot::HardwarePilot(const PilotParams& params, TimeFunction clock, Time
 	const auto& cfg = params.pipeline_cfg_;
 	// Check before constructing Pilot, whose general-purpose constructor may open devices.
 	if (!_clock || !params.valid() || cfg.bridge_cfg.type != "External" || cfg.estimator_cfg.type != "External" ||
-	    cfg.outer_controller_cfg.type != "MPC" || cfg.sampler_cfg.type != "Time" ||
+	    (cfg.outer_controller_cfg.type != "MPC" && cfg.outer_controller_cfg.type != "GEO") || cfg.sampler_cfg.type != "Time" ||
 	    (!cfg.inner_controller_cfg.type.empty() && cfg.inner_controller_cfg.type != "None") ||
 	    (!params.guard_cfg_.type.empty() && params.guard_cfg_.type != "None") || params.velocity_in_bodyframe_ ||
 	    params.outerloop_divisor_ != 1 || !std::isfinite(params.dt_min_) || std::abs(params.dt_min_ - .01) > 1e-9) {
 		throw ParameterException(
-		        "HardwarePilot requires External estimator/bridge, MPC, Time, no inner controller/guard, "
+		        "HardwarePilot requires External estimator/bridge, MPC or GEO, Time, no inner controller/guard, "
 		        "world velocity and dt=0.01");
 	}
 	_pilot = std::make_unique<Pilot>(params, _clock);

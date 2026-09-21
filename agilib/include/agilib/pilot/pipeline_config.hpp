@@ -15,7 +15,7 @@ struct PipelineConfig {
   ModuleConfig inner_controller_cfg;
   ModuleConfig bridge_cfg;
 
-  void load(const Yaml& yaml, const std::string& directory);
+	void load(const Yaml& yaml, const std::string& directory, const std::string& controller_override = "");
 
   friend std::ostream& operator<<(std::ostream& os,
                                   const PipelineConfig& config);

@@ -8,15 +8,18 @@
 namespace agi {
 
 
-void PipelineConfig::load(const Yaml& yaml, const std::string& directory) {
+void PipelineConfig::load(const Yaml& yaml, const std::string& directory, const std::string& controller_override) {
   estimator_cfg.loadIfUndefined(yaml["estimator"]);
   checkFile(directory, &estimator_cfg.file);
 
   sampler_cfg.loadIfUndefined(yaml["sampler"]);
   checkFile(directory, &sampler_cfg.file);
 
-  if (!outer_controller_cfg.loadIfUndefined(yaml["outer_controller"]))
-    outer_controller_cfg.loadIfUndefined(yaml["controller"]);
+	if (yaml["outer_controller"].isDefined()) {
+		outer_controller_cfg.loadIfUndefined(yaml["outer_controller"], controller_override);
+	} else {
+		outer_controller_cfg.loadIfUndefined(yaml["controller"], controller_override);
+	}
   checkFile(directory, &outer_controller_cfg.file);
 
   inner_controller_cfg.loadIfUndefined(yaml["inner_controller"]);

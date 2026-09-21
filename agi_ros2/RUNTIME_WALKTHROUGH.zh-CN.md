@@ -8,7 +8,7 @@
 本次实现与旧审阅的主要差异：
 
 - 新标准入口只有 [simulation.yaml](config/simulation.yaml) 与 [hardware.yaml](config/hardware.yaml) 两份完整配置；
-  [统一 launch 组装](/home/sia/agilicious_internal-main/agi_ros2/launch/runtime_launch.py:87)
+  [统一 launch 组装](/home/sia/agilicious_internal-main/agi_ros2/launch/runtime_launch.py:138)
   区分仿真三节点、硬件六节点与不依赖机体模型的只读 diagnostic。默认空轨迹，SITL 延迟实验默认关闭，硬件默认 shadow。
 - [RuntimeConfig](/home/sia/agilicious_internal-main/agi_ros2/include/agi_ros2/runtime_config.h:22)
   直接加载内嵌 Pilot/机体/MPC/bridge；硬件零占位不替换为 Iris，机体缺项聚合报错。
@@ -27,29 +27,57 @@
 [本次验证记录](HARDWARE_ADAPTATION_VALIDATION.zh-CN.md)；
 CM5 时间预算、真实 UART/GNSS 质量、飞控停流回退和悬停飞行仍需目标设备验证。
 
+**MPC/GEO 选择适配（2026-09-22）。**
+
+统一入口新增只读启动选项 `controller:=MPC|GEO`，缺省取同一 profile 的
+`pilot.pipeline.controller.type`。`parameter_sets.MPC/GEO` 分别保存参数，配置内容不相互覆盖，
+每个核心进程启动时从原始 profile 读取一次；没有生成临时 YAML 或增加第三份运行配置。
+控制和输出使用同一个启动选择，切换必须重启并重新进行健康预热和实体 AUTO low→high。
+
+当前选择链：[runtime_launch.selected_controller](/home/sia/agilicious_internal-main/agi_ros2/launch/runtime_launch.py:57)
+→ 核心节点只读 `controller` 参数 →
+[RuntimeConfig](/home/sia/agilicious_internal-main/agi_ros2/include/agi_ros2/runtime_config.h:26)
+→ `PilotParams::load` → `PipelineConfig::load` → `ModuleConfig::loadIfUndefined`。
+MPC 分支继续加载完整 Quadrotor；GEO External 分支用
+[Quadrotor::loadRatesThrust](/home/sia/agilicious_internal-main/agilib/src/types/quadrotor.cpp:187)，只读取
+mass、omega_max、thrust_min/max，其余动力学量明确标记未知，完整 `Quadrotor::valid()` 不会通过。
+这样无法误把 GEO 的最小模型用于 MPC 或内置动力学估计器。
+
+两种控制器都经过 HardwarePilot 的同一参考与准入生命周期。GEO 的 TimeSampler 采当前单点参考，
+[GEO 控制律](/home/sia/agilicious_internal-main/agilib/src/controller/geometric/controller_geo.cpp:35)
+为位置/速度误差和参考加速度 → 限制期望推力倾角 → 结合 yaw 构造姿态 → 姿态误差转 body rates。
+输出 body rates 和总推力加速度，控制节点乘质量变成 N，后续 MSP 映射没有分叉。
+GEO 对机体角速度和总推力限幅，对无效四元数、零/向下期望推力和姿态奇点返回失败；
+ROS2 路径禁止开启依赖 RPM 的 drag_compensation。当前 rates 命令没有 jerk/角速度前馈或位置积分。
+
+`ComputationStatus` 增加 `controller_type` 和 `controller_success`；旧 `mpc_success` 保留为兼容别名。
+`solve_seconds` 对 GEO 表示一次控制计算耗时，不表示优化求解；50 次预热、8 ms 预算和100 Hz周期不变。
+录包汇总增加 `controller` 统计及 controller_types，旧 `mpc` JSON 键标记为弃用别名。
+修改消息后必须统一重编译涉及的机器。选择 GEO 仍保留 acados 编译依赖，实际实机验证范围见 README。
+
 **当前入口与六节点信号流（2026-09-22，实现后）。**
 
 `launch.sh` 调用源码 `flight.launch.py`；`ros2 launch agi_ros2 flight.launch.py` 调用安装包版本。
 [load_profile](/home/sia/agilicious_internal-main/agi_ros2/launch/runtime_launch.py:34) 根据自身目录定位同包 `config/`，
-选择 simulation/hardware；显式 `runtime_config` 则使用指定文件。[assemble](/home/sia/agilicious_internal-main/agi_ros2/launch/runtime_launch.py:87)
+选择 simulation/hardware；显式 `runtime_config` 则使用指定文件。[assemble](/home/sia/agilicious_internal-main/agi_ros2/launch/runtime_launch.py:138)
 验证模式、模型和两条 UART，把融合、传感器、导航、证据段传成只读 ROS 参数，给核心节点传同一配置绝对路径。
-[loadRuntimeConfig](/home/sia/agilicious_internal-main/agi_ros2/include/agi_ros2/runtime_config.h:97)
-加载 profile；[createPilotParams](/home/sia/agilicious_internal-main/agi_ros2/include/agi_ros2/runtime_config.h:83)
+[loadRuntimeConfig](/home/sia/agilicious_internal-main/agi_ros2/include/agi_ros2/runtime_config.h:144)
+加载 profile；[createPilotParams](/home/sia/agilicious_internal-main/agi_ros2/include/agi_ros2/runtime_config.h:127)
 与 [PilotParams::load](/home/sia/agilicious_internal-main/agilib/src/pilot/pilot_params.cpp:67)
-读取内嵌机体和模块参数，[createPipeline](/home/sia/agilicious_internal-main/agilib/src/pilot/pilot_params.cpp:271)
-构造 External estimator/bridge、Time sampler 和 MPC。硬件默认 shadow；无模型用 diagnostic，不会构造 MPC。
+读取内嵌机体和模块参数，[createPipeline](/home/sia/agilicious_internal-main/agilib/src/pilot/pilot_params.cpp:287)
+构造 External estimator/bridge、Time sampler 和所选 MPC/GEO。硬件默认 shadow；无模型用 diagnostic，不构造控制器。
 
 | 当前硬件节点 | 触发、数据变换与输出 | 当前代码入口 |
 |---|---|---|
 | `mavlink_sensor_node` | UART 定时读写、TIMESYNC；HIGHRES_IMU 的 FRD→FLU，GPS_RAW_INT/GLOBAL_POSITION_INT 按设备时间配对，输出 `/sensors/imu` 和原子 `/sensors/navigation` | [tick](/home/sia/agilicious_internal-main/agi_ros2/src/mavlink_sensor_node.cpp:206)、[handle](/home/sia/agilicious_internal-main/agi_ros2/src/mavlink_sensor_node.cpp:349)、[pairGps](/home/sia/agilicious_internal-main/agi_ros2/src/mavlink_sensor_node.cpp:460) |
 | `gnss_adapter.py` | 导航消息回调确认航向/高度/精度，静止建立原点，WGS84/MSL→本地 ENU；输出 `/sensors/local_navigation`、原点和原因 | [on_navigation](/home/sia/agilicious_internal-main/agi_ros2/scripts/gnss_adapter.py:79) |
 | `state_fusion_node` | 导航回调缓存或撤销观测；IMU 回调做未 ARM 静止初始化、EKF 传播/延迟导航更新/质量检查，输出 `/fused_state`；无效导航事件单独触发撤销发布 | [onNavigation](/home/sia/agilicious_internal-main/agi_ros2/src/state_fusion_node.cpp:152)、[onImu](/home/sia/agilicious_internal-main/agi_ros2/src/state_fusion_node.cpp:225)、[publishState](/home/sia/agilicious_internal-main/agi_ros2/src/state_fusion_node.cpp:332) |
-| `control_node` | `/fused_state` 回调缓存；100 Hz tick 读取状态、实体授权、health 和 output_status，驱动预热/参考/MPC/授权；输出 `/control_command`、`/reference`、`/computation_status` | [onState](/home/sia/agilicious_internal-main/agi_ros2/src/control_node.cpp:103)、[tick](/home/sia/agilicious_internal-main/agi_ros2/src/control_node.cpp:124)、[publishDecision](/home/sia/agilicious_internal-main/agi_ros2/src/control_node.cpp:192) |
+| `control_node` | `/fused_state` 回调缓存；100 Hz tick 读取状态、实体授权、health 和 output_status，驱动预热/参考/所选控制器/授权；输出 `/control_command`、`/reference`、`/computation_status` | [onState](/home/sia/agilicious_internal-main/agi_ros2/src/control_node.cpp:105)、[tick](/home/sia/agilicious_internal-main/agi_ros2/src/control_node.cpp:126)、[publishDecision](/home/sia/agilicious_internal-main/agi_ros2/src/control_node.cpp:194) |
 | `command_output_node` | 命令回调复查本地固定策略、会话/年龄，推力查表和 FLU→FRD rates→AETR；满足条件且非 shadow 才写 MSP。1 ms 遥测调度，5 ms 独立 watchdog，输出 MSP 事件及 `/output_status` | [onCommand](/home/sia/agilicious_internal-main/agi_ros2/src/command_output_node.cpp:198)、[processOutput](/home/sia/agilicious_internal-main/agi_ros2/src/command_output_node.cpp:248)、[sendOverride](/home/sia/agilicious_internal-main/agilib/src/bridge/betaflight/betaflight_msp_bridge.cpp:262)、[watchdog](/home/sia/agilicious_internal-main/agi_ros2/src/command_output_node.cpp:370) |
 | `msp_evidence.py` | 接收带请求时间的 MSP RC/STATUS_EX/配置/电池事件，结合 fused_state/output_status；20 ms 周期及回读事件生成 `/authority`、`/health` 和解码诊断，供控制与输出分别检查 | [MspTelemetry::tick](/home/sia/agilicious_internal-main/agi_ros2/src/msp_telemetry.cpp:73)、[on_event](/home/sia/agilicious_internal-main/agi_ros2/scripts/msp_evidence.py:81)、[publish](/home/sia/agilicious_internal-main/agi_ros2/scripts/msp_evidence.py:98) |
 
 计算链的输入不是再次融合的 IMU：控制构造时仅在非空路径调用
-[CSV 读取](/home/sia/agilicious_internal-main/agi_ros2/src/control_node.cpp:69)，随后
+[CSV 读取](/home/sia/agilicious_internal-main/agi_ros2/src/control_node.cpp:71)，随后
 [HardwarePilot::tick](/home/sia/agilicious_internal-main/agilib/src/pilot/hardware_pilot.cpp:74)
 把最新融合状态交给 [FeedthroughEstimator](/home/sia/agilicious_internal-main/agilib/src/estimator/feedthrough/feedthrough_estimator.cpp:39)，
 经 [Pilot::runPipelineChecked](/home/sia/agilicious_internal-main/agilib/src/pilot/pilot.cpp:61) →
@@ -72,7 +100,7 @@ CM5 时间预算、真实 UART/GNSS 质量、飞控停流回退和悬停飞行�
 
 仿真仍是三个核心节点，Gazebo/适配器提供 `/clock`、IMU/RTK/health，sim_rc 提供 authority，输出改用 UDP。
 hardware diagnostic 以 MSP monitor 替换输出并省去控制，保留传感器/融合/证据诊断。
-[launch 退出联动](/home/sia/agilicious_internal-main/agi_ros2/launch/runtime_launch.py:192)
+[launch 退出联动](/home/sia/agilicious_internal-main/agi_ros2/launch/runtime_launch.py:245)
 使任一组件或 recorder 退出时关闭整组；停止 Override 后实体接收机/failsafe 决定实际回退行为。
 
 ---

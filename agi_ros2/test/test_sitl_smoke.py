@@ -12,6 +12,7 @@ Example after sourcing ROS and install/agi_ros2/local_setup.bash:
     python3 agi_ros2/test/test_sitl_smoke.py
 """
 import json
+import argparse
 import os
 import signal
 import subprocess
@@ -24,6 +25,9 @@ from rclpy.parameter import Parameter
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--controller', choices=('MPC', 'GEO'), default='MPC')
+    args = parser.parse_args()
     root = Path(__file__).resolve().parents[2]
     logs = Path(os.environ.get('AGI_SITL_TEST_LOG_DIR', '/tmp/agi_sitl_hardware_adaptation'))
     logs.mkdir(exist_ok=True)
@@ -40,8 +44,10 @@ def main():
     streams = []
     try:
         for name, command in [
-            ('sim', ['python3', 'betaflight_sitl/run.py', '--no-gazebo', '--no-build', '--ros2', '--duration', '30']),
-            ('flight', ['ros2', 'launch', str(root/'agi_ros2/launch/flight.launch.py'), 'record_bag:=false'])]:
+            ('sim', ['python3', 'betaflight_sitl/run.py', '--no-gazebo', '--no-build', '--ros2', '--duration', '30',
+                     '--controller', args.controller.lower()]),
+            ('flight', ['ros2', 'launch', str(root/'agi_ros2/launch/flight.launch.py'), 'record_bag:=false',
+                        'controller:=' + args.controller])]:
             stream = (logs/(name+'.log')).open('w')
             streams.append(stream)
             processes.append(subprocess.Popen(command, cwd=root, stdout=stream, stderr=subprocess.STDOUT, start_new_session=True))
@@ -76,14 +82,17 @@ def main():
         commands = received['control_command']
         output = received['output_status']
         active = [c for c in commands if c.permit_override]
-        summary = {'stage': stage, 'counts': {k:len(v) for k,v in received.items()},
+        summary = {'controller': args.controller, 'stage': stage, 'counts': {k:len(v) for k,v in received.items()},
                    'active_commands': len(active), 'output_was_active': any(s.override_active for s in output),
+                   'controller_matches': bool(received['computation_status']) and all(
+                       s.controller_type == args.controller for s in received['computation_status']),
                    'final_output_active': output[-1].override_active if output else None,
                    'last_compute_reason': received['computation_status'][-1].reason if received['computation_status'] else None,
                    'process_codes': [p.poll() for p in processes]}
         (logs/'result.json').write_text(json.dumps(summary, indent=2))
         print(json.dumps(summary, indent=2))
-        if stage != 'kill' or not active or not summary['output_was_active'] or summary['final_output_active']:
+        if (stage != 'kill' or not active or not summary['output_was_active'] or summary['final_output_active'] or
+                not summary['controller_matches']):
             raise SystemExit(1)
     finally:
         for p in reversed(processes):

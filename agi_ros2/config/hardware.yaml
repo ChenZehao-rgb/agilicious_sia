@@ -19,35 +19,53 @@ pilot:
     sampler:
       type: Time
     controller:
+      # Select MPC or GEO here, or override with controller:=GEO at launch.
       type: MPC
-      parameters:
-        timing: true
-        threaded_preparation: false
-        Q_pos_x: 200
-        Q_pos_y: 200
-        Q_pos_z: 500
-        Q_att_x: 5
-        Q_att_y: 5
-        Q_att_z: 200
-        Q_vel: 1.0
-        Q_omega_xy: 1.0
-        Q_omega_z: 1.0
-        R: 6.0
-        exp_decay: 1.0
-        max_wait_time_before_preparation: 0.1
-        max_wait_time_after_preparation: 0.01
-        cog_enable: false
-        cog_abs_velocity_limit: 0.25
-        cog_abs_omega_limit: 0.5
-        cog_rel_hover_thrust_limit: 0.5
-        cog_height_limit: 0.5
-        Q_cog_omega: 1e0
-        Q_cog_legnths: 1e-9
-        Q_cog_omega_init: 1e2
-        Q_cog_legnths_init: 1e-10
-        R_cog: 0.1
+      parameter_sets:
+        MPC:
+          timing: true
+          threaded_preparation: false
+          Q_pos_x: 200
+          Q_pos_y: 200
+          Q_pos_z: 500
+          Q_att_x: 5
+          Q_att_y: 5
+          Q_att_z: 200
+          Q_vel: 1.0
+          Q_omega_xy: 1.0
+          Q_omega_z: 1.0
+          R: 6.0
+          exp_decay: 1.0
+          max_wait_time_before_preparation: 0.1
+          max_wait_time_after_preparation: 0.01
+          cog_enable: false
+          cog_abs_velocity_limit: 0.25
+          cog_abs_omega_limit: 0.5
+          cog_rel_hover_thrust_limit: 0.5
+          cog_height_limit: 0.5
+          Q_cog_omega: 1e0
+          Q_cog_legnths: 1e-9
+          Q_cog_omega_init: 1e2
+          Q_cog_legnths_init: 1e-10
+          R_cog: 0.1
+        # Illustrative conservative starting gains, not validated on the real vehicle.
+        # Tune and verify in shadow and on the CM5 before allowing hardware output.
+        GEO:
+          drag_compensation: false
+          kpacc: [2.0, 2.0, 4.0]
+          kdacc: [2.0, 2.0, 3.0]
+          kpatt_z: 2.0
+          kpatt_xy: 4.0
+          kprate: [0.0, 0.0, 0.0]
+          p_err_max: [0.5, 0.5, 0.5]
+          v_err_max: [0.75, 0.75, 0.75]
+          filter_sampling_frequency: 100
+          filter_cutoff_frequency: 10
+          max_tilt_rad: 0.35
     bridge:
       type: External
+  # GEO requires mass, omega_max and thrust_min/max; MPC also requires the rotor/inertia model.
+  # thrust_min/max remain per-motor equivalent limits for both controllers.
   quadrotor:
     mass: 0.0
     tbm_fr: [0.0, 0.0, 0.0]

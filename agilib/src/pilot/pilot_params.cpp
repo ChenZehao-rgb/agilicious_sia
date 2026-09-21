@@ -65,6 +65,10 @@ PilotParams::PilotParams(const fs::path& filename, const fs::path& directory,
 }
 
 bool PilotParams::load(const Yaml& yaml) {
+	return load(yaml, "");
+}
+
+bool PilotParams::load(const Yaml& yaml, const std::string& controller_override) {
   if (directory_.empty()) {
     static constexpr int PATH_LEN = 2048;
     char path_cstr[PATH_LEN];
@@ -86,7 +90,7 @@ bool PilotParams::load(const Yaml& yaml) {
     }
   }
 
-  pipeline_cfg_.load(yaml["pipeline"], directory_);
+	pipeline_cfg_.load(yaml["pipeline"], directory_, controller_override);
 
   // Load Guard Parameters
   if (guard_cfg_.loadIfUndefined(yaml["guard"])) {
@@ -98,7 +102,8 @@ bool PilotParams::load(const Yaml& yaml) {
   // Quadrotor
 	if (yaml["quadrotor"].isNode()) {
 		if (!quad_file_.empty()) throw ParameterException("Inline quadrotor cannot be combined with a quadrotor file override");
-		if (!quad_.load(yaml["quadrotor"]) || !quad_.valid()) throw ParameterException("Invalid inline quadrotor parameters");
+		const bool model_loaded = usesRatesThrustModel() ? quad_.loadRatesThrust(yaml["quadrotor"]) : quad_.load(yaml["quadrotor"]);
+		if (!model_loaded || !valid()) throw ParameterException("Invalid inline quadrotor parameters");
 	} else {
 		quad_file_ = getQuadFile(yaml, quad_file_, directory_);
 		if (!quad_.load(quad_file_) || !quad_.valid()) {
@@ -128,7 +133,14 @@ bool PilotParams::load(const Yaml& yaml) {
   return valid();
 }
 
-bool PilotParams::valid() const { return quad_.valid(); }
+bool PilotParams::usesRatesThrustModel() const {
+	return pipeline_cfg_.outer_controller_cfg.type == "GEO" && pipeline_cfg_.estimator_cfg.type == "External" &&
+	       pipeline_cfg_.bridge_cfg.type == "External" &&
+	       (pipeline_cfg_.inner_controller_cfg.type.empty() || pipeline_cfg_.inner_controller_cfg.type == "None") &&
+	       (guard_cfg_.type.empty() || guard_cfg_.type == "None");
+}
+
+bool PilotParams::valid() const { return usesRatesThrustModel() ? quad_.validRatesThrust() : quad_.valid(); }
 
 bool PilotParams::createEstimator(std::shared_ptr<EstimatorBase>& estimator,
                                   const ModuleConfig& config) const {
@@ -183,7 +195,11 @@ bool PilotParams::createController(std::shared_ptr<ControllerBase>& controller,
       std::shared_ptr<GeometricControllerParams> params =
         std::make_shared<GeometricControllerParams>();
 			if (!loadModuleParameters(*params, config)) throw ParameterException();
-      controller = std::make_shared<GeometricController>(quad_, params);
+			if (usesRatesThrustModel() && params->drag_compensation_) {
+				throw ParameterException(
+				        "External GEO rate/thrust control has no motor RPM; drag_compensation must be false");
+			}
+			controller = std::make_shared<GeometricController>(quad_, params, dt_min_);
       return true;
     } else if (config.type == "PID") {
       std::shared_ptr<PidParameters> params = std::make_shared<PidParameters>();

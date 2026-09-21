@@ -12,7 +12,7 @@ Gazebo、Betaflight SITL 和传感器适配器，CM5、Jetson 或开发机运行
                                                            ↓
                                                   state_fusion_node
                                                            ↓ /fused_state
-                                                   control_node / MPC
+                                                control_node / MPC 或 GEO
                                                            ↓ /control_command
                                                   command_output_node
                                              仿真 UDP / 实机 UART MSP
@@ -23,7 +23,7 @@ Gazebo、Betaflight SITL 和传感器适配器，CM5、Jetson 或开发机运行
                              ↑ 配置/模式/电池       ↓ 同时供控制与输出独立复查
 ```
 
-本次软件适配的目标是**先人工起飞，再通过实体 AUTO 开关捕获当前位置和航向、执行 MPC 悬停**。
+本次软件适配的目标是**先人工起飞，再通过实体 AUTO 开关捕获当前位置和航向、执行 MPC 或 GEO 悬停**。
 入口不自动 ARM、不自动起飞或降落。默认空轨迹；`hardware.yaml` 默认 `shadow_only: true`，
 只计算与录包、不发送控制帧。实机机体、精度门限、围栏和推力数据需要填入实测值，
 仓库中的零值是未配置标记，不是飞行参数。历史 SITL/伪串口结果不代表当前固件已刷入飞控，
@@ -56,7 +56,7 @@ ARM64 默认不构建 Gazebo 适配器，核心三节点和 MAVLink/MSP 节点�
 - `ros2 launch agi_ros2 flight.launch.py` 加载安装包内 launch 和同包 `config/`；修改源码后重新安装。
 - `runtime_config:=/absolute/path/simulation.yaml` 可以选择另一份同结构配置；启动日志打印最终绝对路径。
   相对轨迹、推力 CSV 和 bag 路径都相对该配置所在目录解析。
-- 配置内直接包含 Pilot、机体、MPC、桥接和融合参数，不生成拆分的 Pilot/MPC/quad YAML。
+- 配置内直接包含 Pilot、机体、MPC/GEO、桥接和融合参数，不生成拆分的 Pilot/controller/quad YAML。
   `params_dir/pilot_config/bridge_config` 保留给旧直接节点入口，统一 launch 拒绝与新配置混用。
 - `flight.launch.py`、`shadow.launch.py`、`msp.launch.py`、`mavlink_sensors.launch.py` 共享同一组装代码；
   后三者是诊断/影子薄封装，不拥有第三套参数。旧 `agilib/params` 继续供 standalone/历史工具使用。
@@ -66,7 +66,7 @@ ARM64 默认不构建 Gazebo 适配器，核心三节点和 MAVLink/MSP 节点�
 | 段 | 内容及读取者 |
 |---|---|
 | `flight` | 轨迹、推力表、shadow/diagnostic 开关、SITL 延迟实验、录包；launch 读取 |
-| `pilot` | 内嵌 `quadrotor` 和 `pipeline.controller.parameters`；控制器加载，输出端读取同一机体 |
+| `pilot` | 内嵌 `quadrotor` 和 `pipeline.controller.parameter_sets`；按 type 选 MPC/GEO 参数，输出端采用相同模型校验 |
 | `bridge` | ACTUAL rates/deadband/min_check；输出端映射、MSP 配置回读和 SITL EEPROM 共用 |
 | `fusion` | IMU 噪声、初始化及导航质量门限；launch 传给融合节点 |
 | `output` | MSP UART 和查询周期；控制输出/只读 MSP 节点 |
@@ -74,6 +74,61 @@ ARM64 默认不构建 Gazebo 适配器，核心三节点和 MAVLink/MSP 节点�
 | `evidence` | 实体 AUX/RX map、PID/rate profile、围栏和电池时效 |
 
 数组请写为 `[x, y, z]`；Agilib 的现有 YAML 读取器不支持 PyYAML 默认的无额外缩进多行数组。
+
+## 选择 MPC 或 GEO，以及对应参数
+
+两份配置各自保留两组控制参数。`pilot.pipeline.controller.type` 是默认选择，仓库默认仍为 `MPC`；
+`parameter_sets.MPC` 保存 MPC 权重，`parameter_sets.GEO` 保存 GEO 增益和倾角限制。
+改变 type 时自动选取同名参数组，不需要手动改文件路径、复制参数或增加第三份 YAML。
+
+```bash
+# 仿真，任选一个控制入口；模拟器仍由 run.py 单独运行。
+./agi_ros2/scripts/launch.sh controller:=GEO
+./agi_ros2/scripts/launch.sh controller:=MPC
+
+# 实机 GEO 影子计算；硬件仍默认 shadow，不发送控制帧。
+./agi_ros2/scripts/launch.sh mode:=hardware controller:=GEO
+
+# 参数与台架验证完成后，选择控制器并显式允许输出。
+./agi_ros2/scripts/launch.sh mode:=hardware controller:=GEO shadow_only:=false
+
+# 安装入口使用相同选项，读取安装包内配置。
+ros2 launch agi_ros2 flight.launch.py mode:=hardware controller:=GEO
+```
+
+不传 `controller` 就使用配置中的 type；启动覆盖支持 `mpc/geo` 或 `MPC/GEO`。
+控制与输出节点收到同一个选择，启动日志打印最终绝对路径和所选参数组。
+`controller` 是只读启动参数，运行中 `ros2 param set` 会被拒绝；更换控制器必须停止原进程后重新启动，
+重新完成预热和 AUTO low→high。禁止同时运行两个 flight 控制入口。
+`run.py --ros2 --controller geo` 只把所选控制器写入其打印的独立 flight 启动命令，不代替启动控制节点。
+
+GEO 使用位置/速度反馈、参考加速度和 yaw，输出与 MPC 相同的机体角速度＋质量归一化推力。
+融合、参考捕获、MSP 映射、导航准入、50 次健康计算预热、100 Hz、8 ms 计算预算及输出期限共用。
+它限制期望推力方向的倾角；这个限制不代表实际机体倾角在扰动下绝不会超过该值。
+
+| GEO 参数，位于 `pilot.pipeline.controller.parameter_sets.GEO` | 含义 |
+|---|---|
+| `kpacc: [x,y,z]` | 位置误差到加速度增益，s⁻² |
+| `kdacc: [x,y,z]` | 速度误差到加速度增益，s⁻¹ |
+| `kpatt_xy`、`kpatt_z` | 姿态误差到 roll/pitch、yaw 机体角速度的增益，s⁻¹ |
+| `p_err_max`、`v_err_max` | 逐轴参与反馈的位置误差上限 m、速度误差上限 m/s；不是围栏 |
+| `max_tilt_rad` | 期望推力方向相对世界竖直轴的最大倾角，rad，必须在 `(0, π/2)` |
+| `drag_compensation` | 当前 ROS2 路径没有电机 RPM，必须为 false；true 拒绝启动 |
+| `filter_sampling_frequency`、`filter_cutoff_frequency` | 保留滤波参数，Hz；关闭补偿的最小模型路径不运行电机/加速度滤波 |
+| `kprate` | 保留旧接口兼容；当前 Betaflight rates 输出不使用该增益，也不替代飞控 PID |
+
+GEO 的机体最小数据为 `mass`、`omega_max`、`thrust_min/max`。`omega_max` 为逐轴 rad/s；
+推力字段继续沿用单电机等效 N 的单位，GEO 总推力被限制在 `[4*thrust_min, 4*thrust_max]` N。
+实机请根据标定表和允许工作范围填写，而非直接把电机规格最大值当作测试范围；
+整个总推力范围应落在计划带载电压下的标定包络内，输出端仍拒绝表外值、不外推。
+惯量、力臂、kappa、电机转速/时间常数/推力多项式在 GEO 最小模型中不加载，可以暂留零或省略；
+内部将这些未使用项标记为未知，切回 MPC 会重新要求完整模型，不能自动套入默认机体。
+
+GEO 仍要求真实质量、RC 推力表、飞控 rates 回读、导航/融合质量、围栏及实体授权。
+配置里的 GEO 增益是调试起点，未通过本机体飞行验收；当前 rates 输出没有 jerk/角速度前馈和位置积分。
+零/向下推力方向、无效四元数和姿态计算奇点会拒绝本周期并撤权。
+MPC 参数保留在 `parameter_sets.MPC`；其当前预测仍不包含电机动态。
+选择 GEO 不会移除现有 acados 构建依赖。消息增加了控制器诊断字段，仿真机和伴随计算机需统一重编译。
 
 ## SITL：保持分层部署
 
@@ -146,11 +201,11 @@ hardware 模式拒绝启用此开关。旧独立控制器仍可用 `run.py --no-
    ./agi_ros2/scripts/launch.sh mode:=hardware diagnostic_only:=true
    ```
 
-   启动 MAVLink、GNSS adapter、融合、MSP monitor、证据节点，不构造 MPC，不启动输出节点，
+   启动 MAVLink、GNSS adapter、融合、MSP monitor、证据节点，不构造控制器、不启动输出节点，
    不发送 MSP code 200。原始 IMU/GPS/MSP 可先读；航向、高度、配置或静止初始化条件未满足时，
    本地导航/融合会继续报告等待原因。此时没有 output_status，health 不会假装整条飞行链已就绪。
 
-2. **真实模型填完后运行影子 MPC：**
+2. **所选控制器的真实模型填完后运行影子计算：**
 
    ```bash
    ./agi_ros2/scripts/launch.sh mode:=hardware
@@ -169,7 +224,7 @@ hardware 模式拒绝启用此开关。旧独立控制器仍可用 `run.py --no-
    ```
 
    这仅允许程序在证据满足时发送四通道 AETR，不会 ARM。静止、未解锁时先完成原点和 IMU 初始化；
-   观察导航/估计/配置/推力/围栏就绪以及 50 个健康 MPC 预热周期；人工起飞到目标高度，
+   观察导航/估计/配置/推力/围栏就绪以及 50 个健康控制预热周期；人工起飞到目标高度，
    在实体 AUTO low 状态确认 AUTO_STANDBY 后切 high。空轨迹捕获当前三维位置和 yaw 悬停。
    退出 AUTO、KILL、失联、导航/控制/输出故障时停止 Override；恢复需新的健康 low→high。
    实体接收机的当前 AETR、飞控模式及 failsafe 决定停止 Override 后的真实行为。
@@ -181,6 +236,8 @@ hardware 模式拒绝启用此开关。旧独立控制器仍可用 `run.py --no-
 ## 实机配置必须填写的数据
 
 不能把零占位替换为 Iris 参数来绕过检查。启动聚合报告不合法模型字段；真实模型缺失时请使用 diagnostic。
+下表列出两种控制器的完整数据集；GEO 的机体必填项只有质量、机体角速度限制及推力限制，
+其余机体模型项按上节说明处理。串口、飞控、导航、标定及授权数据仍然共用。
 
 | 位置 | 单位/来源 |
 |---|---|
@@ -190,7 +247,7 @@ hardware 模式拒绝启用此开关。旧独立控制器仍可用 `run.py --no-
 | `motor_omega_min/max`、`motor_tau` | 电机角速度 rad/s、响应时间常数 s；需对应实机电机/桨模型 |
 | `thrust_map` | 单电机 `F = a*ω²+b*ω+c`，F 为 N、ω 为 rad/s；三个系数 |
 | `kappa`、`thrust_min/max` | 反扭矩/推力比（m）、**每电机**推力界限（N） |
-| `omega_max` | MPC 允许机体角速度上限，rad/s；不能超过实际 rate/profile/机体能力 |
+| `omega_max` | MPC 约束/GEO 输出限幅的机体角速度上限，rad/s；不能超过实际 rate/profile/机体能力 |
 | `aero_coeff_1/aero_coeff_3/aero_coeff_h` | 当前全零表示暂忽略气动阻力的模型假设，不是已辨识参数；仅以低速悬停为本轮目标 |
 | `bridge.center_rate_deg_s/max_rate_deg_s/expo_percent` | FC ACTUAL rate 三轴参数，deg/s、deg/s、%；必须与当前回读 profile 一致 |
 | `bridge.deadband/yaw_deadband/min_check` | FC RC deadband/min_check 原始设置；readback 精确匹配 |
@@ -320,7 +377,7 @@ TIMESYNC 是近似时钟对齐，仍包括 FC 滤波和 GPS 串口/解算延迟�
 失效事件使用本地检测时间，不刷新最后有效 GPS/IMU 的采集时间；完全停流仍由年龄检查处理。
 实际撤销包含 ROS 调度、消息传递与飞控回退时间，不能解释为物理零延迟。
 
-控制定时器为 100 Hz：SITL 用 ROS 仿真时钟，hardware 用墙钟；MPC 计算耗时始终用单调墙钟。
+控制定时器为 100 Hz：SITL 用 ROS 仿真时钟，hardware 用墙钟；两种控制器的计算耗时都用单调墙钟。
 默认保持 10 ms 状态/IMU、300 ms 导航、100 ms RC、8 ms 计算预算和 50 个健康预热周期。
 输出还检查 25 ms 命令年龄；SITL 有独立 250 ms 墙钟停流保护。消息证据时间不会在转发/看门狗时刷新。
 串口独占、进程重启、融合重置、旧导航会话/旧命令、时钟回退都会影响就绪或撤销授权。
@@ -332,7 +389,7 @@ TIMESYNC 是近似时钟对齐，仍包括 FC 滤波和 GPS 串口/解算延迟�
 | `/navigation/status`、`/navigation/origin` | 原点、高度/航向声明、精度未知或超限原因 |
 | `/fused_state` | initialized、readiness_reason、navigation_accepted_updates 连续合格次数、拒绝计数、后验协方差及其时间戳 |
 | `/msp/decoded_state`、`/health/status` | 配置、实体 AUX、profile、模式冲突、电压、50 ms timeout 回读 |
-| `/computation_status` | MPC 结果、预热、参考是否活动、参考时间、solve_seconds、cycle_seconds 和各输入年龄 |
+| `/computation_status` | controller_type/controller_success、预热、参考状态/时间、solve_seconds、cycle_seconds 和输入年龄；mpc_success 为弃用兼容别名 |
 | `/output_status` | override_active、当前 reason、保留的 last_fault、write_seconds、command_age |
 | `/reference`、`/state` | 实际采样参考和估计状态；`/ground_truth` 仅供仿真评估 |
 

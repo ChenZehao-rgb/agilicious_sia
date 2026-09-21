@@ -27,6 +27,8 @@ class BagTests(unittest.TestCase):
                 status = ComputationStatus()
                 status.header.stamp.sec = 10 + i
                 status.mpc_success = True
+                status.controller_type = 'GEO'
+                status.controller_success = True
                 status.solve_seconds = .002
                 status.warm_cycles = 50
                 writer.write('/computation_status', serialize_message(status), (10+i)*1000000000+1000000)
@@ -41,6 +43,8 @@ class BagTests(unittest.TestCase):
             del writer
             report = summarize(bag)
             self.assertEqual(report['mpc']['successes'], 3)
+            self.assertEqual(report['controller']['successes'], 3)
+            self.assertEqual(report['controller']['controller_types'], {'GEO': 3})
             self.assertEqual(report['output_isolation']['code200_tx_events'], 1)
             self.assertEqual(report['origins'][0]['altitude_reference'], 'msl')
             self.assertEqual(report['streams']['/computation_status']['unique_rate_hz'], 1.)

@@ -3,7 +3,7 @@
 # An empty trajectory captures the current hover point on authorized AUTO entry.
 mode: sitl
 flight:
-  trajectory: ''
+  trajectory: '/home/sia/agilicious_internal-main/miscellaneous/datasets/ref_trajs/open_source/HELIX_FWD20_50mps.csv'
   thrust_table: ''
   sitl_delay_test: false
   shadow_only: false
@@ -17,33 +17,48 @@ pilot:
     sampler:
       type: Time
     controller:
+      # Select MPC or GEO here, or override with controller:=GEO at launch.
       type: MPC
-      parameters:
-        timing: true
-        threaded_preparation: false
-        Q_pos_x: 300
-        Q_pos_y: 300
-        Q_pos_z: 650
-        Q_att_x: 5
-        Q_att_y: 5
-        Q_att_z: 200
-        Q_vel: 3.0
-        Q_omega_xy: 10.0
-        Q_omega_z: 1.0
-        R: 6.0
-        exp_decay: 1.0
-        max_wait_time_before_preparation: 0.1
-        max_wait_time_after_preparation: 0.01
-        cog_enable: false
-        cog_abs_velocity_limit: 0.25
-        cog_abs_omega_limit: 0.5
-        cog_rel_hover_thrust_limit: 0.5
-        cog_height_limit: 0.5
-        Q_cog_omega: 1e0
-        Q_cog_legnths: 1e-9
-        Q_cog_omega_init: 1e2
-        Q_cog_legnths_init: 1e-10
-        R_cog: 0.1
+      parameter_sets:
+        MPC:
+          timing: true
+          threaded_preparation: false
+          Q_pos_x: 300
+          Q_pos_y: 300
+          Q_pos_z: 650
+          Q_att_x: 5
+          Q_att_y: 5
+          Q_att_z: 200
+          Q_vel: 3.0
+          Q_omega_xy: 10.0
+          Q_omega_z: 1.0
+          R: 6.0
+          exp_decay: 1.0
+          max_wait_time_before_preparation: 0.1
+          max_wait_time_after_preparation: 0.01
+          cog_enable: false
+          cog_abs_velocity_limit: 0.25
+          cog_abs_omega_limit: 0.5
+          cog_rel_hover_thrust_limit: 0.5
+          cog_height_limit: 0.5
+          Q_cog_omega: 1e0
+          Q_cog_legnths: 1e-9
+          Q_cog_omega_init: 1e2
+          Q_cog_legnths_init: 1e-10
+          R_cog: 0.1
+        # Initial simulation gains from geo_betaflight_sitl.yaml; no separate runtime file.
+        GEO:
+          drag_compensation: false
+          kpacc: [4.0, 4.0, 6.0]
+          kdacc: [3.0, 3.0, 4.0]
+          kpatt_z: 3.0
+          kpatt_xy: 8.0
+          kprate: [0.0, 0.0, 0.0]
+          p_err_max: [0.6, 0.6, 0.6]
+          v_err_max: [1.0, 1.0, 1.0]
+          filter_sampling_frequency: 100
+          filter_cutoff_frequency: 10
+          max_tilt_rad: 0.35
     bridge:
       type: External
   quadrotor:

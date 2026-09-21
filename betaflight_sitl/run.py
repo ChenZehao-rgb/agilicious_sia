@@ -29,6 +29,7 @@ import configparser
 import math
 import os
 import re
+import shlex
 import shutil
 import signal
 import socket
@@ -78,6 +79,34 @@ def nonnegative_seconds(value: str) -> float:
     if not math.isfinite(seconds) or seconds < 0.0:
         raise argparse.ArgumentTypeError("must be a finite value >= 0")
     return seconds
+
+
+def ros2_flight_selection(runtime_config: Path, controller_override: Optional[str] = None) -> tuple[str, list[str]]:
+    """Resolve the shared controller choice and the separate flight launch arguments."""
+    import yaml
+
+    path = runtime_config.expanduser().resolve()
+    profile = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(profile, dict) or profile.get("mode") != "sitl":
+        raise ValueError("ROS 2 simulator requires a simulation runtime profile")
+    configuration = profile.get("pilot", {}).get("pipeline", {}).get("controller", {})
+    if not isinstance(configuration, dict) or configuration.get("type") not in ("MPC", "GEO"):
+        raise ValueError("pilot.pipeline.controller.type must be MPC or GEO")
+    selected = controller_override.upper() if controller_override else configuration["type"]
+    if selected not in ("MPC", "GEO"):
+        raise ValueError("controller must be MPC or GEO")
+    if "parameter_sets" in configuration:
+        sets = configuration["parameter_sets"]
+        if "parameters" in configuration or "file" in configuration:
+            raise ValueError("controller parameter_sets cannot be combined with parameters or file")
+        if not isinstance(sets, dict) or not isinstance(sets.get(selected), dict) or not sets[selected]:
+            raise ValueError("Missing controller parameter set: " + selected)
+    elif selected != configuration["type"]:
+        raise ValueError("Changing controller requires parameter_sets for the selected controller")
+    arguments = ["runtime_config:=" + str(path)]
+    if controller_override is not None:
+        arguments.append("controller:=" + selected)
+    return selected, arguments
 
 
 def prepend_env(env: Dict[str, str], key: str, path: Path) -> None:
@@ -640,9 +669,10 @@ def main() -> int:
     )
     parser.add_argument(
         "--controller",
+        type=str.lower,
         choices=("mpc", "geo"),
-        default="mpc",
-        help="Agilib outer controller (default: mpc)",
+        default=None,
+        help="outer controller override; ROS 2 defaults to the runtime profile, standalone defaults to mpc",
     )
     # 真实传感链路模拟：位置/速度走 MockVIO 模拟的 RTK，姿态/角速度来自机载
     # IMU（Gazebo 里带噪声的独立传感器）。默认关闭，保持 Gazebo 真值直通行为。
@@ -697,7 +727,7 @@ def main() -> int:
     if not math.isfinite(args.msp_rate) or args.msp_rate <= 0:
         parser.error("--msp-rate must be finite and > 0")
 
-    if args.ros2 and (args.controller != "mpc" or args.log is not None or args.trajectory_source_mass != 0):
+    if args.ros2 and (args.log is not None or args.trajectory_source_mass != 0):
         parser.error("ROS 2 flight settings belong in agi_ros2/config/simulation.yaml")
     if args.ros2 and (args.arm or args.trajectory is not None or args.rtk_msp):
         parser.error("configure flight in agi_ros2/config/simulation.yaml; ARM/AUTO use ROS receiver inputs")
@@ -714,8 +744,11 @@ def main() -> int:
     params = REPO_ROOT / "agilib" / "params"
     bridge_config = ((args.runtime_config or REPO_ROOT / "agi_ros2/config/simulation.yaml").expanduser().resolve()
                      if args.ros2 else params / "betaflight_udp.yaml")
+    selected_controller = (args.controller or "mpc").upper()
+    flight_arguments = []
     if args.ros2:
         expected_betaflight_settings(bridge_config)  # Validate before generating runtime assets.
+        selected_controller, flight_arguments = ros2_flight_selection(bridge_config, args.controller)
         log(f"ROS 2 runtime configuration: {bridge_config}")
     # 生成模型 / 世界文件的叠加副本，同样不改动 Aeroloop 原始资源。
     # 把aeroloop中的世界和模型复制到runtime/assets中，并返回叠加后的世界文件路径
@@ -785,7 +818,7 @@ def main() -> int:
         betaloop_cmd.append("--gazebo")
 
     # ---- 进程二：Agilicious 适配器（外环控制器 + UDP 桥接）----
-    if args.controller == "geo":
+    if selected_controller == "GEO":
         pilot_config = params / "pilot_betaflight_sitl.yaml"
     elif args.rtk_msp:
         # 这份配置把估计器换成 MockVIO 并关掉 velocity_in_bodyframe，与适配器
@@ -793,7 +826,7 @@ def main() -> int:
         pilot_config = params / "pilot_betaflight_mpc_rtk_sitl.yaml"
     else:
         pilot_config = params / "pilot_betaflight_mpc_sitl.yaml"
-    log(f"selected Agilib outer controller: {args.controller.upper()}")
+    log(f"selected Agilib outer controller: {selected_controller}")
     if args.rtk_msp:
         log(
             "state pipeline: RTK (MockVIO) position/velocity, companion AHRS "
@@ -865,7 +898,7 @@ def main() -> int:
             str(REPO_ROOT / "agi_ros2/scripts/sensors.sh"),
             "--ros-args", "-p", "config_verified:=true",
         ]
-        log(f"start flight in another terminal: ./agi_ros2/scripts/launch.sh runtime_config:={bridge_config}")
+        log("start flight in another terminal: " + shlex.join(["./agi_ros2/scripts/launch.sh", *flight_arguments]))
 
     betaloop_process: Optional[subprocess.Popen] = None
     controller_process: Optional[subprocess.Popen] = None
