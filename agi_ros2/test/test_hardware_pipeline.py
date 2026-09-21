@@ -42,24 +42,21 @@ class HardwareHarness(ShadowHarness):
             self.subscribe(topic, cls)
         table = self.path / 'test_thrust.csv'
         table.write_text('0,1000,1500,2000\n12,0,10,20\n18,0,20,40\n')
-        control_parameters = {}
-        mapping_parameters = dict(bridge_config=str(self.bridge))
-        if controller == 'GEO':
-            configs = Path(__file__).resolve().parents[1] / 'config'
-            profile = yaml.safe_load((configs / 'hardware.yaml').read_text())
-            synthetic = yaml.safe_load((configs / 'simulation.yaml').read_text())['pilot']['quadrotor']
-            profile['pilot']['quadrotor'] = {key: synthetic[key] for key in
-                                             ('mass', 'omega_max', 'thrust_min', 'thrust_max')}
-            profile['bridge'] = yaml.safe_load(self.bridge.read_text())
-            profile['flight']['shadow_only'] = shadow
-            profile['flight']['thrust_table'] = str(table)
-            path = self.path / 'hardware.yaml'
-            path.write_text(dump_profile(profile))
-            # Exercise a launch-style override of the default MPC selection and no legacy model files.
-            control_parameters = dict(runtime_config=str(path), controller='GEO')
-            mapping_parameters = control_parameters
+        configs = Path(__file__).resolve().parents[1] / 'config'
+        profile = yaml.safe_load((configs / 'hardware.yaml').read_text())
+        synthetic = yaml.safe_load((configs / 'simulation.yaml').read_text())['pilot']['quadrotor']
+        profile['pilot']['quadrotor'] = {key: synthetic[key] for key in
+                                         ('mass', 'omega_max', 'thrust_min', 'thrust_max')}
+        profile['bridge'] = yaml.safe_load(self.bridge.read_text())
+        profile['flight']['shadow_only'] = shadow
+        profile['flight']['thrust_table'] = str(table)
+        path = self.path / 'hardware.yaml'
+        path.write_text(dump_profile(profile))
+        # Both controllers use the hardware profile with only measured command limits.
+        # Firmware faults stay in the emulated readback, independent of this expected configuration.
+        control_parameters = dict(runtime_config=str(path), controller=controller)
         self.start_node('command_output_node', shadow_only=shadow, navigation_source='gnss',
-                        device=os.ttyname(self.slave), thrust_table=str(table), **mapping_parameters,
+                        device=os.ttyname(self.slave), thrust_table=str(table), **control_parameters,
                         **{'msp.read_configuration': True, 'msp.rc.rate_hz': 25., 'msp.status.rate_hz': 25.,
                            'msp.battery.rate_hz': 2., 'msp.attitude.enabled': False,
                            'msp.analog.enabled': False, 'msp.gps.enabled': False})

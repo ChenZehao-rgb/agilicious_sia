@@ -117,18 +117,58 @@ GEO 使用位置/速度反馈、参考加速度和 yaw，输出与 MPC 相同的
 | `filter_sampling_frequency`、`filter_cutoff_frequency` | 保留滤波参数，Hz；关闭补偿的最小模型路径不运行电机/加速度滤波 |
 | `kprate` | 保留旧接口兼容；当前 Betaflight rates 输出不使用该增益，也不替代飞控 PID |
 
-GEO 的机体最小数据为 `mass`、`omega_max`、`thrust_min/max`。`omega_max` 为逐轴 rad/s；
-推力字段继续沿用单电机等效 N 的单位，GEO 总推力被限制在 `[4*thrust_min, 4*thrust_max]` N。
+当前 rates/thrust MPC 与 GEO 的机体最小数据均为 `mass`、`omega_max`、`thrust_min/max`。`omega_max` 为逐轴 rad/s；
+推力字段继续沿用单电机等效 N 的单位，两种控制器的总推力被限制在 `[4*thrust_min, 4*thrust_max]` N。
 实机请根据标定表和允许工作范围填写，而非直接把电机规格最大值当作测试范围；
 整个总推力范围应落在计划带载电压下的标定包络内，输出端仍拒绝表外值、不外推。
-惯量、力臂、kappa、电机转速/时间常数/推力多项式在 GEO 最小模型中不加载，可以暂留零或省略；
-内部将这些未使用项标记为未知，切回 MPC 会重新要求完整模型，不能自动套入默认机体。
+惯量、力臂、kappa、电机转速/时间常数/推力多项式在这两种 ROS2 外环模型中均不加载，可以省略；
+内部将未使用项标记为未知。Gazebo 的物理机体和旧内置动力学估计器仍需要自己的完整模型。
 
 GEO 仍要求真实质量、RC 推力表、飞控 rates 回读、导航/融合质量、围栏及实体授权。
 配置里的 GEO 增益是调试起点，未通过本机体飞行验收；当前 rates 输出没有 jerk/角速度前馈和位置积分。
 零/向下推力方向、无效四元数和姿态计算奇点会拒绝本周期并撤权。
-MPC 参数保留在 `parameter_sets.MPC`；其当前预测仍不包含电机动态。
+MPC 参数保留在 `parameter_sets.MPC`，具体模型与权重见下一节。
 选择 GEO 不会移除现有 acados 构建依赖。消息增加了控制器诊断字段，仿真机和伴随计算机需统一重编译。
+
+## MPC：直接优化总推力和机体角速度
+
+当前 MPC 的状态为 `x=[p(3),q(4),v(3)]`，输入为 `u=[c,ωx,ωy,ωz]`，
+其中 `c=T/m` 的单位为 m/s²，三轴角速度为机体 FLU rad/s：
+
+```text
+p_dot = v
+q_dot = 0.5 * q ⊗ [0, ω]
+v_dot = R(q) * [0, 0, c] + [0, 0, -9.8066]
+```
+
+控制周期仍为 10 ms，预测 20 个 50 ms 区间，总时域 1 s。acados 直接给出本周期的 `c` 和 `ω`；
+不再优化四个电机推力，也不再取下一预测状态的角速度作为当前命令。
+控制节点把 `c` 乘真实质量转成总推力 N，输出节点查电压—RC 油门表，角速度通过 ACTUAL rate 逆映射交给飞控。
+`Command.thrusts` 保持未知，避免下游误认为得到了电机分配结果。自定义旧电机直出桥（例如 MSP SET_MOTOR、Laird 单电机模式）
+不能直接接这个新 MPC，必须有匹配的内环分配器；本次 ROS2 Betaflight 路径使用 rates/thrust 接口。
+参考轨迹仍可提供位置、姿态、速度与角速度，
+CSV 原机体推力先按源质量换算为 `c_ref`；未改动原 CSV 的时间、翻转或速度。
+按本次要求，三条 CSV 统一保留 14 字段短表头；每个数据行仍保留原有 30 列（包括加速度、推力、jerk、snap），
+不是标准的等宽命名表，需用项目轨迹加载器读取，不能依赖普通 DictReader 推断后 16 列名称。
+
+这是一种**理想内环模型**：假设 Betaflight 能及时跟踪角速度与推力指令。
+没有加入实测内环时间常数、通信纯延迟、电机迟滞或气动阻力，也不保证独立的总推力/角速度约束联合可实现。
+因此它减少了外环的机械参数需求，但不能据此认定在真实机体上已具备 50 m/s 跟踪能力。
+实机至少还要测量指令与实测角速度的阶跃响应、推力映射和端到端延迟；误差显著时再辨识并加入内环动态。
+
+| `parameter_sets.MPC` 参数 | 含义 |
+|---|---|
+| `Q_pos_x/y/z` | 三轴位置残差权重 |
+| `Q_att_x/y/z` | 四元数姿态的三维残差权重 |
+| `Q_vel` | 三轴速度残差权重，标量或三元素数组 |
+| `R_collective_thrust` | 输入 `c-c_ref` 的权重；其单位基于 m/s²，不能沿用单电机 N 的旧 R |
+| `R_body_rates` | 三轴 `ω-ω_ref` 权重，三元素数组 |
+| `exp_decay` | 时域阶段权重衰减，末端同样应用；1 表示不衰减 |
+
+旧单电机 `R`、`Q_omega_*` 和 CoG 适配参数不再静默使用，加载时提示迁移。
+ROS2 两份配置和仍保留的旧入口 MPC 文件已经同步迁移；没有新增第三套运行配置。
+生成器为 `agilib/externals/acados_code_generator/drone_model.py`，重新生成和验证步骤见
+[rate MPC 验证记录](RATE_MPC_VALIDATION.zh-CN.md)。更改求解器后所有使用此库的主机必须重新构建并安装。
 
 ## SITL：保持分层部署
 
@@ -236,19 +276,14 @@ hardware 模式拒绝启用此开关。旧独立控制器仍可用 `run.py --no-
 ## 实机配置必须填写的数据
 
 不能把零占位替换为 Iris 参数来绕过检查。启动聚合报告不合法模型字段；真实模型缺失时请使用 diagnostic。
-下表列出两种控制器的完整数据集；GEO 的机体必填项只有质量、机体角速度限制及推力限制，
-其余机体模型项按上节说明处理。串口、飞控、导航、标定及授权数据仍然共用。
+当前 MPC/GEO 外环的机体必填项只有质量、机体角速度限制及推力限制。
+串口、飞控、导航、标定及授权数据仍然共用；未参与外环的机械参数不作为启动占位。
 
 | 位置 | 单位/来源 |
 |---|---|
 | `pilot.quadrotor.mass` | 含电池/负载的起飞总质量，kg |
-| `tbm_fr/tbm_bl/tbm_br/tbm_fl` | 相对质心的四电机位置，机体 FLU，m；索引须符合 Agilib 机体模型约定 |
-| `inertia` | 绕机体轴的正惯量对角项，kg·m²；不接受零或负数 |
-| `motor_omega_min/max`、`motor_tau` | 电机角速度 rad/s、响应时间常数 s；需对应实机电机/桨模型 |
-| `thrust_map` | 单电机 `F = a*ω²+b*ω+c`，F 为 N、ω 为 rad/s；三个系数 |
-| `kappa`、`thrust_min/max` | 反扭矩/推力比（m）、**每电机**推力界限（N） |
+| `thrust_min/max` | **每电机等效**推力界限（N）；总推力范围为四倍，需受实际 RC 标定包络约束 |
 | `omega_max` | MPC 约束/GEO 输出限幅的机体角速度上限，rad/s；不能超过实际 rate/profile/机体能力 |
-| `aero_coeff_1/aero_coeff_3/aero_coeff_h` | 当前全零表示暂忽略气动阻力的模型假设，不是已辨识参数；仅以低速悬停为本轮目标 |
 | `bridge.center_rate_deg_s/max_rate_deg_s/expo_percent` | FC ACTUAL rate 三轴参数，deg/s、deg/s、%；必须与当前回读 profile 一致 |
 | `bridge.deadband/yaw_deadband/min_check` | FC RC deadband/min_check 原始设置；readback 精确匹配 |
 | `flight.thrust_table` | 实测电压—PWM—**全机总推力 N** 表的路径，格式见下 |

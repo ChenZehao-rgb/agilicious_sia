@@ -8,7 +8,7 @@
 本次实现与旧审阅的主要差异：
 
 - 新标准入口只有 [simulation.yaml](config/simulation.yaml) 与 [hardware.yaml](config/hardware.yaml) 两份完整配置；
-  [统一 launch 组装](/home/sia/agilicious_internal-main/agi_ros2/launch/runtime_launch.py:138)
+  [统一 launch 组装](/home/sia/agilicious_internal-main/agi_ros2/launch/runtime_launch.py:135)
   区分仿真三节点、硬件六节点与不依赖机体模型的只读 diagnostic。默认空轨迹，SITL 延迟实验默认关闭，硬件默认 shadow。
 - [RuntimeConfig](/home/sia/agilicious_internal-main/agi_ros2/include/agi_ros2/runtime_config.h:22)
   直接加载内嵌 Pilot/机体/MPC/bridge；硬件零占位不替换为 Iris，机体缺项聚合报错。
@@ -38,10 +38,10 @@ CM5 时间预算、真实 UART/GNSS 质量、飞控停流回退和悬停飞行�
 → 核心节点只读 `controller` 参数 →
 [RuntimeConfig](/home/sia/agilicious_internal-main/agi_ros2/include/agi_ros2/runtime_config.h:26)
 → `PilotParams::load` → `PipelineConfig::load` → `ModuleConfig::loadIfUndefined`。
-MPC 分支继续加载完整 Quadrotor；GEO External 分支用
+MPC/GEO External 分支均使用
 [Quadrotor::loadRatesThrust](/home/sia/agilicious_internal-main/agilib/src/types/quadrotor.cpp:187)，只读取
 mass、omega_max、thrust_min/max，其余动力学量明确标记未知，完整 `Quadrotor::valid()` 不会通过。
-这样无法误把 GEO 的最小模型用于 MPC 或内置动力学估计器。
+最小模型不能被内置动力学估计器误用。当前 MPC 已改为下述 rates/thrust 预测。
 
 两种控制器都经过 HardwarePilot 的同一参考与准入生命周期。GEO 的 TimeSampler 采当前单点参考，
 [GEO 控制律](/home/sia/agilicious_internal-main/agilib/src/controller/geometric/controller_geo.cpp:35)
@@ -55,16 +55,36 @@ ROS2 路径禁止开启依赖 RPM 的 drag_compensation。当前 rates 命令没
 录包汇总增加 `controller` 统计及 controller_types，旧 `mpc` JSON 键标记为弃用别名。
 修改消息后必须统一重编译涉及的机器。选择 GEO 仍保留 acados 编译依赖，实际实机验证范围见 README。
 
+**直接优化 rates/thrust 的 MPC（2026-09-22，替代四电机模型）。**
+
+状态是位置、四元数、速度共 10 维；输入是质量归一化总推力和 FLU 机体角速度共 4 维。
+[生成模型](/home/sia/agilicious_internal-main/agilib/externals/acados_code_generator/drone_model.py:51)
+只有四元数参考作为在线参数，不再接收质量/惯量/力臂/kappa；质量用于总推力约束和输出 N 的换算。
+这是理想飞控内环假设，未辨识或建模电机、内环和传输延迟，不能把参数减少理解为这些效应已经补偿。
+
+`TimeSampler` 仍给出 21 个预测点；
+[MpcController](/home/sia/agilicious_internal-main/agilib/src/controller/mpc/controller_mpc.cpp:17)
+把各点的 p/q/v 放入状态参考，把 c/ω 放入输入参考，验证有限值和单位四元数后交给 wrapper。
+[wrapper](/home/sia/agilicious_internal-main/agilib/src/controller/mpc/wrapper.cpp:78)
+更新参考、成本、总推力/角速度输入边界及当前状态，执行一次 SQP-RTI，返回完整预测。
+输出 `Command(c,ω)` 直接来自第 0 个优化输入；`thrusts` 未定义，不制造虚假的电机分配。
+不再构造 CoG 滤波器或执行力矩反算。输出仍通过原来的三个准入层，时限和接管规则不变。
+新 `R_collective_thrust/R_body_rates` 与旧单电机 R 的单位不同，旧字段明确报错。
+
+构建、三条原速 CSV 数值回放和 Gazebo＋SITL 结果见
+[rate MPC 验证记录](RATE_MPC_VALIDATION.zh-CN.md)。数值回放把轨迹状态作为输入，只检验求解器；
+真实闭环仿真独立统计是否完整执行、位置误差和拒绝原因。
+
 **当前入口与六节点信号流（2026-09-22，实现后）。**
 
 `launch.sh` 调用源码 `flight.launch.py`；`ros2 launch agi_ros2 flight.launch.py` 调用安装包版本。
 [load_profile](/home/sia/agilicious_internal-main/agi_ros2/launch/runtime_launch.py:34) 根据自身目录定位同包 `config/`，
-选择 simulation/hardware；显式 `runtime_config` 则使用指定文件。[assemble](/home/sia/agilicious_internal-main/agi_ros2/launch/runtime_launch.py:138)
+选择 simulation/hardware；显式 `runtime_config` 则使用指定文件。[assemble](/home/sia/agilicious_internal-main/agi_ros2/launch/runtime_launch.py:135)
 验证模式、模型和两条 UART，把融合、传感器、导航、证据段传成只读 ROS 参数，给核心节点传同一配置绝对路径。
 [loadRuntimeConfig](/home/sia/agilicious_internal-main/agi_ros2/include/agi_ros2/runtime_config.h:144)
-加载 profile；[createPilotParams](/home/sia/agilicious_internal-main/agi_ros2/include/agi_ros2/runtime_config.h:127)
+加载 profile；[createPilotParams](/home/sia/agilicious_internal-main/agi_ros2/include/agi_ros2/runtime_config.h:126)
 与 [PilotParams::load](/home/sia/agilicious_internal-main/agilib/src/pilot/pilot_params.cpp:67)
-读取内嵌机体和模块参数，[createPipeline](/home/sia/agilicious_internal-main/agilib/src/pilot/pilot_params.cpp:287)
+读取内嵌机体和模块参数，[createPipeline](/home/sia/agilicious_internal-main/agilib/src/pilot/pilot_params.cpp:288)
 构造 External estimator/bridge、Time sampler 和所选 MPC/GEO。硬件默认 shadow；无模型用 diagnostic，不构造控制器。
 
 | 当前硬件节点 | 触发、数据变换与输出 | 当前代码入口 |
@@ -85,9 +105,9 @@ ROS2 路径禁止开启依赖 RPM 的 drag_compensation。当前 rates 命令没
 [TimeSampler::getAt](/home/sia/agilicious_internal-main/agilib/src/sampler/time_based/time_sampler.cpp:9)
 生成预测时域参考。参考由 [CapturedReference](/home/sia/agilicious_internal-main/agilib/include/agilib/reference/captured_reference.h:14)
 在授权成功的 AUTO 边沿冻结位置/yaw/time；无 CSV 就悬停，有 CSV 就作固定对齐变换。
-[MpcController::getCommand](/home/sia/agilicious_internal-main/agilib/src/controller/mpc/controller_mpc.cpp:31)
-把状态与参考送入 [MpcWrapper::update](/home/sia/agilicious_internal-main/agilib/src/controller/mpc/wrapper.cpp:152)
-及 [acados 求解入口](/home/sia/agilicious_internal-main/agilib/src/controller/mpc/wrapper.cpp:176)，
+[MpcController::getCommand](/home/sia/agilicious_internal-main/agilib/src/controller/mpc/controller_mpc.cpp:17)
+把状态与参考送入 [MpcWrapper::update](/home/sia/agilicious_internal-main/agilib/src/controller/mpc/wrapper.cpp:78)
+及 [acados 求解入口](/home/sia/agilicious_internal-main/agilib/src/controller/mpc/wrapper.cpp:93)，
 得到总推力加速度与机体角速度；控制发布时乘机体质量转换成 N，输出端再做 RC 映射。
 
 显式 no-fix、航向/速度失效或源时钟重置走

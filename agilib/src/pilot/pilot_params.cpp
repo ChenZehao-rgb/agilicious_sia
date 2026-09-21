@@ -134,7 +134,8 @@ bool PilotParams::load(const Yaml& yaml, const std::string& controller_override)
 }
 
 bool PilotParams::usesRatesThrustModel() const {
-	return pipeline_cfg_.outer_controller_cfg.type == "GEO" && pipeline_cfg_.estimator_cfg.type == "External" &&
+	const auto& controller = pipeline_cfg_.outer_controller_cfg.type;
+	return (controller == "GEO" || controller == "MPC") && pipeline_cfg_.estimator_cfg.type == "External" &&
 	       pipeline_cfg_.bridge_cfg.type == "External" &&
 	       (pipeline_cfg_.inner_controller_cfg.type.empty() || pipeline_cfg_.inner_controller_cfg.type == "None") &&
 	       (guard_cfg_.type.empty() || guard_cfg_.type == "None");

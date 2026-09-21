@@ -1,0 +1,215 @@
+{
+  "dataset": {
+    "path": "/home/sia/agilicious_internal-main/miscellaneous/datasets/ref_trajs/open_source/CPC33_Z1.csv",
+    "sha256": "7423664613de96eacf0e1784473a798f310c62aa97da30d18ee0b69c82a28ad0",
+    "rows": 801,
+    "duration_seconds": 17.75,
+    "source_dt_min_seconds": 0.022099999999998232,
+    "source_dt_max_seconds": 0.022220000000000795,
+    "start_position_m": [
+      -5.0,
+      4.5,
+      1.2
+    ],
+    "end_position_m": [
+      4.5434526359396,
+      -1.02696396874245,
+      0.994782010240635
+    ],
+    "relative_position_min_m": [
+      -0.09119922192802044,
+      -11.544011175514239,
+      -1.118146616706754
+    ],
+    "relative_position_max_m": [
+      16.3624492856176,
+      2.35358439493727,
+      2.3429338027949997
+    ],
+    "speed_max_mps": 22.92415893835993,
+    "speed_start_mps": 0.0,
+    "speed_end_mps": 0.0,
+    "acceleration_max_mps2": 37.93012578289314,
+    "specific_force_min_mps2": 9.8066,
+    "specific_force_max_mps2": 33.87598156290215,
+    "body_rates_abs_max_radps": [
+      14.9987331899867,
+      14.9997967097755,
+      0.299990990463558
+    ],
+    "tilt_max_degrees": 108.990378377148,
+    "inverted_reference_rows": 146,
+    "source_mass_estimate_kg": 0.8585551374568567,
+    "source_thrust_min_n": 0.0,
+    "source_thrust_max_n": 27.51703236376762,
+    "source_force_fit_rmse_n": 1.6300474181604847,
+    "target_mass_kg": 0.54,
+    "target_total_thrust_min_n": 0.0,
+    "target_total_thrust_max_n": 17.30721397864934,
+    "original_quaternion_norm_max_error": 4.443026745959422e-06
+  },
+  "controller": "MPC",
+  "time_scale": 1.0,
+  "delay_test": false,
+  "runtime_config": "/home/sia/agilicious_internal-main/agi_ros2/config/simulation.yaml",
+  "runtime_config_sha256": "c70725dad3593438a73e43365b4f87c0668595e9ea0f91e857017fbea3993273",
+  "gazebo_partition": "agi_rate_mpc_three_csv_v3_CPC33_Z1_60679055857233",
+  "output_fault_baseline_at_auto": 0,
+  "startup_output_faults": [],
+  "launched_commands": [
+    [
+      "sim",
+      [
+        "python3",
+        "/home/sia/agilicious_internal-main/betaflight_sitl/run.py",
+        "--no-gazebo",
+        "--no-build",
+        "--ros2",
+        "--runtime-config",
+        "/home/sia/agilicious_internal-main/agi_ros2/config/simulation.yaml",
+        "--controller",
+        "mpc"
+      ]
+    ],
+    [
+      "flight",
+      [
+        "ros2",
+        "launch",
+        "/home/sia/agilicious_internal-main/agi_ros2/launch/flight.launch.py",
+        "record_bag:=false",
+        "runtime_config:=/home/sia/agilicious_internal-main/agi_ros2/config/simulation.yaml",
+        "controller:=MPC",
+        "trajectory:=/home/sia/agilicious_internal-main/miscellaneous/datasets/ref_trajs/open_source/CPC33_Z1.csv"
+      ]
+    ]
+  ],
+  "capture_height_m": 3.0,
+  "auto_stamp_seconds": 15.109000000000002,
+  "disarmed_stamp_seconds": 3.547,
+  "prearm_stamp_seconds": 9.547,
+  "manual_stamp_seconds": 11.547,
+  "disarmed_setup_seconds": 6.0,
+  "prearm_setup_seconds": 2.0,
+  "trajectory_finished": true,
+  "active_reference_elapsed_max": 18.75,
+  "first_failure": null,
+  "final_output_inactive": true,
+  "controller_matches": true,
+  "acceptance_failures": [
+    "Reference publication coverage at least 99 percent"
+  ],
+  "counts": {
+    "fused_state": 30937,
+    "reference": 3021,
+    "ground_truth": 6188,
+    "control_command": 3095,
+    "output_status": 1792,
+    "computation_status": 3095,
+    "authority": 1897
+  },
+  "tracking": {
+    "active_reference_samples": 19,
+    "scored_samples": 19,
+    "scoring_fraction": 1.0,
+    "active_control_sample_coverage": 1.0,
+    "reference_publication_fraction": 0.010698198198198198,
+    "reference_elapsed_max": 17.75,
+    "coverage_fraction": 1.0,
+    "largest_active_sample_gap_seconds": 0.01,
+    "actual_speed_max_mps": 16.887914599952442,
+    "reference_speed_max_mps": 20.65239543995835,
+    "position_error_m": {
+      "count": 19,
+      "mean": 0.17422998204387427,
+      "rms": 0.3201899304830232,
+      "p95": 0.3934637970828416,
+      "p99": 1.1013027557090247,
+      "maximum": 1.2782624953655697
+    },
+    "velocity_error_mps": {
+      "count": 19,
+      "mean": 0.8570548812534835,
+      "rms": 2.149137176744158,
+      "p95": 1.6571992751302025,
+      "p99": 7.6775770919044035,
+      "maximum": 9.182671546097946
+    }
+  },
+  "fused_tracking": {
+    "active_reference_samples": 19,
+    "scored_samples": 19,
+    "scoring_fraction": 1.0,
+    "active_control_sample_coverage": 1.0,
+    "reference_publication_fraction": 0.010698198198198198,
+    "reference_elapsed_max": 17.75,
+    "coverage_fraction": 1.0,
+    "largest_active_sample_gap_seconds": 0.01,
+    "actual_speed_max_mps": 16.901621792579324,
+    "reference_speed_max_mps": 20.65239543995835,
+    "position_error_m": {
+      "count": 19,
+      "mean": 0.172493009029701,
+      "rms": 0.3198536441782161,
+      "p95": 0.38853150388124913,
+      "p99": 1.1008303298648714,
+      "maximum": 1.2789050363607761
+    },
+    "velocity_error_mps": {
+      "count": 19,
+      "mean": 0.8532558010940019,
+      "rms": 2.1574294271341183,
+      "p95": 1.6663342781994317,
+      "p99": 7.7126757184129655,
+      "maximum": 9.224261078466341
+    }
+  },
+  "solve_seconds": {
+    "count": 1878,
+    "mean": 0.00028552296592119277,
+    "rms": 0.00029341347736263414,
+    "p95": 0.0004022655499999999,
+    "p99": 0.00047705287000000005,
+    "maximum": 0.000579938
+  },
+  "cycle_seconds": {
+    "count": 1937,
+    "mean": 0.00028160560970573055,
+    "rms": 0.00029362338503961116,
+    "p95": 0.0004077736,
+    "p99": 0.0004824387199999998,
+    "maximum": 0.000590002
+  },
+  "solve_budget_exceedances": 0,
+  "cycle_period_exceedances": 0,
+  "last_computation": {
+    "stamp_ns": 34470000000,
+    "trajectory_active": false,
+    "reference_elapsed": 0.0,
+    "controller_type": "MPC",
+    "controller_success": false,
+    "warm_cycles": 0,
+    "solve_seconds": null,
+    "cycle_seconds": 2.622e-06,
+    "imu_age": 0.0009999999999976694,
+    "navigation_age": 0.14499999999999602,
+    "state_age": 0.0009999999999976694,
+    "reason": "receiver KILL; fusion: Navigation and estimator satisfy configured readiness checks"
+  },
+  "last_output": {
+    "stamp_ns": 34468000000,
+    "override_active": false,
+    "transport_healthy": true,
+    "fault_count": 0,
+    "reason": "Receiver KILL or ARM low",
+    "last_fault": "",
+    "command_age": null
+  },
+  "process_codes_before_cleanup": [
+    null,
+    null
+  ],
+  "wall_seconds": 38.93444329100021,
+  "rmse_limit_m": 1.0,
+  "passed": false
+}

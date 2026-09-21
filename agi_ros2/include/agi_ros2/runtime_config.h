@@ -1,7 +1,6 @@
 #ifndef AGI_ROS2_RUNTIME_CONFIG_H_
 #define AGI_ROS2_RUNTIME_CONFIG_H_
 
-#include <Eigen/LU>
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -42,16 +41,15 @@ public:
 		if (_controller_type != "MPC" && _controller_type != "GEO") {
 			throw std::invalid_argument("Runtime controller must be MPC or GEO");
 		}
+		const auto guard = _document["pilot"]["guard"]["type"];
+		const auto inner = pipeline["inner_controller"]["type"];
+		if (pipeline["estimator"]["type"].as<std::string>() != "External" ||
+		    pipeline["bridge"]["type"].as<std::string>() != "External" ||
+		    (inner.isDefined() && inner.as<std::string>() != "None") || (guard.isDefined() && guard.as<std::string>() != "None")) {
+			throw std::invalid_argument(
+			        "Runtime rate/thrust controllers require External estimator/bridge and no inner controller or guard");
+		}
 		if (_controller_type == "GEO") {
-			const auto guard = _document["pilot"]["guard"]["type"];
-			const auto inner = pipeline["inner_controller"]["type"];
-			if (pipeline["estimator"]["type"].as<std::string>() != "External" ||
-			    pipeline["bridge"]["type"].as<std::string>() != "External" ||
-			    (inner.isDefined() && inner.as<std::string>() != "None") ||
-			    (guard.isDefined() && guard.as<std::string>() != "None")) {
-				throw std::invalid_argument(
-				        "Runtime GEO requires External estimator/bridge and no inner controller or guard");
-			}
 			if (selected.parameters["drag_compensation"].isDefined() && selected.parameters["drag_compensation"].as<bool>()) {
 				throw std::invalid_argument("Runtime GEO has no motor RPM; drag_compensation must be false");
 			}
@@ -82,9 +80,6 @@ public:
 			}
 		};
 		for (const auto* name : {"mass", "thrust_max"}) positive(name);
-		if (_controller_type == "MPC") {
-			for (const auto* name : {"motor_omega_max", "motor_tau", "kappa"}) positive(name);
-		}
 		const auto vector = [&](const std::string& name, bool positive_elements) {
 			try {
 				agi::Vector<3> value;
@@ -97,11 +92,6 @@ public:
 			}
 		};
 		vector("omega_max", true);
-		if (_controller_type == "MPC") {
-			vector("inertia", true);
-			vector("thrust_map", false);
-			for (const auto* name : {"tbm_fr", "tbm_bl", "tbm_br", "tbm_fl"}) vector(name, false);
-		}
 		if (!invalid.empty()) {
 			std::ostringstream message;
 			message << "Missing or invalid measured pilot.quadrotor fields in " << filename() << ": ";
@@ -109,17 +99,9 @@ public:
 			throw std::invalid_argument(message.str());
 		}
 		agi::Quadrotor quad;
-		if (_controller_type == "GEO") {
-			if (!quad.loadRatesThrust(model)) {
-				throw std::invalid_argument("GEO requires measured mass, omega_max and thrust_min/max in " + filename());
-			}
-			return quad;
-		}
-		if (!quad.load(model) || !quad.valid())
-			throw std::invalid_argument("Invalid or unconfigured pilot.quadrotor in " + filename());
-		if (quad.getAllocationMatrix().fullPivLu().rank() != 4) {
-			throw std::invalid_argument(
-			        "pilot.quadrotor rotor geometry must provide independent collective and three-axis torque control");
+		if (!quad.loadRatesThrust(model)) {
+			throw std::invalid_argument("Rate/thrust control requires measured mass, omega_max and thrust_min/max in " +
+			                            filename());
 		}
 		return quad;
 	}
@@ -161,8 +143,9 @@ inline std::optional<RuntimeConfig> loadRuntimeConfig(rclcpp::Node& node, const 
 			throw std::invalid_argument(std::string("runtime_config cannot be combined with ") + legacy);
 		}
 	}
-	RCLCPP_INFO(node.get_logger(), "Runtime configuration: %s (mode=%s, controller=%s)", config.filename().c_str(), mode.c_str(),
-	            config.controllerType().c_str());
+	RCLCPP_INFO(node.get_logger(), "Runtime configuration: %s (mode=%s, controller=%s, model=%s)", config.filename().c_str(),
+	            mode.c_str(), config.controllerType().c_str(),
+	            config.controllerType() == "MPC" ? "ideal_rate_thrust" : "geometric_rate_thrust");
 	return config;
 }
 

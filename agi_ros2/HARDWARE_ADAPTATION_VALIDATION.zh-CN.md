@@ -4,6 +4,12 @@
 没有访问实体 UART、刷写实体飞控、在 CM5 上测量或进行实际飞行。
 实机模型和标定数据仍待填写，`hardware.yaml` 默认 shadow，并保留拒绝飞行的未配置值。
 
+## 后续 rates/thrust MPC 改造
+
+MPC 已进一步改为直接优化总推力/质量和三轴角速度，两种控制器均使用最小机体参数。
+本轮构建、回归和三条原速CSV验证见 [独立记录](RATE_MPC_VALIDATION.zh-CN.md)。
+以下为此次模型修改之前的测试记录，其MPC闭环结果不能用来替代新模型的验证。
+
 ## MPC/GEO 选择适配：本轮新增验证
 
 同一 `simulation.yaml` / `hardware.yaml` 内保存 `parameter_sets.MPC/GEO`；默认仍为 MPC，

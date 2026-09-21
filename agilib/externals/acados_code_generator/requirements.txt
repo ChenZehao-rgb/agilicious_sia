@@ -1,0 +1,5 @@
+# Python 3.10 generation environment used for the checked-in solver.
+casadi==3.6.7
+numpy==1.24.4
+scipy==1.8.0
+future-fstrings==1.2.0

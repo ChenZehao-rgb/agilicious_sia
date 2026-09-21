@@ -1,0 +1,77 @@
+{
+  "platform": "x86 Linux, ROS 2 Humble",
+  "physical_hardware_accessed": false,
+  "cm5_timing_measured": false,
+  "core_gtest": {
+    "tests": 44,
+    "failures": 0
+  },
+  "hardware_unit_executables": {
+    "tests": 2,
+    "failures": 0
+  },
+  "python_configuration": {
+    "tests": 16,
+    "failures": 0
+  },
+  "ros_processes": {
+    "tests": 3,
+    "failures": 0
+  },
+  "dual_pty_hardware": {
+    "tests": 7,
+    "failures": 0
+  },
+  "reference_state_replay": [
+    {
+      "trajectory": "aggressive_50mps.csv",
+      "duration_seconds": "55.871321885826902",
+      "samples": "5588",
+      "failures": "0",
+      "cycle_p99_ms": "0.14524899999999999",
+      "cycle_max_ms": "0.16905300000000001"
+    },
+    {
+      "trajectory": "HELIX_FWD20_50mps.csv",
+      "duration_seconds": "68.219307081400004",
+      "samples": "6822",
+      "failures": "0",
+      "cycle_p99_ms": "0.13142899999999999",
+      "cycle_max_ms": "0.14272899999999999"
+    },
+    {
+      "trajectory": "CPC33_Z1.csv",
+      "duration_seconds": "17.75",
+      "samples": "1776",
+      "failures": "0",
+      "cycle_p99_ms": "0.24259800000000001",
+      "cycle_max_ms": "0.79016000000000008"
+    }
+  ],
+  "csv_numeric_data": {
+    "aggressive_50mps.csv": {
+      "numeric_data_sha256": "95985ccd335e6e670b6826ebec7ad2b645734a4227c8281be624e7571f4eda64",
+      "data_unchanged": true
+    },
+    "HELIX_FWD20_50mps.csv": {
+      "numeric_data_sha256": "07a7bbf2f0b61ad06e374c701c88568e40b3a945dc918a71d39be27c5b90864c",
+      "data_unchanged": true
+    },
+    "CPC33_Z1.csv": {
+      "numeric_data_sha256": "8d2c44c1cd21e39c84dc2221dbb089af3d559c16586063cff04930785deec41b",
+      "data_unchanged": true
+    }
+  },
+  "note": "Reference-state replay is numerical solver validation, not closed-loop flight tracking.",
+  "trajectory_harness": {
+    "tests": 10,
+    "failures": 0
+  },
+  "sitl": {
+    "tests": 3,
+    "failures": 0,
+    "rmse_limit_m": 1.0,
+    "all_completed": true,
+    "note": "Offline scoring corrected by reported state_age. Raw flight records preserved; no fitted time offset."
+  }
+}

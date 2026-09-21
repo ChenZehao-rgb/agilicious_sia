@@ -85,14 +85,13 @@ def selected_controller(profile, override=''):
         source = 'pilot.pipeline.controller.' + ('parameters' if parameters is not None else 'file')
     if selected == 'GEO' and parameters is not None and boolean(parameters.get('drag_compensation', False)):
         raise ValueError('GEO drag_compensation requires rotor RPM feedback unavailable in this ROS 2 pipeline')
-    if selected == 'GEO':
-        pipeline = profile['pilot']['pipeline']
-        if any(pipeline.get(module, {}).get('type') != 'External' for module in ('estimator', 'bridge')):
-            raise ValueError('GEO runtime requires External estimator and bridge')
-        if pipeline.get('inner_controller', {}).get('type', 'None') != 'None':
-            raise ValueError('GEO runtime does not support an inner controller')
-        if profile['pilot'].get('guard', {}).get('type', 'None') != 'None':
-            raise ValueError('GEO runtime does not support a guard')
+    pipeline = profile['pilot']['pipeline']
+    if any(pipeline.get(module, {}).get('type') != 'External' for module in ('estimator', 'bridge')):
+        raise ValueError('Rate/thrust runtime requires External estimator and bridge')
+    if pipeline.get('inner_controller', {}).get('type', 'None') != 'None':
+        raise ValueError('Rate/thrust runtime does not support an inner controller')
+    if profile['pilot'].get('guard', {}).get('type', 'None') != 'None':
+        raise ValueError('Rate/thrust runtime does not support a guard')
     return selected, source
 
 
@@ -114,7 +113,7 @@ def checked_model(profile, controller=''):
         raise ValueError('pilot.quadrotor must contain the measured model')
     def finite(value):
         return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
-    required = ('mass', 'thrust_max') if controller == 'GEO' else ('mass', 'motor_omega_max', 'motor_tau', 'kappa', 'thrust_max')
+    required = ('mass', 'thrust_max')
     invalid = [key for key in required
                if not finite(model.get(key)) or model[key] <= 0]
     if finite(model.get('mass')) and model['mass'] >= 100:
@@ -122,13 +121,11 @@ def checked_model(profile, controller=''):
     if (not finite(model.get('thrust_min')) or model['thrust_min'] < 0 or
             (finite(model.get('thrust_max')) and model['thrust_min'] >= model['thrust_max'])):
         invalid.append('thrust_min/max')
-    vectors = ('omega_max',) if controller == 'GEO' else (
-        'inertia', 'omega_max', 'thrust_map', 'tbm_fr', 'tbm_bl', 'tbm_br', 'tbm_fl')
-    for key in vectors:
+    for key in ('omega_max',):
         value = model.get(key)
         if not isinstance(value, list) or len(value) != 3 or not all(finite(x) for x in value):
             invalid.append(key)
-        elif (any(x <= 0 for x in value) if key in ('inertia', 'omega_max') else all(x == 0 for x in value)):
+        elif any(x <= 0 for x in value):
             invalid.append(key)
     if invalid:
         raise ValueError('Missing or invalid measured pilot.quadrotor fields: ' + ', '.join(invalid) +
@@ -228,8 +225,10 @@ def assemble(context, forced_shadow=False, sensor_only=False, msp_only=False):
             processes.append(node('betaflight_msp_node', {**output, 'mode': 'monitor', 'use_sim_time': False}))
         if not sensor_only:
             processes.append(node('msp_evidence.py', {**evidence, 'runtime_config': str(path), 'use_sim_time': False}))
+    controller_model = 'ideal_rate_thrust' if controller == 'MPC' else 'geometric_rate_thrust'
     actions = [LogInfo(msg=f'Runtime configuration: {path}; mode={mode}; navigation={navigation_source}; '
                            f'controller={controller}; controller_parameters={controller_parameters}; '
+                           f'controller_model={controller_model}; '
                            f'reference={trajectory or "hover"}; shadow={shadow}; diagnostic={diagnostic}')] + processes
     if boolean(flight.get('record_bag', True)):
         bag_output = resolve_data_path(path, flight.get('bag_output', ''))

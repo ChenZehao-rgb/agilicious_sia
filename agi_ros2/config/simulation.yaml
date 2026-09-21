@@ -3,7 +3,7 @@
 # An empty trajectory captures the current hover point on authorized AUTO entry.
 mode: sitl
 flight:
-  trajectory: '/home/sia/agilicious_internal-main/miscellaneous/datasets/ref_trajs/open_source/HELIX_FWD20_50mps.csv'
+  trajectory: ''
   thrust_table: ''
   sitl_delay_test: false
   shadow_only: false
@@ -21,8 +21,8 @@ pilot:
       type: MPC
       parameter_sets:
         MPC:
+          # Ideal rate/thrust model: no motor or inner-loop response prediction.
           timing: true
-          threaded_preparation: false
           Q_pos_x: 300
           Q_pos_y: 300
           Q_pos_z: 650
@@ -30,22 +30,10 @@ pilot:
           Q_att_y: 5
           Q_att_z: 200
           Q_vel: 3.0
-          Q_omega_xy: 10.0
-          Q_omega_z: 1.0
-          R: 6.0
+          # Conservative initial weights from generic plant simulation; not verified on real hardware.
+          R_collective_thrust: 0.1
+          R_body_rates: [50.0, 50.0, 50.0]
           exp_decay: 1.0
-          max_wait_time_before_preparation: 0.1
-          max_wait_time_after_preparation: 0.01
-          cog_enable: false
-          cog_abs_velocity_limit: 0.25
-          cog_abs_omega_limit: 0.5
-          cog_rel_hover_thrust_limit: 0.5
-          cog_height_limit: 0.5
-          Q_cog_omega: 1e0
-          Q_cog_legnths: 1e-9
-          Q_cog_omega_init: 1e2
-          Q_cog_legnths_init: 1e-10
-          R_cog: 0.1
         # Initial simulation gains from geo_betaflight_sitl.yaml; no separate runtime file.
         GEO:
           drag_compensation: false
@@ -61,25 +49,15 @@ pilot:
           max_tilt_rad: 0.35
     bridge:
       type: External
+  # Both outer controllers use mass and command limits only.
+  # thrust_min/max are per-motor equivalent N; collective acceleration bounds are 4F/m.
+  # Inertia, geometry, kappa, motor and aerodynamic data belong to an optional plant model,
+  # not this ideal outer-loop predictor. No unmeasured dynamics are filled with defaults.
   quadrotor:
     mass: 0.54
-    tbm_fr: [0.13, -0.22, 0.0]
-    tbm_bl: [-0.13, 0.2, 0.0]
-    tbm_br: [-0.13, -0.2, 0.0]
-    tbm_fl: [0.13, 0.22, 0.0]
-    inertia: [0.0065, 0.006, 0.0115]
-    motor_omega_min: 0.0
-    motor_omega_max: 2394.3
-    motor_tau: 0.012
     omega_max: [17.45, 17.45, 17.45]
-    thrust_map: [1.332e-06, 0.0, 0.0]
-    kappa: 0.1
     thrust_min: 0.0
     thrust_max: 7.64
-    rotors_config: cross
-    aero_coeff_1: [0.0, 0.0, 0.0]
-    aero_coeff_3: [0.0, 0.0, 0.0]
-    aero_coeff_h: 0.0
   dt_min: 0.01
   outerloop_divisor: 1
   dt_telemetry: 0.1

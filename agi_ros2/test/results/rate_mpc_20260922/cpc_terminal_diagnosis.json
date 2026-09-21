@@ -1,0 +1,22 @@
+{
+  "peak_error_m": 1.5080968132798873,
+  "peak_time_s": 17.749,
+  "samples_above_1m": 5,
+  "first_17s_rmse_m": 0.1286290122071744,
+  "first_17s_max_m": 0.3143048851624276,
+  "last_interval_s": 0.022200000000001552,
+  "last_position_change_m": 0.5150333339099994,
+  "last_two_speeds_mps": [
+    22.92415893835993,
+    0.0
+  ],
+  "mean_deceleration_from_velocity_columns_mps2": 1032.6197719981228,
+  "last_acceleration_columns_mps2": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "last_total_source_thrust_n": 0.0,
+  "interpretation": "Terminal reference inconsistency coincides with the largest error; correlation does not establish it as the sole cause.",
+  "csv_numeric_data_modified": false
+}

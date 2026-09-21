@@ -42,7 +42,9 @@ class RuntimeProfiles(unittest.TestCase):
     def test_simulation_matches_existing_model_controller_and_fc_settings(self):
         path, profile = runtime.load_profile('sitl')
         params = ROOT / 'agilib/params'
-        self.assertEqual(profile['pilot']['quadrotor'], yaml.safe_load((params / 'quads/betaloop_iris.yaml').read_text()))
+        plant = yaml.safe_load((params / 'quads/betaloop_iris.yaml').read_text())
+        self.assertEqual(profile['pilot']['quadrotor'],
+                         {key: plant[key] for key in ('mass', 'omega_max', 'thrust_min', 'thrust_max')})
         self.assertEqual(profile['pilot']['pipeline']['controller']['parameter_sets']['MPC'],
                          yaml.safe_load((params / 'mpc_betaflight_sitl.yaml').read_text()))
         self.assertEqual(sitl.expected_betaflight_settings(path), sitl.expected_betaflight_settings(params / 'betaflight_udp.yaml'))
@@ -116,21 +118,20 @@ class RuntimeProfiles(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'Changing controller'):
                     runtime.selected_controller(profile, 'geo')
 
-    def test_geo_requires_only_its_active_model_fields(self):
+    def test_both_controllers_require_only_active_rate_thrust_model_fields(self):
         _, profile = runtime.load_profile('hardware')
         profile['pilot']['quadrotor'] = {
             'mass': 1.0, 'omega_max': [1.0, 1.0, 1.0], 'thrust_min': 0.1, 'thrust_max': 5.0}
-        runtime.checked_model(profile, 'GEO')
-        with self.assertRaisesRegex(ValueError, 'motor_omega_max'):
-            runtime.checked_model(profile, 'MPC')
-        for key, value in (('mass', 0.0), ('mass', 100.0), ('mass', float('nan')),
-                           ('thrust_min', -0.1), ('thrust_min', 5.0), ('thrust_max', 0.1),
-                           ('omega_max', [1.0, 0.0, 1.0])):
-            previous = profile['pilot']['quadrotor'][key]
-            profile['pilot']['quadrotor'][key] = value
-            with self.subTest(key=key, value=value), self.assertRaisesRegex(ValueError, 'measured'):
-                runtime.checked_model(profile, 'GEO')
-            profile['pilot']['quadrotor'][key] = previous
+        for controller in ('MPC', 'GEO'):
+            runtime.checked_model(profile, controller)
+            for key, value in (('mass', 0.0), ('mass', 100.0), ('mass', float('nan')),
+                               ('thrust_min', -0.1), ('thrust_min', 5.0), ('thrust_max', 0.1),
+                               ('omega_max', [1.0, 0.0, 1.0])):
+                previous = profile['pilot']['quadrotor'][key]
+                profile['pilot']['quadrotor'][key] = value
+                with self.subTest(controller=controller, key=key, value=value), self.assertRaisesRegex(ValueError, 'measured'):
+                    runtime.checked_model(profile, controller)
+                profile['pilot']['quadrotor'][key] = previous
 
     def test_geo_hardware_still_rejects_missing_mass_limits_or_thrust_table(self):
         values = dict(mode='hardware', device='/dev/null', mavlink_device='/dev/zero', controller='geo')
@@ -148,16 +149,17 @@ class RuntimeProfiles(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'measured flight.thrust_table'):
                 self.actions(**values, runtime_config=str(path), shadow_only='false')
 
-    def test_geo_rejects_pipeline_that_requires_unavailable_full_model(self):
-        for module in ('estimator', 'bridge', 'inner_controller'):
+    def test_rate_thrust_controllers_reject_pipeline_that_requires_unavailable_full_model(self):
+        for controller in ('MPC', 'GEO'):
+            for module in ('estimator', 'bridge', 'inner_controller'):
+                _, profile = runtime.load_profile('sitl')
+                profile['pilot']['pipeline'][module] = {'type': 'Other'}
+                with self.subTest(controller=controller, module=module), self.assertRaises(ValueError):
+                    runtime.selected_controller(profile, controller)
             _, profile = runtime.load_profile('sitl')
-            profile['pilot']['pipeline'][module] = {'type': 'Other'}
-            with self.subTest(module=module), self.assertRaises(ValueError):
-                runtime.selected_controller(profile, 'GEO')
-        _, profile = runtime.load_profile('sitl')
-        profile['pilot']['guard'] = {'type': 'Other'}
-        with self.assertRaisesRegex(ValueError, 'guard'):
-            runtime.selected_controller(profile, 'GEO')
+            profile['pilot']['guard'] = {'type': 'Other'}
+            with self.subTest(controller=controller), self.assertRaisesRegex(ValueError, 'guard'):
+                runtime.selected_controller(profile, controller)
 
     def test_simulation_geo_gains_have_explicit_runtime_limits(self):
         _, profile = runtime.load_profile('sitl')

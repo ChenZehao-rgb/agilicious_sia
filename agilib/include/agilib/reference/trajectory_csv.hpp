@@ -33,31 +33,32 @@ inline std::vector<double> parseCsvRow(const std::string& line,
   return values;
 }
 
-inline std::vector<std::vector<double>> readTrajectoryRows(
-  const std::filesystem::path& path) {
-  std::ifstream file(path);
-  if (!file) {
-    throw std::runtime_error("could not open trajectory: " + path.string());
-  }
+inline std::vector<std::vector<double>> readTrajectoryRows(const std::filesystem::path& path) {
+	std::ifstream file(path);
+	if (!file) {
+		throw std::runtime_error("could not open trajectory: " + path.string());
+	}
 
-  std::string line;
-  if (!std::getline(file, line) ||
-      line != "t,p_x,p_y,p_z,q_w,q_x,q_y,q_z,v_x,v_y,v_z,w_x,w_y,w_z") {
-    throw std::runtime_error("unsupported trajectory CSV header: " +
-                             path.string());
-  }
+	std::string line;
+	const std::string short_header = "t,p_x,p_y,p_z,q_w,q_x,q_y,q_z,v_x,v_y,v_z,w_x,w_y,w_z";
+	const bool have_header = static_cast<bool>(std::getline(file, line));
+	if (!line.empty() && line.back() == '\r') line.pop_back();
+	if (!have_header || line != short_header) {
+		throw std::runtime_error("unsupported trajectory CSV header: " + path.string());
+	}
 
-  std::vector<std::vector<double>> rows;
-  std::size_t line_number = 1;
-  while (std::getline(file, line)) {
-    ++line_number;
-    if (line.empty()) continue;
-    rows.push_back(parseCsvRow(line, line_number));
-  }
-  if (rows.size() < 2) {
-    throw std::runtime_error("trajectory must contain at least two samples");
-  }
-  return rows;
+	std::vector<std::vector<double>> rows;
+	std::size_t line_number = 1;
+	while (std::getline(file, line)) {
+		++line_number;
+		if (!line.empty() && line.back() == '\r') line.pop_back();
+		if (line.empty()) continue;
+		rows.push_back(parseCsvRow(line, line_number));
+	}
+	if (rows.size() < 2) {
+		throw std::runtime_error("trajectory must contain at least two samples");
+	}
+	return rows;
 }
 
 /// Recover the mass of the vehicle the CSV was generated for.

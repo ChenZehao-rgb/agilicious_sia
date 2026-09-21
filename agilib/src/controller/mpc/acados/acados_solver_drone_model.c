@@ -227,7 +227,7 @@ ocp_nlp_dims* drone_model_acados_create_2_create_and_set_dimensions(drone_model_
     nbx[0]  = NBX0;
     nsbx[0] = 0;
     ns[0] = NS - NSBX;
-    nbxe[0] = 13;
+    nbxe[0] = 10;
     ny[0] = NY0;
 
     // terminal - common
@@ -302,7 +302,7 @@ void drone_model_acados_create_3_create_and_set_functions(drone_model_solver_cap
         capsule->__CAPSULE_FNC__.casadi_sparsity_in = & __MODEL_BASE_FNC__ ## _sparsity_in; \
         capsule->__CAPSULE_FNC__.casadi_sparsity_out = & __MODEL_BASE_FNC__ ## _sparsity_out; \
         capsule->__CAPSULE_FNC__.casadi_work = & __MODEL_BASE_FNC__ ## _work; \
-        external_function_param_casadi_create(&capsule->__CAPSULE_FNC__ , 24); \
+        external_function_param_casadi_create(&capsule->__CAPSULE_FNC__ , 4); \
     }while(false)
 
 
@@ -358,20 +358,7 @@ void drone_model_acados_create_4_set_default_parameters(drone_model_solver_capsu
     const int N = capsule->nlp_solver_plan->N;
     // initialize parameters to nominal value
     double* p = calloc(NP, sizeof(double));
-    p[0] = 0.752;
-    p[1] = 1;
-    p[12] = 0.075;
-    p[13] = -0.075;
-    p[14] = -0.075;
-    p[15] = 0.075;
-    p[16] = -0.1;
-    p[17] = 0.1;
-    p[18] = -0.1;
-    p[19] = 0.1;
-    p[20] = 0.022;
-    p[21] = 0.0025;
-    p[22] = 0.0021;
-    p[23] = 0.0043;
+    p[0] = 1;
 
     for (int i = 0; i <= N; i++) {
         drone_model_acados_update_params(capsule, i, p, NP);
@@ -397,7 +384,7 @@ void drone_model_acados_create_5_set_nlp_in(drone_model_solver_capsule* capsule,
     ocp_nlp_in * nlp_in = capsule->nlp_in;
 
     // set up time_steps
-    
+
 
     if (new_time_steps) {
         drone_model_acados_update_time_steps(capsule, N, new_time_steps);
@@ -415,7 +402,7 @@ void drone_model_acados_create_5_set_nlp_in(drone_model_solver_capsule* capsule,
     {
         ocp_nlp_dynamics_model_set(nlp_config, nlp_dims, nlp_in, i, "expl_vde_forw", &capsule->forw_vde_casadi[i]);
         ocp_nlp_dynamics_model_set(nlp_config, nlp_dims, nlp_in, i, "expl_ode_fun", &capsule->expl_ode_fun[i]);
-    
+
     }
 
     /**** Cost ****/
@@ -430,23 +417,16 @@ void drone_model_acados_create_5_set_nlp_in(drone_model_solver_capsule* capsule,
     W_0[6+(NY0) * 6] = 1;
     W_0[7+(NY0) * 7] = 1;
     W_0[8+(NY0) * 8] = 1;
-    W_0[9+(NY0) * 9] = 10;
-    W_0[10+(NY0) * 10] = 10;
-    W_0[11+(NY0) * 11] = 10;
+    W_0[9+(NY0) * 9] = 1;
+    W_0[10+(NY0) * 10] = 1;
+    W_0[11+(NY0) * 11] = 1;
     W_0[12+(NY0) * 12] = 1;
-    W_0[13+(NY0) * 13] = 1;
-    W_0[14+(NY0) * 14] = 1;
-    W_0[15+(NY0) * 15] = 1;
     ocp_nlp_cost_model_set(nlp_config, nlp_dims, nlp_in, 0, "W", W_0);
     free(W_0);
 
     double* yref_0 = calloc(NY0, sizeof(double));
     // change only the non-zero elements:
-    yref_0[2] = 1;
-    yref_0[12] = 1.8436408;
-    yref_0[13] = 1.8436408;
-    yref_0[14] = 1.8436408;
-    yref_0[15] = 1.8436408;
+    yref_0[9] = 9.8066;
     ocp_nlp_cost_model_set(nlp_config, nlp_dims, nlp_in, 0, "yref", yref_0);
     free(yref_0);
     double* W = calloc(NY*NY, sizeof(double));
@@ -460,21 +440,14 @@ void drone_model_acados_create_5_set_nlp_in(drone_model_solver_capsule* capsule,
     W[6+(NY) * 6] = 1;
     W[7+(NY) * 7] = 1;
     W[8+(NY) * 8] = 1;
-    W[9+(NY) * 9] = 10;
-    W[10+(NY) * 10] = 10;
-    W[11+(NY) * 11] = 10;
+    W[9+(NY) * 9] = 1;
+    W[10+(NY) * 10] = 1;
+    W[11+(NY) * 11] = 1;
     W[12+(NY) * 12] = 1;
-    W[13+(NY) * 13] = 1;
-    W[14+(NY) * 14] = 1;
-    W[15+(NY) * 15] = 1;
 
     double* yref = calloc(NY, sizeof(double));
     // change only the non-zero elements:
-    yref[2] = 1;
-    yref[12] = 1.8436408;
-    yref[13] = 1.8436408;
-    yref[14] = 1.8436408;
-    yref[15] = 1.8436408;
+    yref[9] = 9.8066;
 
     for (int i = 1; i < N; i++)
     {
@@ -496,7 +469,6 @@ void drone_model_acados_create_5_set_nlp_in(drone_model_solver_capsule* capsule,
     // terminal cost
     double* yref_e = calloc(NYN, sizeof(double));
     // change only the non-zero elements:
-    yref_e[2] = 1;
     ocp_nlp_cost_model_set(nlp_config, nlp_dims, nlp_in, N, "yref", yref_e);
     free(yref_e);
 
@@ -511,9 +483,6 @@ void drone_model_acados_create_5_set_nlp_in(drone_model_solver_capsule* capsule,
     W_e[6+(NYN) * 6] = 1;
     W_e[7+(NYN) * 7] = 1;
     W_e[8+(NYN) * 8] = 1;
-    W_e[9+(NYN) * 9] = 10;
-    W_e[10+(NYN) * 10] = 10;
-    W_e[11+(NYN) * 11] = 10;
     ocp_nlp_cost_model_set(nlp_config, nlp_dims, nlp_in, N, "W", W_e);
     free(W_e);
     ocp_nlp_cost_model_set(nlp_config, nlp_dims, nlp_in, N, "nls_y_fun", &capsule->cost_y_e_fun);
@@ -537,9 +506,6 @@ void drone_model_acados_create_5_set_nlp_in(drone_model_solver_capsule* capsule,
     idxbx0[7] = 7;
     idxbx0[8] = 8;
     idxbx0[9] = 9;
-    idxbx0[10] = 10;
-    idxbx0[11] = 11;
-    idxbx0[12] = 12;
 
     double* lubx0 = calloc(2*NBX0, sizeof(double));
     double* lbx0 = lubx0;
@@ -554,8 +520,8 @@ void drone_model_acados_create_5_set_nlp_in(drone_model_solver_capsule* capsule,
     free(idxbx0);
     free(lubx0);
     // idxbxe_0
-    int* idxbxe_0 = malloc(13 * sizeof(int));
-    
+    int* idxbxe_0 = malloc(10 * sizeof(int));
+
     idxbxe_0[0] = 0;
     idxbxe_0[1] = 1;
     idxbxe_0[2] = 2;
@@ -566,16 +532,13 @@ void drone_model_acados_create_5_set_nlp_in(drone_model_solver_capsule* capsule,
     idxbxe_0[7] = 7;
     idxbxe_0[8] = 8;
     idxbxe_0[9] = 9;
-    idxbxe_0[10] = 10;
-    idxbxe_0[11] = 11;
-    idxbxe_0[12] = 12;
     ocp_nlp_constraints_model_set(nlp_config, nlp_dims, nlp_in, 0, "idxbxe", idxbxe_0);
     free(idxbxe_0);
 
     /* constraints that are the same for initial and intermediate */
     // u
     int* idxbu = malloc(NBU * sizeof(int));
-    
+
     idxbu[0] = 0;
     idxbu[1] = 1;
     idxbu[2] = 2;
@@ -583,11 +546,14 @@ void drone_model_acados_create_5_set_nlp_in(drone_model_solver_capsule* capsule,
     double* lubu = calloc(2*NBU, sizeof(double));
     double* lbu = lubu;
     double* ubu = lubu + NBU;
-    
-    ubu[0] = 8.5;
-    ubu[1] = 8.5;
-    ubu[2] = 8.5;
-    ubu[3] = 8.5;
+
+    ubu[0] = 30;
+    lbu[1] = -10;
+    ubu[1] = 10;
+    lbu[2] = -10;
+    ubu[2] = 10;
+    lbu[3] = -4;
+    ubu[3] = 4;
 
     for (int i = 0; i < N; i++)
     {
@@ -605,31 +571,6 @@ void drone_model_acados_create_5_set_nlp_in(drone_model_solver_capsule* capsule,
 
 
 
-    // x
-    int* idxbx = malloc(NBX * sizeof(int));
-    
-    idxbx[0] = 10;
-    idxbx[1] = 11;
-    idxbx[2] = 12;
-    double* lubx = calloc(2*NBX, sizeof(double));
-    double* lbx = lubx;
-    double* ubx = lubx + NBX;
-    
-    lbx[0] = -10;
-    ubx[0] = 10;
-    lbx[1] = -10;
-    ubx[1] = 10;
-    lbx[2] = -10;
-    ubx[2] = 10;
-
-    for (int i = 1; i < N; i++)
-    {
-        ocp_nlp_constraints_model_set(nlp_config, nlp_dims, nlp_in, i, "idxbx", idxbx);
-        ocp_nlp_constraints_model_set(nlp_config, nlp_dims, nlp_in, i, "lbx", lbx);
-        ocp_nlp_constraints_model_set(nlp_config, nlp_dims, nlp_in, i, "ubx", ubx);
-    }
-    free(idxbx);
-    free(lubx);
 
 
 
@@ -710,7 +651,7 @@ void drone_model_acados_create_6_set_opts(drone_model_solver_capsule* capsule)
     /* options QP solver */
     int qp_solver_cond_N;
 
-    
+
     // NOTE: there is no condensing happening here!
     qp_solver_cond_N = N;
     ocp_nlp_solver_opts_set(nlp_config, nlp_opts, "qp_cond_N", &qp_solver_cond_N);
@@ -744,7 +685,7 @@ void drone_model_acados_create_7_set_nlp_out(drone_model_solver_capsule* capsule
     double* x0 = xu0;
 
     // initialize with x0
-    
+
     x0[3] = 1;
 
 
@@ -863,7 +804,7 @@ int drone_model_acados_update_params(drone_model_solver_capsule* capsule, int st
 {
     int solver_status = 0;
 
-    int casadi_np = 24;
+    int casadi_np = 4;
     if (casadi_np != np) {
         printf("acados_update_params: trying to set %i parameters for external functions."
             " External function has %i parameters. Exiting.\n", np, casadi_np);
@@ -874,10 +815,10 @@ int drone_model_acados_update_params(drone_model_solver_capsule* capsule, int st
     {
         capsule->forw_vde_casadi[stage].set_param(capsule->forw_vde_casadi+stage, p);
         capsule->expl_ode_fun[stage].set_param(capsule->expl_ode_fun+stage, p);
-    
+
 
         // constraints
-    
+
 
         // cost
         if (stage == 0)
@@ -902,7 +843,7 @@ int drone_model_acados_update_params(drone_model_solver_capsule* capsule, int st
         capsule->cost_y_e_fun_jac_ut_xt.set_param(&capsule->cost_y_e_fun_jac_ut_xt, p);
         capsule->cost_y_e_hess.set_param(&capsule->cost_y_e_hess, p);
         // constraints
-    
+
     }
 
 
@@ -913,7 +854,7 @@ int drone_model_acados_update_params(drone_model_solver_capsule* capsule, int st
 
 int drone_model_acados_solve(drone_model_solver_capsule* capsule)
 {
-    // solve NLP 
+    // solve NLP
     int solver_status = ocp_nlp_solve(capsule->nlp_solver, capsule->nlp_in, capsule->nlp_out);
 
     return solver_status;
@@ -983,7 +924,7 @@ void drone_model_acados_print_stats(drone_model_solver_capsule* capsule)
     ocp_nlp_get(capsule->nlp_config, capsule->nlp_solver, "stat_n", &stat_n);
     ocp_nlp_get(capsule->nlp_config, capsule->nlp_solver, "stat_m", &stat_m);
 
-    
+
     double stat[1200];
     ocp_nlp_get(capsule->nlp_config, capsule->nlp_solver, "statistics", stat);
 

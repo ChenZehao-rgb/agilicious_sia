@@ -1,42 +1,14 @@
-# Betaflight retains the fast body-rate / motor loops.  This NMPC predicts the
-# rigid-body motion and supplies total thrust plus the next predicted body rate
-# to the UDP RC bridge at 100 Hz.
-timing:                             true
-threaded_preparation:               false
-
-# Weights start from the validated agilib/params/mpc.yaml tuning, with position
-# and velocity raised roughly 2x and 5x for trajectory tracking: that took the
-# hardest reference (LOOP14_38) from 0.51 m to 0.15 m RMSE.  Doubling them again
-# makes that same trajectory diverge into the ground, so this is close to the
-# usable limit for a 100 Hz outer loop over Betaflight's rate controller.
-#
-# The previous SITL-only values weighted roll/pitch attitude 40x higher than
-# position and body rates 20x higher, which made the controller chase the
-# reference attitude instead of the reference position.  Roll and pitch are not
-# tracking targets in their own right here: they are whatever the position and
-# thrust solution needs them to be, so only yaw carries a high attitude weight.
-Q_pos_x:                            300
-Q_pos_y:                            300
-Q_pos_z:                            650
-Q_att_x:                            5
-Q_att_y:                            5
-Q_att_z:                            200
-Q_vel:                              3.0
-Q_omega_xy:                         10.0
-Q_omega_z:                          1.0
-R:                                  6.0
-exp_decay:                          1.0
-max_wait_time_before_preparation:   0.1
-max_wait_time_after_preparation:    0.01
-
-# CoG adaptation is unnecessary for the symmetric SITL model.
-cog_enable:                         false
-cog_abs_velocity_limit:             0.25
-cog_abs_omega_limit:                0.5
-cog_rel_hover_thrust_limit:         0.5
-cog_height_limit:                   0.5
-Q_cog_omega:                        1e0
-Q_cog_legnths:                      1e-9
-Q_cog_omega_init:                   1e2
-Q_cog_legnths_init:                 1e-10
-R_cog:                              0.1
+# Ideal collective-acceleration/body-rate MPC. Betaflight supplies the inner rate loop.
+# Conservative initial weights from generic plant simulation; not verified on real hardware.
+# Rotor-force MPC tuning results do not transfer; validate the actual rate loop.
+timing: true
+Q_pos_x: 300
+Q_pos_y: 300
+Q_pos_z: 650
+Q_att_x: 5
+Q_att_y: 5
+Q_att_z: 200
+Q_vel: 3.0
+R_collective_thrust: 0.1  # input c=T/m, m/s^2
+R_body_rates: [50.0, 50.0, 50.0]  # roll/pitch/yaw rate inputs, rad/s
+exp_decay: 1.0
