@@ -18,3 +18,10 @@ bool rtk_fixed
 bool heading_valid
 bool accuracy_ok
 bool synchronized
+# GNSS metadata; legacy RTK flags above retain their original meaning.
+string navigation_source
+string navigation_session
+uint8 fix_type
+bool clock_aligned
+bool accuracy_known
+bool navigation_valid

@@ -8,6 +8,8 @@ foreach(dep diagnostic_msgs rclcpp sensor_msgs geometry_msgs nav_msgs std_msgs r
 endforeach()
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Rtk.msg" "msg/Authority.msg" "msg/Health.msg"
+  "msg/Navigation.msg" "msg/LocalNavigation.msg" "msg/NavigationOrigin.msg"
+  "msg/ComputationStatus.msg" "msg/MspState.msg"
   "msg/Heading.msg" "msg/FusedState.msg" "msg/SafetyEvidence.msg"
   "msg/ControlCommand.msg" "msg/OutputStatus.msg" "msg/MspEvent.msg"
   DEPENDENCIES std_msgs geometry_msgs builtin_interfaces)
@@ -73,9 +75,10 @@ target_link_libraries(mavlink_sensor_node "${typesupport}")
 ament_target_dependencies(mavlink_sensor_node rclcpp sensor_msgs geometry_msgs diagnostic_msgs)
 target_compile_options(mavlink_sensor_node PRIVATE -Wall -Wextra -Werror -fno-finite-math-only)
 install(TARGETS mavlink_sensor_node DESTINATION lib/${PROJECT_NAME})
-install(FILES README.md MAVLINK_SENSORS.md DESTINATION share/${PROJECT_NAME})
+install(FILES README.md MAVLINK_SENSORS.md SHADOW_EVALUATION.md DESTINATION share/${PROJECT_NAME})
 install(DIRECTORY launch DESTINATION share/${PROJECT_NAME})
 install(DIRECTORY ${AGILIB_ROOT}/params/ DESTINATION share/${PROJECT_NAME}/params)
-install(PROGRAMS scripts/sim_rc.py DESTINATION lib/${PROJECT_NAME})
+install(PROGRAMS scripts/sim_rc.py scripts/gnss_adapter.py scripts/msp_evidence.py scripts/summarize_shadow_bag.py DESTINATION lib/${PROJECT_NAME})
+install(FILES scripts/shadow_support.py DESTINATION lib/${PROJECT_NAME})
 ament_export_dependencies(rosidl_default_runtime)
 ament_package()

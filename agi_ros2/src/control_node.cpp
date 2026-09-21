@@ -28,7 +28,11 @@ ControlNode::ControlNode()
           _authority_receive_time(kUnknownTime),
           _health_receive_time(kUnknownTime),
           _output_receive_time(kUnknownTime) {
+	rcl_interfaces::msg::ParameterDescriptor shadow_descriptor;
+	shadow_descriptor.read_only = true;
+	_shadow_only = declare_parameter<bool>("shadow_only", false, shadow_descriptor);
 	_mode = declare_parameter<std::string>("mode", "sitl");
+	if (_shadow_only && _mode != "hardware") throw std::invalid_argument("shadow_only requires hardware mode");
 	if (_mode != "sitl" && _mode != "hardware") {
 		throw std::invalid_argument("mode must be sitl or hardware");
 	}
@@ -71,6 +75,7 @@ ControlNode::ControlNode()
 	});
 	_output_sub = create_subscription<msg::OutputStatus>("output_status", 1,
 	                                                     std::bind(&ControlNode::onOutputStatus, this, std::placeholders::_1));
+	_computation_pub = create_publisher<msg::ComputationStatus>("computation_status", 10);
 	_command_pub = create_publisher<msg::ControlCommand>("control_command", 1);
 	_reference_pub = create_publisher<nav_msgs::msg::Odometry>("reference", 1);
 	_diagnostic_pub = create_publisher<std_msgs::msg::Float64MultiArray>("control_diagnostics", 10);
@@ -155,7 +160,10 @@ void ControlNode::tick() {
 	evidence.thrust_calibrated = health_fresh && _health.thrust_calibrated && output_fresh && _output.thrust_calibrated;
 	evidence.geofence_ok = health_fresh && _health.geofence_ok;
 	evidence.msp_healthy = health_fresh && _health.transport_healthy && output_fresh && _output.transport_healthy;
-	publishDecision(_pilot->tick(state, evidence), state);
+	const bool navigation_valid = _state.navigation_source == "gnss" && _state.navigation_valid && _state.clock_aligned &&
+	                              _state.heading_valid && timely(_control_time, stampSeconds(_state.rtk_stamp), .3) &&
+	                              timely(wall, _state.rtk_receive_time, .3) && timely(wall, _state.imu_receive_time, .010);
+	publishDecision(_pilot->tick(state, evidence, _shadow_only, navigation_valid), state);
 }
 
 void ControlNode::publishDecision(const agi::hardware::ControlDecision& decision, const agi::QuadState& state) {
@@ -173,10 +181,21 @@ void ControlNode::publishDecision(const agi::hardware::ControlDecision& decision
 	command.body_rates.x = decision.command.omega.x();
 	command.body_rates.y = decision.command.omega.y();
 	command.body_rates.z = decision.command.omega.z();
-	command.permit_override = decision.permit_override;
+	command.permit_override = !_shadow_only && decision.permit_override;
 	command.mode = static_cast<uint8_t>(decision.mode);
 	command.evidence = encodeEvidence(decision.evidence);
 	_command_pub->publish(command);
+	msg::ComputationStatus computation;
+	computation.header = command.header;
+	computation.shadow_only = _shadow_only;
+	computation.state_valid = decision.state_valid;
+	computation.mpc_success = decision.evidence.command_valid;
+	computation.warm_cycles = _pilot->warmCycles();
+	computation.trajectory_active = decision.trajectory_active;
+	computation.reference_elapsed = decision.reference_elapsed;
+	computation.solve_seconds = decision.evidence.solve_seconds;
+	computation.reason = decision.evidence.command_valid ? "MPC computed" : "State/navigation/kill or MPC check failed";
+	_computation_pub->publish(computation);
 
 	std_msgs::msg::Float64MultiArray diagnostic;
 	const auto& evidence = decision.evidence;

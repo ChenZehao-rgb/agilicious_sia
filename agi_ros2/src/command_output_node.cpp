@@ -41,7 +41,11 @@ CommandOutputNode::CommandOutputNode()
           _health_receive_time(kUnknownTime),
           _previous_command_time(kUnknownTime),
           _previous_ros_time(kUnknownTime) {
+	rcl_interfaces::msg::ParameterDescriptor shadow_descriptor;
+	shadow_descriptor.read_only = true;
+	_shadow_only = declare_parameter<bool>("shadow_only", false, shadow_descriptor);
 	_mode = declare_parameter<std::string>("mode", "sitl");
+	if (_shadow_only && _mode != "hardware") throw std::invalid_argument("shadow_only requires hardware mode");
 	if (_mode != "sitl" && _mode != "hardware") {
 		throw std::invalid_argument("mode must be sitl or hardware");
 	}
@@ -77,7 +81,7 @@ CommandOutputNode::CommandOutputNode()
 		loadThrustTable(thrust_file);
 	}
 	if (_mode == "hardware") {
-		if (!_thrust) {
+		if (!_thrust && !_shadow_only) {
 			throw std::invalid_argument("Hardware output requires a thrust_table");
 		}
 		_msp = std::make_unique<agi::hardware::BetaflightMspBridge>(device, baud);
@@ -205,6 +209,13 @@ void CommandOutputNode::reportFault(const std::string& reason) {
 }
 
 void CommandOutputNode::processOutput() {
+	// Independent hardware interlock, including forged permit_override messages.
+	if (_shadow_only) {
+		_override_active = false;
+		_reason = "Shadow only: serial control frames disabled";
+		publishStatus();
+		return;
+	}
 	const auto timely = [this](double now, double sample, double limit) {
 		return SafetyGate::fresh(now, sample, limit, _timing_checks);
 	};

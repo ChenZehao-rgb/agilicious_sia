@@ -110,40 +110,58 @@ BetaflightMspBridge::BetaflightMspBridge(const std::string& device, int baud)
       tcsetattr(fd_, TCSANOW, &settings) || tcflush(fd_, TCIOFLUSH)) fail();
 }
 BetaflightMspBridge::~BetaflightMspBridge() {
-  if (fd_ >= 0) { tcflush(fd_, TCOFLUSH); close(fd_); }
+	if (fd_ >= 0) {
+		tcflush(fd_, TCOFLUSH);
+		ioctl(fd_, TIOCNXCL);
+		close(fd_);
+	}
 }
 void BetaflightMspBridge::checkOwner() const {
   if (std::this_thread::get_id() != owner_)
     throw std::logic_error("MSP serial accessed from a second thread");
 }
-bool BetaflightMspBridge::writeFrame(uint8_t code,
-  const std::vector<uint8_t>& payload, double deadline) {
-  checkOwner();
-  const double start = monotonicSeconds();
-  if (failed_ || !std::isfinite(deadline) || deadline <= start ||
-      deadline - start > 0.1 || payload.size() > 254) return false;
-  std::vector<uint8_t> bytes{'$', 'M', '<', static_cast<uint8_t>(payload.size()), code};
-  bytes.insert(bytes.end(), payload.begin(), payload.end());
-  uint8_t check = 0;
-  for (size_t i = 3; i < bytes.size(); ++i) check ^= bytes[i];
-  bytes.push_back(check);
-  size_t offset = 0;
-  while (offset < bytes.size() && monotonicSeconds() < deadline) {
-    const ssize_t n = write(fd_, bytes.data() + offset, bytes.size() - offset);
-    if (n > 0) offset += static_cast<size_t>(n);
-    else if (n < 0 && errno == EINTR) continue;
-    else if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-      if (!waitFd(fd_, POLLOUT, deadline)) break;
-    } else break;
-  }
-  last_write_seconds_ = monotonicSeconds() - start;
-  if (offset != bytes.size() || monotonicSeconds() > deadline) {
-    ++errors_;
-    failed_ = true;  // Partial frames cannot be retried as another RC command.
-    tcflush(fd_, TCOFLUSH);
-    return false;
-  }
-  return true;  // Kernel acceptance only, NOT proof of FC receipt.
+bool BetaflightMspBridge::writeFrame(uint16_t code, const std::vector<uint8_t>& payload, double deadline) {
+	checkOwner();
+	const double start = monotonicSeconds();
+	if (failed_ || !std::isfinite(deadline) || deadline <= start || deadline - start > 0.1 || payload.size() > 254) return false;
+	const bool v2 = code > 254;
+	std::vector<uint8_t> bytes;
+	if (v2) {
+		bytes = {'$',
+		         'X',
+		         '<',
+		         0,
+		         static_cast<uint8_t>(code & 255),
+		         static_cast<uint8_t>(code >> 8),
+		         static_cast<uint8_t>(payload.size()),
+		         0};
+	} else {
+		bytes = {'$', 'M', '<', static_cast<uint8_t>(payload.size()), static_cast<uint8_t>(code)};
+	}
+	bytes.insert(bytes.end(), payload.begin(), payload.end());
+	uint8_t check = 0;
+	for (size_t i = 3; i < bytes.size(); ++i) check = v2 ? crc8(check, bytes[i]) : check ^ bytes[i];
+	bytes.push_back(check);
+	size_t offset = 0;
+	while (offset < bytes.size() && monotonicSeconds() < deadline) {
+		const ssize_t n = write(fd_, bytes.data() + offset, bytes.size() - offset);
+		if (n > 0)
+			offset += static_cast<size_t>(n);
+		else if (n < 0 && errno == EINTR)
+			continue;
+		else if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+			if (!waitFd(fd_, POLLOUT, deadline)) break;
+		} else
+			break;
+	}
+	last_write_seconds_ = monotonicSeconds() - start;
+	if (offset != bytes.size() || monotonicSeconds() > deadline) {
+		++errors_;
+		failed_ = true;  // Partial frames cannot be retried as another RC command.
+		tcflush(fd_, TCOFLUSH);
+		return false;
+	}
+	return true;  // Kernel acceptance only, NOT proof of FC receipt.
 }
 bool BetaflightMspBridge::request(uint8_t code, MspFrame* reply,
                                  double deadline) {
@@ -173,12 +191,38 @@ bool BetaflightMspBridge::request(uint8_t code, MspFrame* reply,
 bool BetaflightMspBridge::sendRequest(uint8_t code, double deadline) {
   checkOwner();
   switch (code) {
-    case 1: case 2: case 3: case 5: case 64: case 101: case 105:
-    case 106: case 108: case 110: case 111: case 114: case 119: case 130:
-      return writeFrame(code, {}, deadline);
-    default: return false;
+	  case 1:
+	  case 2:
+	  case 3:
+	  case 5:
+	  case 34:
+	  case 44:
+	  case 64:
+	  case 101:
+	  case 105:
+	  case 125:
+	  case 238:
+	  case 106:
+	  case 108:
+	  case 110:
+	  case 111:
+	  case 114:
+	  case 119:
+	  case 130:
+		  return writeFrame(code, {}, deadline);
+	  default:
+		  return false;
   }
 }
+bool BetaflightMspBridge::readOverrideSetting(const std::string& name, double deadline) {
+	if (name != "msp_override_channels_mask" && name != "msp_override_failsafe") return false;
+	// NUL padding gives the firmware room for its reply buffer. No '=' is ever
+	// transmitted: MSP2_CLI_SETTING's write variant is intentionally inaccessible.
+	std::vector<uint8_t> payload(96, 0);
+	std::copy(name.begin(), name.end(), payload.begin());
+	return writeFrame(0x3010, payload, deadline);
+}
+
 bool BetaflightMspBridge::receive(MspFrame* reply) {
   checkOwner();
   if (!reply) return false;

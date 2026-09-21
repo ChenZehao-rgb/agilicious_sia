@@ -1,0 +1,9 @@
+std_msgs/Header header
+bool shadow_only
+bool state_valid
+bool mpc_success
+uint32 warm_cycles
+bool trajectory_active
+float64 reference_elapsed
+float64 solve_seconds
+string reason

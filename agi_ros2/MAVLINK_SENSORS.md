@@ -195,3 +195,12 @@ case still failed with RC ROS-stamp ages exceeding the existing 100 ms deadline.
 Those control/fusion/MSP sources and safety thresholds were not modified; the
 failure's root cause remains unestablished. Sensor-only test success is not a full
 flight-pipeline regression pass. No physical flight controller was flashed/tested.
+
+## Ordinary GNSS shadow evaluation
+
+The driver additionally publishes atomic paired `sensors/navigation` messages.
+`altitude_source=msl` explicitly enables MSL height for that new interface;
+NavSatFix continues to expose only known ellipsoid altitude. The optional
+[shadow entrypoint](SHADOW_EVALUATION.md) supplies the separate local-frame and
+MSP evidence adapters without granting hardware output authority. The default
+flight/RTK entrypoint retains its original requirements.

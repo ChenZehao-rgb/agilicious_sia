@@ -6,6 +6,7 @@
 #include <string>
 
 #include "agi_ros2/msg/authority.hpp"
+#include "agi_ros2/msg/computation_status.hpp"
 #include "agi_ros2/msg/control_command.hpp"
 #include "agi_ros2/msg/fused_state.hpp"
 #include "agi_ros2/msg/health.hpp"
@@ -31,6 +32,7 @@ private:
 
 	const std::string _clock_id;
 	std::string _mode;
+	bool _shadow_only = false;
 	bool _simulation_time = false;
 	bool _timing_checks = true;
 	std::unique_ptr<agi::PilotParams> _params;
@@ -51,6 +53,7 @@ private:
 	rclcpp::Subscription<msg::Health>::SharedPtr _health_sub;
 	rclcpp::Subscription<msg::OutputStatus>::SharedPtr _output_sub;
 	rclcpp::Publisher<msg::ControlCommand>::SharedPtr _command_pub;
+	rclcpp::Publisher<msg::ComputationStatus>::SharedPtr _computation_pub;
 	rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr _reference_pub;
 	rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr _diagnostic_pub;
 	rclcpp::Publisher<std_msgs::msg::String>::SharedPtr _status_pub;

@@ -6,6 +6,7 @@
 #include <string>
 
 #include "agi_ros2/msg/fused_state.hpp"
+#include "agi_ros2/msg/local_navigation.hpp"
 #include "agi_ros2/msg/rtk.hpp"
 #include "agilib/estimator/ekf_imu/ekf_imu.hpp"
 #include "agilib/types/quad_state.hpp"
@@ -22,6 +23,7 @@ public:
 	StateFusionNode();
 
 private:
+	void onNavigation(msg::LocalNavigation::ConstSharedPtr message);
 	void onRtk(msg::Rtk::ConstSharedPtr message);
 	void onImu(sensor_msgs::msg::Imu::ConstSharedPtr message);
 	void reset();
@@ -36,6 +38,9 @@ private:
 	double _rtk_heading_variance;
 	std::unique_ptr<agi::CompanionAhrs> _ahrs;
 	msg::Rtk _rtk;
+	msg::LocalNavigation _navigation;
+	std::string _navigation_source;
+	rclcpp::Subscription<msg::LocalNavigation>::SharedPtr _navigation_sub;
 	double _rtk_receive_time;
 	double _last_rtk_time;
 	uint64_t _reset_counter = 0;

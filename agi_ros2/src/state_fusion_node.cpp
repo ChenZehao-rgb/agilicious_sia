@@ -37,10 +37,20 @@ StateFusionNode::StateFusionNode()
 	_rtk_heading_variance = positive("rtk_heading_variance", 0.0001);
 	positive("imu_acceleration_variance", 0.1);
 	positive("imu_angular_velocity_variance", 0.0001);
+	_navigation_source = declare_parameter<std::string>("navigation_source", "rtk");
+	if (_navigation_source != "rtk" && _navigation_source != "gnss")
+		throw std::invalid_argument("navigation_source must be rtk or gnss");
 	reset();
 	_fused_pub = create_publisher<msg::FusedState>("fused_state", 1);
 	_state_pub = create_publisher<nav_msgs::msg::Odometry>("state", 1);
-	_rtk_sub = create_subscription<msg::Rtk>("sensors/rtk", 10, std::bind(&StateFusionNode::onRtk, this, std::placeholders::_1));
+	if (_navigation_source == "rtk") {
+		_rtk_sub =
+		        create_subscription<msg::Rtk>("sensors/rtk", 10, std::bind(&StateFusionNode::onRtk, this, std::placeholders::_1));
+	} else {
+		_navigation_sub =
+		        create_subscription<msg::LocalNavigation>("sensors/local_navigation", rclcpp::SensorDataQoS(),
+			                                          std::bind(&StateFusionNode::onNavigation, this, std::placeholders::_1));
+	}
 	_imu_sub = create_subscription<sensor_msgs::msg::Imu>("sensors/imu", rclcpp::SensorDataQoS().keep_last(256),
 	                                                      std::bind(&StateFusionNode::onImu, this, std::placeholders::_1));
 }
@@ -64,6 +74,38 @@ void StateFusionNode::reset() {
 
 void StateFusionNode::onRtk(msg::Rtk::ConstSharedPtr message) {
 	_rtk = *message;
+	_rtk_receive_time = monotonicSeconds();
+}
+
+void StateFusionNode::onNavigation(msg::LocalNavigation::ConstSharedPtr message) {
+	if (message->header.frame_id != "odom" || message->session_id.empty() || message->source_session.empty() ||
+	    !message->clock_aligned || message->fix_type < 3 || message->fix_type > 6 ||
+	    (message->altitude_reference != "ellipsoid" && message->altitude_reference != "msl"))
+		return;
+	for (double variance : message->position_variance)
+		if (!std::isfinite(variance) || variance <= 0) return;
+	for (double variance : message->velocity_variance)
+		if (!std::isfinite(variance) || variance <= 0) return;
+	if (!std::isfinite(message->heading_variance) || message->heading_variance <= 0) return;
+	const bool changed = _navigation.session_id != message->session_id || _navigation.source_session != message->source_session;
+	if (!changed && stampSeconds(message->header.stamp) <= stampSeconds(_navigation.header.stamp)) return;
+	_navigation = *message;
+	for (int i = 0; i < 3; ++i) {
+		_rtk_position_variance(i) = message->position_variance[i];
+		_rtk_velocity_variance(i) = message->velocity_variance[i];
+	}
+	_rtk_heading_variance = message->heading_variance;
+	if (changed) {
+		_rtk = msg::Rtk();
+		reset();
+	}
+	// Internal observation storage only: never manufacture fixed/PPS evidence.
+	_rtk.header = message->header;
+	_rtk.position = message->position;
+	_rtk.velocity = message->velocity;
+	_rtk.heading = message->heading;
+	_rtk.heading_valid = message->heading_valid;
+	_rtk.accuracy_ok = message->accuracy_known;
 	_rtk_receive_time = monotonicSeconds();
 }
 
@@ -93,8 +135,9 @@ void StateFusionNode::onImu(sensor_msgs::msg::Imu::ConstSharedPtr message) {
 
 	const double fix_time = stampSeconds(_rtk.header.stamp);
 	const bool valid_fix = (get_parameter("use_sim_time").as_bool() || SafetyGate::fresh(received, _rtk_receive_time, 0.3)) &&
-	                       SafetyGate::fresh(time, fix_time, 0.3, _timing_checks) && _rtk.header.frame_id == "odom" && _rtk.fixed &&
-	                       _rtk.accuracy_ok && (!std::isfinite(_last_rtk_time) || fix_time > _last_rtk_time);
+	                       SafetyGate::fresh(time, fix_time, 0.3, _timing_checks) && _rtk.header.frame_id == "odom" &&
+	                       ((_navigation_source == "gnss" && _navigation.clock_aligned) || (_rtk.fixed && _rtk.accuracy_ok)) &&
+	                       (!std::isfinite(_last_rtk_time) || fix_time > _last_rtk_time);
 	const agi::Vector<3> position(_rtk.position.x, _rtk.position.y, _rtk.position.z);
 	const agi::Vector<3> velocity(_rtk.velocity.x, _rtk.velocity.y, _rtk.velocity.z);
 	const bool heading_valid = _rtk.heading_valid && std::isfinite(_rtk.heading);
@@ -154,6 +197,13 @@ void StateFusionNode::publishState(double imu_receive_time) {
 	if (std::isfinite(_last_rtk_time)) {
 		out.rtk_stamp = rosStamp(_last_rtk_time);
 	}
+	out.navigation_source = _navigation_source;
+	out.navigation_session = _navigation.session_id + ":" + _navigation.source_session;
+	out.fix_type = _navigation_source == "gnss" ? _navigation.fix_type : (_rtk.fixed ? 6 : 0);
+	out.clock_aligned = _navigation_source == "gnss" ? _navigation.clock_aligned : _rtk.synchronized;
+	out.accuracy_known = _rtk.accuracy_ok;
+	out.navigation_valid = std::isfinite(_last_rtk_time) && SafetyGate::fresh(_state.t, _last_rtk_time, .3) &&
+	                       (_navigation_source == "gnss" ? _navigation.clock_aligned : _rtk.fixed);
 	out.reset_counter = _reset_counter;
 	out.initialized = _state.valid() && std::isfinite(_last_rtk_time);
 	out.rtk_fixed = _rtk.fixed;

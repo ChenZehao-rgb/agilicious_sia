@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "agi_ros2/msg/heading.hpp"
+#include "agi_ros2/msg/navigation.hpp"
 
 namespace {
 double steady() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
@@ -47,8 +48,8 @@ public:
 		_gps_mode = declare_parameter<std::string>("gps_mode", "gnss", desc);
 		_altitude_source = declare_parameter<std::string>("altitude_source", "unknown", desc);
 		if (_gps_mode != "gnss" && _gps_mode != "rtk") throw std::invalid_argument("gps_mode must be gnss or rtk");
-		if (_altitude_source != "unknown" && _altitude_source != "ellipsoid")
-			throw std::invalid_argument("altitude_source must be unknown or ellipsoid");
+		if (_altitude_source != "unknown" && _altitude_source != "ellipsoid" && _altitude_source != "msl")
+			throw std::invalid_argument("altitude_source must be unknown, ellipsoid or msl");
 		const auto rate = [&](const char *name, int value, int max) {
 			int v = declare_parameter<int>(name, value, desc);
 			if (v < 0 || v > max) throw std::invalid_argument(name);
@@ -68,6 +69,7 @@ public:
 		_fix_pub = create_publisher<sensor_msgs::msg::NavSatFix>("sensors/gps/fix", qos);
 		_velocity_pub = create_publisher<geometry_msgs::msg::TwistStamped>("sensors/gps/velocity", qos);
 		_attitude_pub = create_publisher<geometry_msgs::msg::QuaternionStamped>("sensors/fc_attitude", qos);
+		_navigation_pub = create_publisher<agi_ros2::msg::Navigation>("sensors/navigation", qos);
 		_heading_pub = create_publisher<agi_ros2::msg::Heading>("sensors/fc_heading", qos);
 		_status_pub = create_publisher<diagnostic_msgs::msg::DiagnosticArray>("sensors/mavlink/status", rclcpp::QoS(10).reliable());
 		_timer = create_wall_timer(std::chrono::milliseconds(1), [this] { tick(); });
@@ -90,6 +92,7 @@ private:
 		double arrival;
 	};
 	void resetEpoch() {
+		_source_session = std::to_string(steady());
 		_sync_count = 0;
 		_offset = nan;
 		_last_remote_ns = 0;
@@ -457,6 +460,26 @@ private:
 				out.twist.linear.y = v.vx * .01;
 				out.twist.linear.z = -v.vz * .01;
 				_velocity_pub->publish(out);
+				agi_ros2::msg::Navigation navigation;
+				navigation.header = out.header;
+				navigation.source_session = _source_session;
+				navigation.device_time_usec = fix->value.time_usec;
+				navigation.fix_type = fix->value.fix_type;
+				navigation.latitude = fix->value.lat * 1e-7;
+				navigation.longitude = fix->value.lon * 1e-7;
+				navigation.altitude_reference = _altitude_source;
+				navigation.altitude = nan;
+				if (_altitude_source == "ellipsoid" && fix->value.alt_ellipsoid != INT32_MIN)
+					navigation.altitude = fix->value.alt_ellipsoid * .001;
+				if (_altitude_source == "msl" && fix->value.alt != INT32_MIN) navigation.altitude = fix->value.alt * .001;
+				navigation.velocity = out.twist.linear;
+				navigation.heading_valid = v.hdg < 36000;
+				navigation.heading = navigation.heading_valid ? std::remainder(pi / 2 - v.hdg * pi / 18000, 2 * pi) : nan;
+				navigation.horizontal_accuracy = fix->value.h_acc ? fix->value.h_acc * .001 : nan;
+				navigation.vertical_accuracy = fix->value.v_acc ? fix->value.v_acc * .001 : nan;
+				navigation.velocity_accuracy = fix->value.vel_acc ? fix->value.vel_acc * .001 : nan;
+				navigation.clock_aligned = _sync_count >= 5 && steady() - _last_sync < 2;
+				_navigation_pub->publish(navigation);
 				++_counts[2];
 				_velocity_valid = true;
 			}
@@ -516,6 +539,8 @@ private:
 	bool _heading_valid{false};
 	double _last_heading_receive{0};
 	rclcpp::Publisher<agi_ros2::msg::Heading>::SharedPtr _heading_pub;
+	rclcpp::Publisher<agi_ros2::msg::Navigation>::SharedPtr _navigation_pub;
+	std::string _source_session;
 	int _fd{-1}, _baud, _sys, _comp, _imu_hz, _gps_hz, _attitude_hz;
 	std::string _device, _gps_mode, _altitude_source, _reason{"Disconnected"};
 	std::vector<double> _acc_variance, _gyro_variance;

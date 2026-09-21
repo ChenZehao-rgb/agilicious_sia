@@ -1,0 +1,9 @@
+std_msgs/Header header
+string session_id
+float64 latitude
+float64 longitude
+float64 altitude
+string altitude_reference
+string heading_source
+float64 heading_correction_rad
+bool fc_declination_applied

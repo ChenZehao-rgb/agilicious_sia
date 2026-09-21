@@ -20,12 +20,15 @@ public:
 
 private:
 	struct Poll {
-		uint8_t code;
+		uint16_t code;
 		double hz, next, sent{0};
 		bool pending{false};
 		rclcpp::Publisher<msg::MspEvent>::SharedPtr publisher;
+		std::string setting;
+		builtin_interfaces::msg::Time stamp;
 	};
-	void emit(const std::string& event, const agi::hardware::MspFrame& frame, uint64_t errors, double latency = NAN);
+	void emit(const std::string& event, const agi::hardware::MspFrame& frame, uint64_t errors, double latency = NAN,
+	          const Poll* request = nullptr);
 	rclcpp::Node& _node;
 	std::vector<Poll> _polls;
 	rclcpp::Publisher<msg::MspEvent>::SharedPtr _events;
@@ -34,6 +37,7 @@ private:
 	double _timeout;
 	uint64_t _timeouts{0};
 	bool _healthy{true};
+	std::string _session_id;
 };
 }  // namespace agi_ros2
 

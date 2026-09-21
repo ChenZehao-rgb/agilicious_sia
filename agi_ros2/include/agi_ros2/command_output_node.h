@@ -41,6 +41,7 @@ private:
 	const std::string _clock_id;
 	const double _session_start;
 	std::string _mode;
+	bool _shadow_only = false;
 	bool _simulation_time = false;
 	bool _timing_checks = true;
 	double _mass = 0.0;

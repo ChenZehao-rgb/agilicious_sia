@@ -20,7 +20,7 @@ from pymavlink.dialects.v20 import common as mav
 from sensor_msgs.msg import Imu, NavSatFix
 from geometry_msgs.msg import TwistStamped, QuaternionStamped
 from diagnostic_msgs.msg import DiagnosticArray
-from agi_ros2.msg import Heading
+from agi_ros2.msg import Heading, Navigation
 
 
 class Harness:
@@ -43,13 +43,14 @@ class Harness:
         self.gps_time = 0
         self.commands = []
         self.next_imu = self.next_gps = self.next_attitude = 0
-        self.values = {k: [] for k in ('imu', 'fix', 'velocity', 'attitude', 'heading', 'status')}
+        self.values = {k: [] for k in ('imu', 'fix', 'velocity', 'attitude', 'heading', 'navigation', 'status')}
         self.node = rclpy.create_node('test_' + uuid.uuid4().hex)
         self.namespace = '/mavtest_' + uuid.uuid4().hex
         topics = [('imu', Imu, 'sensors/imu'), ('fix', NavSatFix, 'sensors/gps/fix'),
                   ('velocity', TwistStamped, 'sensors/gps/velocity'),
                   ('attitude', QuaternionStamped, 'sensors/fc_attitude'),
                   ('heading', Heading, 'sensors/fc_heading'),
+                  ('navigation', Navigation, 'sensors/navigation'),
                   ('status', DiagnosticArray, 'sensors/mavlink/status')]
         self.subs = [self.node.create_subscription(typ, self.namespace + '/' + topic,
                      lambda m, k=key: self.values[k].append(m),
@@ -224,6 +225,30 @@ class SensorTests(unittest.TestCase):
             h.heading=invalid; h.drive(.15)
             self.assertFalse(h.values['heading'][-1].valid)
             self.assertTrue(math.isnan(h.values['heading'][-1].heading))
+
+    def test_atomic_navigation_preserves_quality_and_session(self):
+        h = self.h
+        h.drive(1.8)
+        self.assertTrue(h.values['navigation'])
+        n = h.values['navigation'][-1]
+        self.assertEqual(n.fix_type, 3)
+        self.assertTrue(n.clock_aligned)
+        self.assertEqual(n.altitude_reference, 'unknown')
+        self.assertTrue(math.isnan(n.altitude))
+        self.assertAlmostEqual(n.velocity.x, 2.)
+        self.assertAlmostEqual(n.velocity.y, 1.)
+        self.assertAlmostEqual(n.heading, math.pi/2)
+        self.assertAlmostEqual(n.horizontal_accuracy, .5)
+        self.assertTrue(n.source_session)
+        session = n.source_session
+        previous = len(h.values['navigation'])
+        h.invalid_velocity = True
+        h.drive(.4)
+        self.assertLessEqual(len(h.values['navigation']) - previous, 1)
+        h.invalid_velocity = False
+        h.epoch = time.monotonic() - 2
+        h.drive(2.)
+        self.assertNotEqual(h.values['navigation'][-1].source_session, session)
 
     def test_delayed_sync_rejected(self):
         h=self.h; h.sync_delay=.04; h.drive(1.5)

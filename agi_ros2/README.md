@@ -355,3 +355,8 @@ GPS 超时隔离及实际 bag 消息。树莓派物理串口、目标固件和�
 新增独立 `mavlink_sensor_node`，保留 MSP 控制与状态通道。
 见 [MAVLink 配置、topic、时间语义和测试说明](MAVLINK_SENSORS.md)。
 普通 GPS topic 不替代现有 `/sensors/rtk` 融合接口。
+
+## 普通 GNSS 无输出评估
+
+使用 MSP 实体授权回传和 MAVLink IMU/GPS/磁罗盘辅助航向运行融合与 MPC，
+但强制禁止实机控制帧。入口、质量语义和测试见 [无输出评估说明](SHADOW_EVALUATION.md)。
