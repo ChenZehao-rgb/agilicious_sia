@@ -9,7 +9,7 @@ flight:
   shadow_only: false
   diagnostic_only: false
   record_bag: true
-  bag_output: ''
+  bag_output: '/home/ubuntu/agilicious_sia/bags/'
 pilot:
   pipeline:
     estimator:

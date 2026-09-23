@@ -78,6 +78,13 @@ RS-232 voltage levels. The adapter requests rates on startup/reconnect using
 Rate changes are volatile. Configuring GPS telemetry does not enable/configure
 the separate GPS receiver UART or change its native solution frequency.
 
+The configured rates are requests to the FC, not ROS republishing rates. With the
+default `mavlink.imu_rate_hz: 500`, the node requests a 2000 us interval for
+`HIGHRES_IMU` (105). A passive UART capture may therefore observe a different
+rate before this node starts (for example 250 Hz). Check the command ACK and the
+measured unique sample timestamps; an accepted request alone does not prove the
+requested rate or the physical sensor sampling frequency.
+
 ## Topics and conversions
 
 Names below are relative to the node namespace (root by default).

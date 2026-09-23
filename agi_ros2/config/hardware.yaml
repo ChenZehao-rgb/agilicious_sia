@@ -119,8 +119,8 @@ fusion:
   max_velocity_stddev: 0.0
   max_heading_stddev: 0.0
 output:
-  device: ''
-  baud: 921600
+  device: '/dev/ttyAMA0'
+  baud: 115200
   msp.response_timeout_ms: 100.0
   msp.read_configuration: true
   msp.rc.enabled: true
@@ -133,7 +133,7 @@ output:
   msp.analog.enabled: false
   msp.gps.enabled: false
 mavlink:
-  device: ''
+  device: '/dev/ttyAMA2'
   baud: 921600
   gps_mode: gnss
   altitude_source: unknown

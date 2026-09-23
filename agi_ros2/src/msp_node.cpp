@@ -41,7 +41,9 @@ public:
 				_telemetry->sentRc(_channels, _bridge->errors());
 				_next += (std::floor((agi::hardware::monotonicSeconds() - _next) / .01) + 1) * .01;
 			}
-			_telemetry->tick(*_bridge, _bench ? _next - .001 : now + .003);
+			// Read-only monitoring has room for host scheduling delays. Bench
+			// queries retain the short budget and the next RC output deadline.
+			_telemetry->tick(*_bridge, _bench ? _next - .001 : now + .012, _bench ? .002 : .010);
 		});
 		RCLCPP_INFO(get_logger(), "MSP %s: %s @ %d; telemetry on /msp/*", mode.c_str(), device.c_str(), static_cast<int>(baud));
 	}
