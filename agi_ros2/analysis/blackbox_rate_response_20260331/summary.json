@@ -1,0 +1,532 @@
+{
+  "source": "/home/sia/Downloads/1-测试飞行1(1).csv",
+  "sha256": "10c5ead80861a931df75b23974aa3957f53bdd7dce9dabaa3a90e2fea8938278",
+  "rows": 127357,
+  "columns": 80,
+  "header_line_1_based": 149,
+  "duration_seconds": 128.430862,
+  "sample_rate_hz": 991.6308122264257,
+  "sample_interval_ms_min_median_max": [
+    1.0039999999946758,
+    1.0080000000023404,
+    1.0130000000003747
+  ],
+  "gaps_over_2ms": 0,
+  "duplicate_timestamps": 0,
+  "loop_increment_counts": {
+    "4.0": 127356
+  },
+  "key_column_missing": {
+    "time": 0,
+    "loopIteration": 0,
+    "setpoint[0]": 0,
+    "setpoint[1]": 0,
+    "setpoint[2]": 0,
+    "gyroADC[0]": 0,
+    "gyroADC[1]": 0,
+    "gyroADC[2]": 0,
+    "rcCommand[0]": 0,
+    "rcCommand[1]": 0,
+    "rcCommand[2]": 0
+  },
+  "metadata": {
+    "Firmware revision": "Betaflight 2025.12.2 (79065c96b) STM32F7X2",
+    "Firmware date": "Mar 12 2026 12:19:11",
+    "Log start datetime": "2026-03-31T03:55:29.267+00:00",
+    "Craft name": "MARK5 DC",
+    "looptime": "125",
+    "pid_process_denom": "2",
+    "rollPID": "41,73,30,40,105",
+    "pitchPID": "54,96,45,46,137",
+    "yawPID": "41,73,0,0,105",
+    "rc_rates": "7,7,7",
+    "rates": "67,67,67",
+    "rc_expo": "0,0,0",
+    "deadband": "5",
+    "yaw_deadband": "5",
+    "rateAccelLimit": "0",
+    "yawRateAccelLimit": "0",
+    "rc_smoothing_mode": "1",
+    "rc_smoothing_active_cutoffs_ff_sp_thr": "15,25",
+    "rc_smoothing_rx_smoothed": "67"
+  },
+  "software": {
+    "python": "3.10.12",
+    "numpy": "1.26.4",
+    "scipy": "1.8.0",
+    "pandas": "2.3.3",
+    "matplotlib": "3.5.1"
+  },
+  "notes": [
+    "Lag quantiles describe windows, not statistical confidence intervals.",
+    "Source gyro/setpoint quantized to integer deg/s; sub-ms peak interpolation is not sub-ms accuracy.",
+    "Source time is flight-controller clock. No CM5/MSP transport or external estimator timing is present.",
+    "Uniform 1 ms interpolation for lag/frequency; 2 ms for model identification.",
+    "Closed-loop pilot data with feedforward: correlation and fitted lag are not motor time constants.",
+    "Inner-loop fitted tau below the 2 ms model grid is not a resolved physical parameter.",
+    "Recorded automatic RC smoothing and approximately 67 Hz RX may differ from future 100 Hz MSP operation.",
+    "Models use disjoint 4 s blocks from one flight; this is not independent-flight validation."
+  ],
+  "flight_mode_counts": {
+    "1.0": 127296,
+    "0.0": 60
+  },
+  "slow_field_missing": {
+    "flightModeFlags": 1,
+    "failsafePhase": 1,
+    "rxSignalReceived": 1
+  },
+  "axes": {
+    "Roll": {
+      "rmse_deg_s": 3.4166471362310507,
+      "absolute_error_p95_deg_s": 6.0,
+      "absolute_error_p99_deg_s": 15.0,
+      "setpoint_peak_abs_deg_s": 493.0,
+      "setpoint_rms_deg_s": 50.288651844234145,
+      "derived_rcCommands_equals_setpoint": true,
+      "axisError_equals_setpoint_minus_gyro": true,
+      "inner_whole_level_lag_ms": 2.258141998622962,
+      "inner_whole_level_correlation": 0.9977372515298046,
+      "smoothing_whole_level_lag_ms": 16.17282696513416,
+      "smoothing_whole_level_correlation": 0.9997458613841805,
+      "rc_to_gyro_whole_level_lag_ms": 18.994356383004305,
+      "rc_to_gyro_whole_level_correlation": 0.997589314573012,
+      "model_train_seconds": 52.0,
+      "model_test_seconds": 44.0,
+      "inner_models": {
+        "ideal": {
+          "delay_ms": 0.0,
+          "tau_ms": 0.0,
+          "gain": 1.0,
+          "offset_deg_s": 0.0,
+          "train_rmse_deg_s": 3.8973750780057115,
+          "test_rmse_deg_s": 3.294446323385663
+        },
+        "static_gain": {
+          "delay_ms": 0.0,
+          "tau_ms": 0.0,
+          "gain": 1.0043009628240334,
+          "offset_deg_s": 0.15276715075827596,
+          "train_rmse_deg_s": 3.889799262859336,
+          "test_rmse_deg_s": 3.287850000951346
+        },
+        "pure_delay": {
+          "delay_ms": 3.168597601375228,
+          "tau_ms": 0.0,
+          "gain": 1.004352729784976,
+          "offset_deg_s": 0.14935044670334108,
+          "train_rmse_deg_s": 3.801009706544618,
+          "test_rmse_deg_s": 3.323661687264791
+        },
+        "first_order": {
+          "delay_ms": 0.0,
+          "tau_ms": 1.956380828462077,
+          "gain": 1.004381397758385,
+          "offset_deg_s": 0.14993384390907494,
+          "train_rmse_deg_s": 3.8018153807549324,
+          "test_rmse_deg_s": 3.3217300495861766
+        },
+        "first_order_delay": {
+          "delay_ms": 0.9719847031731704,
+          "tau_ms": 0.8708106390782842,
+          "gain": 1.0043584401478995,
+          "offset_deg_s": 0.14941530563033112,
+          "train_rmse_deg_s": 3.8009122501682775,
+          "test_rmse_deg_s": 3.3244300660529005
+        }
+      },
+      "rc_to_gyro_models": {
+        "ideal": {
+          "delay_ms": 0.0,
+          "tau_ms": 0.0,
+          "gain": 1.0,
+          "offset_deg_s": 0.0,
+          "train_rmse_deg_s": 6.389013834694433,
+          "test_rmse_deg_s": 5.362102100489906
+        },
+        "static_gain": {
+          "delay_ms": 0.0,
+          "tau_ms": 0.0,
+          "gain": 0.9992150346167789,
+          "offset_deg_s": 0.08469716798400384,
+          "train_rmse_deg_s": 6.388103462462467,
+          "test_rmse_deg_s": 5.36323944255811
+        },
+        "pure_delay": {
+          "delay_ms": 20.85883395520713,
+          "tau_ms": 0.0,
+          "gain": 1.0032439190386024,
+          "offset_deg_s": 0.13046440876063414,
+          "train_rmse_deg_s": 3.869737613363638,
+          "test_rmse_deg_s": 3.485328649893405
+        },
+        "first_order": {
+          "delay_ms": 0.0,
+          "tau_ms": 17.437470697739094,
+          "gain": 1.0063143783101767,
+          "offset_deg_s": 0.19126133749030672,
+          "train_rmse_deg_s": 3.9814342151566504,
+          "test_rmse_deg_s": 3.3650428003467305
+        },
+        "first_order_delay": {
+          "delay_ms": 13.164523043154984,
+          "tau_ms": 5.571704544653883,
+          "gain": 1.0038924486036727,
+          "offset_deg_s": 0.14403543627340198,
+          "train_rmse_deg_s": 3.775593308087564,
+          "test_rmse_deg_s": 3.3434602468812025
+        }
+      },
+      "gyro_filter_level_lag_ms": 2.7694985912990315,
+      "inner_bandpassed_level": {
+        "windows": 67,
+        "lag_ms_p10_median_p90": [
+          0.20504396072655084,
+          4.082336034895673,
+          6.866501730839748
+        ]
+      },
+      "inner_bandpassed_derivative": {
+        "windows": 44,
+        "lag_ms_p10_median_p90": [
+          3.8574905187070465,
+          8.544212400474812,
+          11.89476716224057
+        ]
+      },
+      "smoothing_bandpassed_level": {
+        "windows": 67,
+        "lag_ms_p10_median_p90": [
+          16.083187672894905,
+          16.28097021630481,
+          16.46475818513843
+        ]
+      },
+      "smoothing_bandpassed_derivative": {
+        "windows": 67,
+        "lag_ms_p10_median_p90": [
+          15.57850412001814,
+          15.959222515527626,
+          16.252623228596516
+        ]
+      },
+      "rc_to_gyro_bandpassed_level": {
+        "windows": 67,
+        "lag_ms_p10_median_p90": [
+          17.312615553254833,
+          20.605226169990072,
+          23.018030838968965
+        ]
+      },
+      "rc_to_gyro_bandpassed_derivative": {
+        "windows": 43,
+        "lag_ms_p10_median_p90": [
+          20.150540297429888,
+          24.429355336807596,
+          27.792504947549684
+        ]
+      }
+    },
+    "Pitch": {
+      "rmse_deg_s": 3.391645742499008,
+      "absolute_error_p95_deg_s": 6.0,
+      "absolute_error_p99_deg_s": 15.0,
+      "setpoint_peak_abs_deg_s": 254.0,
+      "setpoint_rms_deg_s": 28.377269468208127,
+      "derived_rcCommands_equals_setpoint": true,
+      "axisError_equals_setpoint_minus_gyro": true,
+      "inner_whole_level_lag_ms": 4.972422482205495,
+      "inner_whole_level_correlation": 0.9924388409762804,
+      "smoothing_whole_level_lag_ms": 16.162979176683248,
+      "smoothing_whole_level_correlation": 0.999716360679805,
+      "rc_to_gyro_whole_level_lag_ms": 21.552750030677238,
+      "rc_to_gyro_whole_level_correlation": 0.9923532978615328,
+      "model_train_seconds": 36.0,
+      "model_test_seconds": 52.0,
+      "inner_models": {
+        "ideal": {
+          "delay_ms": 0.0,
+          "tau_ms": 0.0,
+          "gain": 1.0,
+          "offset_deg_s": 0.0,
+          "train_rmse_deg_s": 3.8125566187990803,
+          "test_rmse_deg_s": 3.4064288269041123
+        },
+        "static_gain": {
+          "delay_ms": 0.0,
+          "tau_ms": 0.0,
+          "gain": 1.0014921458794552,
+          "offset_deg_s": 0.1460153033787499,
+          "train_rmse_deg_s": 3.810187288453968,
+          "test_rmse_deg_s": 3.4073015388456214
+        },
+        "pure_delay": {
+          "delay_ms": 5.08658880408326,
+          "tau_ms": 0.0,
+          "gain": 1.0043766675007277,
+          "offset_deg_s": 0.14215427325667562,
+          "train_rmse_deg_s": 3.686138524961143,
+          "test_rmse_deg_s": 3.3811281406874767
+        },
+        "first_order": {
+          "delay_ms": 0.0,
+          "tau_ms": 3.8907773914007557,
+          "gain": 1.004499626229145,
+          "offset_deg_s": 0.14511214418079987,
+          "train_rmse_deg_s": 3.686943009897244,
+          "test_rmse_deg_s": 3.3795075710002926
+        },
+        "first_order_delay": {
+          "delay_ms": 1.4969608678948017,
+          "tau_ms": 2.45073219155893,
+          "gain": 1.004448784093855,
+          "offset_deg_s": 0.1433074644258241,
+          "train_rmse_deg_s": 3.6857432426733205,
+          "test_rmse_deg_s": 3.3799819238117137
+        }
+      },
+      "rc_to_gyro_models": {
+        "ideal": {
+          "delay_ms": 0.0,
+          "tau_ms": 0.0,
+          "gain": 1.0,
+          "offset_deg_s": 0.0,
+          "train_rmse_deg_s": 5.507519004856645,
+          "test_rmse_deg_s": 3.922808334993414
+        },
+        "static_gain": {
+          "delay_ms": 0.0,
+          "tau_ms": 0.0,
+          "gain": 0.9877483663442238,
+          "offset_deg_s": 0.08778902829564217,
+          "train_rmse_deg_s": 5.480069950064918,
+          "test_rmse_deg_s": 3.967717621461525
+        },
+        "pure_delay": {
+          "delay_ms": 22.804030716303494,
+          "tau_ms": 0.0,
+          "gain": 1.004552319293164,
+          "offset_deg_s": 0.13646292483042188,
+          "train_rmse_deg_s": 3.7336260721361634,
+          "test_rmse_deg_s": 3.387355627254277
+        },
+        "first_order": {
+          "delay_ms": 0.0,
+          "tau_ms": 19.609689975408624,
+          "gain": 1.0078337550729795,
+          "offset_deg_s": 0.20980002368924033,
+          "train_rmse_deg_s": 3.7743534851738114,
+          "test_rmse_deg_s": 3.403691957640425
+        },
+        "first_order_delay": {
+          "delay_ms": 14.82771823528791,
+          "tau_ms": 5.8114392185750114,
+          "gain": 1.0046975654103034,
+          "offset_deg_s": 0.14983107204831114,
+          "train_rmse_deg_s": 3.6764055633436836,
+          "test_rmse_deg_s": 3.3686794264917346
+        }
+      },
+      "gyro_filter_level_lag_ms": 2.9709690216901814,
+      "inner_bandpassed_level": {
+        "windows": 40,
+        "lag_ms_p10_median_p90": [
+          -3.307193495669446,
+          7.579253204411685,
+          14.649949611159698
+        ]
+      },
+      "inner_bandpassed_derivative": {
+        "windows": 19,
+        "lag_ms_p10_median_p90": [
+          7.17265084120567,
+          9.668384915995587,
+          15.173438972310201
+        ]
+      },
+      "smoothing_bandpassed_level": {
+        "windows": 40,
+        "lag_ms_p10_median_p90": [
+          15.82112783669845,
+          16.176299836069234,
+          16.403008627568212
+        ]
+      },
+      "smoothing_bandpassed_derivative": {
+        "windows": 40,
+        "lag_ms_p10_median_p90": [
+          15.36917146618086,
+          15.973940075699849,
+          16.259898237045846
+        ]
+      },
+      "rc_to_gyro_bandpassed_level": {
+        "windows": 40,
+        "lag_ms_p10_median_p90": [
+          15.77429026092722,
+          23.838837315358134,
+          30.623943257680924
+        ]
+      },
+      "rc_to_gyro_bandpassed_derivative": {
+        "windows": 19,
+        "lag_ms_p10_median_p90": [
+          23.158723552255637,
+          26.009282398530374,
+          30.99325759190995
+        ]
+      }
+    },
+    "Yaw": {
+      "rmse_deg_s": 1.943579752009112,
+      "absolute_error_p95_deg_s": 4.0,
+      "absolute_error_p99_deg_s": 8.0,
+      "setpoint_peak_abs_deg_s": 302.0,
+      "setpoint_rms_deg_s": 38.19603943069495,
+      "derived_rcCommands_equals_setpoint": true,
+      "axisError_equals_setpoint_minus_gyro": true,
+      "inner_whole_level_lag_ms": 5.205538736529685,
+      "inner_whole_level_correlation": 0.9988722764407554,
+      "smoothing_whole_level_lag_ms": 16.28519430447936,
+      "smoothing_whole_level_correlation": 0.9998369932412341,
+      "rc_to_gyro_whole_level_lag_ms": 21.7003597040261,
+      "rc_to_gyro_whole_level_correlation": 0.9987903507701902,
+      "model_train_seconds": 60.0,
+      "model_test_seconds": 44.0,
+      "inner_models": {
+        "ideal": {
+          "delay_ms": 0.0,
+          "tau_ms": 0.0,
+          "gain": 1.0,
+          "offset_deg_s": 0.0,
+          "train_rmse_deg_s": 2.116149803351143,
+          "test_rmse_deg_s": 1.7207432430403506
+        },
+        "static_gain": {
+          "delay_ms": 0.0,
+          "tau_ms": 0.0,
+          "gain": 1.006899096902409,
+          "offset_deg_s": -0.0445607199440774,
+          "train_rmse_deg_s": 2.0982091166334547,
+          "test_rmse_deg_s": 1.7160660684646294
+        },
+        "pure_delay": {
+          "delay_ms": 4.969642177374737,
+          "tau_ms": 0.0,
+          "gain": 1.0071048405403675,
+          "offset_deg_s": -0.059025411142407336,
+          "train_rmse_deg_s": 1.9333757827104028,
+          "test_rmse_deg_s": 1.6075008957537822
+        },
+        "first_order": {
+          "delay_ms": 0.0,
+          "tau_ms": 3.813984066754073,
+          "gain": 1.0072147266650349,
+          "offset_deg_s": -0.05966681309602073,
+          "train_rmse_deg_s": 1.932591249794887,
+          "test_rmse_deg_s": 1.604291524390926
+        },
+        "first_order_delay": {
+          "delay_ms": 1.0926267367879523,
+          "tau_ms": 2.743426018893535,
+          "gain": 1.0071676896263115,
+          "offset_deg_s": -0.05945993418389772,
+          "train_rmse_deg_s": 1.9316797716627887,
+          "test_rmse_deg_s": 1.6041241302306672
+        }
+      },
+      "rc_to_gyro_models": {
+        "ideal": {
+          "delay_ms": 0.0,
+          "tau_ms": 0.0,
+          "gain": 1.0,
+          "offset_deg_s": 0.0,
+          "train_rmse_deg_s": 4.009995550796699,
+          "test_rmse_deg_s": 2.805566416410694
+        },
+        "static_gain": {
+          "delay_ms": 0.0,
+          "tau_ms": 0.0,
+          "gain": 1.0024825767927774,
+          "offset_deg_s": 0.033054046786475055,
+          "train_rmse_deg_s": 4.008458026503334,
+          "test_rmse_deg_s": 2.807136229033724
+        },
+        "pure_delay": {
+          "delay_ms": 21.082912104978888,
+          "tau_ms": 0.0,
+          "gain": 1.0063052322323758,
+          "offset_deg_s": -0.04655833531622289,
+          "train_rmse_deg_s": 1.9930118101645868,
+          "test_rmse_deg_s": 1.6471709769297849
+        },
+        "first_order": {
+          "delay_ms": 0.0,
+          "tau_ms": 19.645052306794554,
+          "gain": 1.0091313654001777,
+          "offset_deg_s": -0.06684678066070138,
+          "train_rmse_deg_s": 2.0414950216005763,
+          "test_rmse_deg_s": 1.6520537483777948
+        },
+        "first_order_delay": {
+          "delay_ms": 13.155175904627939,
+          "tau_ms": 7.200120380138039,
+          "gain": 1.0068919847288493,
+          "offset_deg_s": -0.05191077549115164,
+          "train_rmse_deg_s": 1.928839801821751,
+          "test_rmse_deg_s": 1.604771965087844
+        }
+      },
+      "gyro_filter_level_lag_ms": 2.923418090793431,
+      "inner_bandpassed_level": {
+        "windows": 46,
+        "lag_ms_p10_median_p90": [
+          3.9534672878135124,
+          7.23674158131031,
+          13.470519974665004
+        ]
+      },
+      "inner_bandpassed_derivative": {
+        "windows": 43,
+        "lag_ms_p10_median_p90": [
+          5.691985324049873,
+          7.42098813475329,
+          9.862622244180836
+        ]
+      },
+      "smoothing_bandpassed_level": {
+        "windows": 46,
+        "lag_ms_p10_median_p90": [
+          16.073473655185744,
+          16.262965988942327,
+          16.400439531705054
+        ]
+      },
+      "smoothing_bandpassed_derivative": {
+        "windows": 46,
+        "lag_ms_p10_median_p90": [
+          15.552292428826053,
+          15.941646600622626,
+          16.341670909366496
+        ]
+      },
+      "rc_to_gyro_bandpassed_level": {
+        "windows": 46,
+        "lag_ms_p10_median_p90": [
+          20.02165610152284,
+          23.602430803343353,
+          29.800573839518787
+        ]
+      },
+      "rc_to_gyro_bandpassed_derivative": {
+        "windows": 43,
+        "lag_ms_p10_median_p90": [
+          21.335049037806176,
+          23.925700432092256,
+          25.84023804874025
+        ]
+      }
+    }
+  },
+  "pt3_metadata_low_frequency_group_delay_ms": 16.228218762657974
+}

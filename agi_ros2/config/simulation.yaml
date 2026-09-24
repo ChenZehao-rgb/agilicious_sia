@@ -54,7 +54,7 @@ pilot:
   # Inertia, geometry, kappa, motor and aerodynamic data belong to an optional plant model,
   # not this ideal outer-loop predictor. No unmeasured dynamics are filled with defaults.
   quadrotor:
-    mass: 0.54
+    mass: 1.0
     omega_max: [17.45, 17.45, 17.45]
     thrust_min: 0.0
     thrust_max: 7.64
