@@ -1,5 +1,6 @@
 #include "agi_ros2/msp_telemetry.h"
 
+#include <algorithm>
 #include <cmath>
 #include <fstream>
 #include <stdexcept>
@@ -70,7 +71,20 @@ void MspTelemetry::sentRc(const std::array<uint16_t, 4>& channels, uint64_t erro
 	}
 	emit("tx", frame, errors);
 }
-void MspTelemetry::tick(agi::hardware::BetaflightMspBridge& bridge, double write_deadline) {
+void MspTelemetry::expireRequests(double now, uint64_t errors) {
+	for (auto& p : _polls) {
+		if (!p.pending || now - p.sent < _timeout) continue;
+		p.pending = false;
+		++_timeouts;
+		if (p.critical) _healthy = false;
+		emit(p.critical ? "timeout" : "optional_timeout", {p.code, false, {}}, errors, NAN, &p);
+		// MSP has no transaction ID. Do not match a late reply to a newer query,
+		// including a different setting queried through the same message code.
+		for (auto& other : _polls)
+			if (other.code == p.code) other.hz = 0;
+	}
+}
+void MspTelemetry::tick(agi::hardware::BetaflightMspBridge& bridge, double write_deadline, double write_budget) {
 	try {
 		if (monotonicSeconds() >= _next_config) {
 			std_msgs::msg::String config;
@@ -85,13 +99,15 @@ void MspTelemetry::tick(agi::hardware::BetaflightMspBridge& bridge, double write
 		for (int i = 0; i < 32; ++i) {
 			agi::hardware::MspFrame frame;
 			if (!bridge.receive(&frame)) break;
+			const double received = monotonicSeconds();
+			expireRequests(received, bridge.errors());
 			std::string event = frame.error ? "error" : "rx";
 			double latency = NAN;
 			Poll* matched = nullptr;
 			for (auto& p : _polls) {
 				if (p.code != frame.code || !p.pending) continue;
 				matched = &p;
-				latency = monotonicSeconds() - p.sent;
+				latency = received - p.sent;
 				p.pending = false;
 				if (frame.error) {
 					p.hz = 0;
@@ -108,32 +124,33 @@ void MspTelemetry::tick(agi::hardware::BetaflightMspBridge& bridge, double write
 			}
 			emit(event, frame, bridge.errors(), latency, matched);
 		}
+		const double now = monotonicSeconds();
+		expireRequests(now, bridge.errors());
+		// Serialize queries across all codes so configuration requests cannot
+		// queue ahead of RC/STATUS responses inside the flight controller.
+		if (std::any_of(_polls.begin(), _polls.end(), [](const Poll& p) { return p.pending; })) return;
+		Poll* selected = nullptr;
 		for (auto& p : _polls) {
-			const double now = monotonicSeconds();
-			if (p.pending && now - p.sent >= _timeout) {
-				p.pending = false;
-				p.hz = 0;  // Never match a delayed reply to a newer request of the same code.
-				++_timeouts;
-				if (p.critical) _healthy = false;
-				emit(p.critical ? "timeout" : "optional_timeout", {p.code, false, {}}, bridge.errors(), NAN, &p);
-				for (auto& other : _polls)
-					if (other.code == p.code) other.hz = 0;
-			}
-			if (p.hz == 0 || p.pending || now < p.next || write_deadline - now < .002) continue;
-			bool occupied = false;
-			for (const auto& other : _polls)
-				if (other.code == p.code && other.pending) occupied = true;
-			if (occupied) continue;
-			p.stamp = _node.now();
-			p.sent = monotonicSeconds();
-			const bool sent = p.setting.empty()
-			                          ? bridge.sendRequest(static_cast<uint8_t>(p.code), std::min(write_deadline, now + .002))
-			                          : bridge.readOverrideSetting(p.setting, std::min(write_deadline, now + .002));
-			if (!sent) throw std::runtime_error("MSP telemetry write failed");
-			p.pending = true;
-			p.next += (std::floor((p.sent - p.next) * p.hz) + 1) / p.hz;
-			emit("tx", {p.code, false, {}}, bridge.errors(), NAN, &p);
+			if (p.hz == 0 || now < p.next) continue;
+			// Serve the earliest next update deadline. Fast telemetry takes
+			// priority over the startup configuration backlog without starving it.
+			if (!selected || p.next + 1 / p.hz < selected->next + 1 / selected->hz) selected = &p;
 		}
+		if (!selected) return;
+		auto& p = *selected;
+		const auto stamp = _node.now();
+		const double sent_at = monotonicSeconds();
+		if (write_deadline - sent_at < write_budget) return;
+		p.stamp = stamp;
+		p.sent = sent_at;
+		const double deadline = std::min(write_deadline, sent_at + write_budget);
+		const bool sent = p.setting.empty() ? bridge.sendRequest(static_cast<uint8_t>(p.code), deadline)
+		                                    : bridge.readOverrideSetting(p.setting, deadline);
+		if (!sent) throw std::runtime_error("MSP telemetry write failed for code " + std::to_string(p.code));
+		p.pending = true;
+		// Missed periods are skipped instead of creating a catch-up burst.
+		p.next += (std::floor((p.sent - p.next) * p.hz) + 1) / p.hz;
+		emit("tx", {p.code, false, {}}, bridge.errors(), NAN, &p);
 	} catch (...) {
 		_healthy = false;
 		emit("transport_error", {}, bridge.errors());

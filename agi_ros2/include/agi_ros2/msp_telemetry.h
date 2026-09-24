@@ -14,7 +14,7 @@ namespace agi_ros2 {
 class MspTelemetry {
 public:
 	explicit MspTelemetry(rclcpp::Node& node);
-	void tick(agi::hardware::BetaflightMspBridge& bridge, double write_deadline);
+	void tick(agi::hardware::BetaflightMspBridge& bridge, double write_deadline, double write_budget = .002);
 	void sentRc(const std::array<uint16_t, 4>& channels, uint64_t errors);
 	bool healthy() const { return _healthy; }
 
@@ -30,6 +30,7 @@ private:
 	};
 	void emit(const std::string& event, const agi::hardware::MspFrame& frame, uint64_t errors, double latency = NAN,
 	          const Poll* request = nullptr);
+	void expireRequests(double now, uint64_t errors);
 	rclcpp::Node& _node;
 	std::vector<Poll> _polls;
 	rclcpp::Publisher<msg::MspEvent>::SharedPtr _events;

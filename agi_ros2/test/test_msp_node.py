@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 
 import rclpy
+import yaml
 from ament_index_python.packages import get_package_prefix
 from agi_ros2.msg import MspEvent
 from rclpy.qos import QoSProfile
@@ -100,7 +101,8 @@ def main():
                 process.wait(timeout=10)
             import rosbag2_py
             reader = rosbag2_py.SequentialReader()
-            reader.open(rosbag2_py.StorageOptions(uri=work+'/bag', storage_id='sqlite3'),
+            metadata = yaml.safe_load((Path(work)/'bag/metadata.yaml').read_text())['rosbag2_bagfile_information']
+            reader.open(rosbag2_py.StorageOptions(uri=work+'/bag', storage_id=metadata['storage_identifier']),
                         rosbag2_py.ConverterOptions('', ''))
             counts = collections.Counter()
             while reader.has_next():

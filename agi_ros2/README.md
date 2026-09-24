@@ -377,6 +377,13 @@ MSP RC/STATUS_EX 默认 25 Hz、电池 2 Hz、配置 1 Hz。`MSP_RC` 的 AETR �
 程序只把确认不在覆盖 mask 内的 AUX 当作实体开关证据。`config_verified` 表示回读匹配，
 不是对未知接收机失效行为或真实动力学的替代验收。
 
+MSP 查询在同一串口上最多等待一个响应，收到响应后再发送下一条。已到期的查询按下一更新期限排序，
+使 RC/STATUS 的高频读取优先于启动时积压的配置读取；错过的周期直接跳过，不集中补发。
+实际频率取决于飞控响应速度；无响应的查询仍按原有 100 ms 默认期限超时，同消息码停止查询，
+迟到回复不作为新请求的证据。关键查询失败仍要求重启会话。
+只读 monitor 的单次写入预算为 10 ms，为主机启动调度留出余量；bench 和控制输出路径的
+2 ms 写入预算及 RC 截止时间保持原策略。写入预算限制内核接受数据的等待，不保证线上发送完成。
+
 ## 融合、时效与故障定位
 
 MAVLink IMU 为 `base_link` FLU specific force（m/s²，静止水平约 +g）与角速度（rad/s）；
@@ -448,6 +455,8 @@ source install/agi_ros2/local_setup.bash
 /usr/bin/python3 agi_ros2/test/test_hardware_pipeline.py
 /usr/bin/python3 agi_ros2/test/test_shadow_pipeline.py
 /usr/bin/python3 agi_ros2/test/test_mavlink_sensor.py
+/usr/bin/python3 agi_ros2/test/test_msp_node.py
+/usr/bin/python3 agi_ros2/test/test_msp_poll_scheduler.py
 ```
 
 测试使用合成数据、DDS、回环 UDP、PTY 伪串口及库级单元测试；需要本地 socket 权限。
