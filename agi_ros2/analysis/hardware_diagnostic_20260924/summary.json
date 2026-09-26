@@ -1,0 +1,1387 @@
+{
+  "bag": "hardware_20260924_150053_980611",
+  "interpretation": [
+    "Hand-carried moving recording, not stationary calibration; no IMU noise/bias fit.",
+    "Accuracy fields are receiver-reported estimates, not measured ground-truth errors.",
+    "Navigation observations and revocation events are counted separately.",
+    "Receive age includes DDS and recorder delay; timing gaps are not a wire-loss measurement.",
+    "Satellite count, HDOP, and raw ellipsoid height were not recorded by these topics.",
+    "Raw STATUS profiles are distinct from fail-closed decoded-state defaults (255)."
+  ],
+  "validation": {
+    "reader": "mcap.NonSeekingReader with embedded ROS 2 schemas",
+    "validate_crcs": true,
+    "crc_scope": "stored chunk/data CRCs, where present",
+    "metadata_counts_match": true,
+    "messages": 375359,
+    "metadata_messages": 375359,
+    "topic_count": 27,
+    "duration_seconds": 224.01361429500002
+  },
+  "topic_messages": {
+    "/authority": 25583,
+    "/events/write_split": 0,
+    "/fused_state": 110579,
+    "/health": 25583,
+    "/health/status": 25583,
+    "/msp/analog": 0,
+    "/msp/attitude": 0,
+    "/msp/battery": 442,
+    "/msp/config": 222,
+    "/msp/decoded_state": 25583,
+    "/msp/events": 28765,
+    "/msp/gps": 0,
+    "/msp/rc": 5533,
+    "/msp/status": 5533,
+    "/navigation/origin": 0,
+    "/navigation/status": 223,
+    "/parameter_events": 0,
+    "/rosout": 36,
+    "/sensors/fc_attitude": 0,
+    "/sensors/fc_heading": 2180,
+    "/sensors/gps/fix": 2180,
+    "/sensors/gps/velocity": 2180,
+    "/sensors/imu": 110573,
+    "/sensors/local_navigation": 0,
+    "/sensors/mavlink/status": 221,
+    "/sensors/navigation": 4360,
+    "/state": 0
+  },
+  "streams": {
+    "/authority": {
+      "messages": 25583,
+      "unique_stamps": 11075,
+      "received_rate_hz": 114.29222760365973,
+      "unique_stamp_rate_hz": 6.185785333490327e-06,
+      "acquisition_gap_seconds": {
+        "samples": 11074,
+        "finite": 11074,
+        "unavailable": 0,
+        "minimum": 0.005032448,
+        "median": 0.016102528,
+        "p95": 0.0309988096,
+        "p99": 0.039977472,
+        "maximum": 1790233257.8829212,
+        "mean": 161660.96074914234
+      },
+      "receive_gap_seconds": {
+        "samples": 25582,
+        "finite": 25582,
+        "unavailable": 0,
+        "minimum": 0.0006227450000000001,
+        "median": 0.008529118,
+        "p95": 0.02001584945,
+        "p99": 0.02026696,
+        "maximum": 0.023542366000000002,
+        "mean": 0.008749501352513487
+      },
+      "bag_receive_age_seconds": {
+        "samples": 25583,
+        "finite": 25583,
+        "unavailable": 0,
+        "minimum": 0.014793104000000001,
+        "median": 0.037951132000000005,
+        "p95": 0.04993906880000001,
+        "p99": 0.05593584722,
+        "maximum": 1790233258.0599027,
+        "mean": 8887136.945929678
+      }
+    },
+    "/fused_state": {
+      "messages": 110579,
+      "unique_stamps": 110579,
+      "received_rate_hz": 499.4775672901072,
+      "unique_stamp_rate_hz": 499.4768601018172,
+      "acquisition_gap_seconds": {
+        "samples": 110578,
+        "finite": 110578,
+        "unavailable": 0,
+        "minimum": 0.0009986560000000001,
+        "median": 0.002001152,
+        "p95": 0.002003968,
+        "p99": 0.002107392,
+        "maximum": 0.0030750720000000003,
+        "mean": 0.002002094751288683
+      },
+      "receive_gap_seconds": {
+        "samples": 110578,
+        "finite": 110578,
+        "unavailable": 0,
+        "minimum": 1.6516000000000002e-05,
+        "median": 0.0019884025,
+        "p95": 0.00244362515,
+        "p99": 0.00297453712,
+        "maximum": 0.006418545,
+        "mean": 0.0020020919166108993
+      },
+      "bag_receive_age_seconds": {
+        "samples": 110579,
+        "finite": 110579,
+        "unavailable": 0,
+        "minimum": 0.001992914,
+        "median": 0.003221315,
+        "p95": 0.0039106602999999995,
+        "p99": 0.004229862120000001,
+        "maximum": 0.008532664,
+        "mean": 0.003227878320684759
+      }
+    },
+    "/health": {
+      "messages": 25583,
+      "unique_stamps": 25583,
+      "received_rate_hz": 114.2921759354488,
+      "unique_stamp_rate_hz": 114.2920770073487,
+      "acquisition_gap_seconds": {
+        "samples": 25582,
+        "finite": 25582,
+        "unavailable": 0,
+        "minimum": 0.000870656,
+        "median": 0.008582144,
+        "p95": 0.0200002432,
+        "p99": 0.020118100479999998,
+        "maximum": 0.021341696,
+        "mean": 0.008749512881244625
+      },
+      "receive_gap_seconds": {
+        "samples": 25582,
+        "finite": 25582,
+        "unavailable": 0,
+        "minimum": 0.000130779,
+        "median": 0.008530286500000001,
+        "p95": 0.02002433325,
+        "p99": 0.02026240633,
+        "maximum": 0.023444915,
+        "mean": 0.008749505307911814
+      },
+      "bag_receive_age_seconds": {
+        "samples": 25583,
+        "finite": 25583,
+        "unavailable": 0,
+        "minimum": 0.000411737,
+        "median": 0.000610111,
+        "p95": 0.0008350268999999994,
+        "p99": 0.0012623555200000007,
+        "maximum": 0.004022484000000001,
+        "mean": 0.0006442905131923543
+      }
+    },
+    "/msp/decoded_state": {
+      "messages": 25583,
+      "unique_stamps": 25583,
+      "received_rate_hz": 114.29215603655942,
+      "unique_stamp_rate_hz": 114.2920770073487,
+      "acquisition_gap_seconds": {
+        "samples": 25582,
+        "finite": 25582,
+        "unavailable": 0,
+        "minimum": 0.000870656,
+        "median": 0.008582144,
+        "p95": 0.0200002432,
+        "p99": 0.020118100479999998,
+        "maximum": 0.021341696,
+        "mean": 0.008749512881244625
+      },
+      "receive_gap_seconds": {
+        "samples": 25582,
+        "finite": 25582,
+        "unavailable": 0,
+        "minimum": 0.000603497,
+        "median": 0.0085590575,
+        "p95": 0.020011279700000002,
+        "p99": 0.020172020460000002,
+        "maximum": 0.023164224,
+        "mean": 0.008749506831248534
+      },
+      "bag_receive_age_seconds": {
+        "samples": 25583,
+        "finite": 25583,
+        "unavailable": 0,
+        "minimum": 0.000165598,
+        "median": 0.00025671900000000003,
+        "p95": 0.0003591740999999999,
+        "p99": 0.0005394245000000001,
+        "maximum": 0.0033971830000000002,
+        "mean": 0.00026885893655943403
+      }
+    },
+    "/msp/events": {
+      "messages": 28765,
+      "unique_stamps": 28765,
+      "received_rate_hz": 129.95818994610067,
+      "unique_stamp_rate_hz": 129.95762943357954,
+      "acquisition_gap_seconds": {
+        "samples": 28764,
+        "finite": 28764,
+        "unavailable": 0,
+        "minimum": 7.124900000000001e-05,
+        "median": 0.007961916500000001,
+        "p95": 0.021985765899999996,
+        "p99": 0.02500256429,
+        "maximum": 0.026232158000000002,
+        "mean": 0.007694815643825616
+      },
+      "receive_gap_seconds": {
+        "samples": 28764,
+        "finite": 28764,
+        "unavailable": 0,
+        "minimum": 8.536000000000001e-06,
+        "median": 0.0079596295,
+        "p95": 0.021982638800000003,
+        "p99": 0.025006420130000002,
+        "maximum": 0.026626444000000003,
+        "mean": 0.007694782455917119
+      },
+      "bag_receive_age_seconds": {
+        "samples": 28765,
+        "finite": 28765,
+        "unavailable": 0,
+        "minimum": 2.2775e-05,
+        "median": 9.9875e-05,
+        "p95": 0.0002714519999999999,
+        "p99": 0.0004015469200000005,
+        "maximum": 0.0014963840000000001,
+        "mean": 0.00012476574333391275
+      }
+    },
+    "/sensors/fc_heading": {
+      "messages": 2180,
+      "unique_stamps": 2180,
+      "received_rate_hz": 9.849388514615313,
+      "unique_stamp_rate_hz": 9.852060771106807,
+      "acquisition_gap_seconds": {
+        "samples": 2179,
+        "finite": 2179,
+        "unavailable": 0,
+        "minimum": 0.074091008,
+        "median": 0.100103168,
+        "p95": 0.1160994304,
+        "p99": 0.19822610944000002,
+        "maximum": 0.202236672,
+        "mean": 0.10150160694630565
+      },
+      "receive_gap_seconds": {
+        "samples": 2179,
+        "finite": 2179,
+        "unavailable": 0,
+        "minimum": 0.097974951,
+        "median": 0.10001402200000001,
+        "p95": 0.1009996279,
+        "p99": 0.19999071774000002,
+        "maximum": 0.20100600000000002,
+        "mean": 0.10152914554199174
+      },
+      "bag_receive_age_seconds": {
+        "samples": 2180,
+        "finite": 2180,
+        "unavailable": 0,
+        "minimum": 0.0040828800000000005,
+        "median": 0.048729272000000004,
+        "p95": 0.09715426144999997,
+        "p99": 0.10257415129000001,
+        "maximum": 0.1044222,
+        "mean": 0.05057428633532111
+      }
+    },
+    "/sensors/gps/fix": {
+      "messages": 2180,
+      "unique_stamps": 2180,
+      "received_rate_hz": 9.84938815484411,
+      "unique_stamp_rate_hz": 9.8520391045677,
+      "acquisition_gap_seconds": {
+        "samples": 2179,
+        "finite": 2179,
+        "unavailable": 0,
+        "minimum": 0.07412352,
+        "median": 0.100132864,
+        "p95": 0.1161331456,
+        "p99": 0.19829255168,
+        "maximum": 0.20229376000000002,
+        "mean": 0.10150183016796696
+      },
+      "receive_gap_seconds": {
+        "samples": 2179,
+        "finite": 2179,
+        "unavailable": 0,
+        "minimum": 0.09776182,
+        "median": 0.10001254700000001,
+        "p95": 0.1010115349,
+        "p99": 0.19997539726000002,
+        "maximum": 0.201072661,
+        "mean": 0.10152914925057367
+      },
+      "bag_receive_age_seconds": {
+        "samples": 2180,
+        "finite": 2180,
+        "unavailable": 0,
+        "minimum": 0.0019413400000000002,
+        "median": 0.0465789195,
+        "p95": 0.09513222674999999,
+        "p99": 0.10043397740000001,
+        "maximum": 0.10263184700000001,
+        "mean": 0.04831008661376147
+      }
+    },
+    "/sensors/gps/velocity": {
+      "messages": 2180,
+      "unique_stamps": 2180,
+      "received_rate_hz": 9.849384869712633,
+      "unique_stamp_rate_hz": 9.852039127374534,
+      "acquisition_gap_seconds": {
+        "samples": 2179,
+        "finite": 2179,
+        "unavailable": 0,
+        "minimum": 0.074124032,
+        "median": 0.10013260800000001,
+        "p95": 0.1161334784,
+        "p99": 0.1982923264,
+        "maximum": 0.202294528,
+        "mean": 0.10150182993299679
+      },
+      "receive_gap_seconds": {
+        "samples": 2179,
+        "finite": 2179,
+        "unavailable": 0,
+        "minimum": 0.09786907700000001,
+        "median": 0.10002189900000001,
+        "p95": 0.10110443100000001,
+        "p99": 0.1999320464,
+        "maximum": 0.201073476,
+        "mean": 0.10152918311427261
+      },
+      "bag_receive_age_seconds": {
+        "samples": 2180,
+        "finite": 2180,
+        "unavailable": 0,
+        "minimum": 0.0036326460000000002,
+        "median": 0.048480247000000004,
+        "p95": 0.096733304,
+        "p99": 0.10226278381000001,
+        "maximum": 0.104449072,
+        "mean": 0.050195732401834864
+      }
+    },
+    "/sensors/imu": {
+      "messages": 110573,
+      "unique_stamps": 110573,
+      "received_rate_hz": 499.4740093355166,
+      "unique_stamp_rate_hz": 499.47708646497017,
+      "acquisition_gap_seconds": {
+        "samples": 110572,
+        "finite": 110572,
+        "unavailable": 0,
+        "minimum": 0.0009986560000000001,
+        "median": 0.002001152,
+        "p95": 0.002003968,
+        "p99": 0.002107392,
+        "maximum": 0.0030750720000000003,
+        "mean": 0.002002093843938791
+      },
+      "receive_gap_seconds": {
+        "samples": 110572,
+        "finite": 110572,
+        "unavailable": 0,
+        "minimum": 1.4553000000000001e-05,
+        "median": 0.0019956170000000003,
+        "p95": 0.0022651167,
+        "p99": 0.00295909082,
+        "maximum": 0.0046372240000000006,
+        "mean": 0.0020021061783182
+      },
+      "bag_receive_age_seconds": {
+        "samples": 110573,
+        "finite": 110573,
+        "unavailable": 0,
+        "minimum": 0.0018824960000000002,
+        "median": 0.0030249820000000003,
+        "p95": 0.003684027,
+        "p99": 0.00384932604,
+        "maximum": 0.005817188,
+        "mean": 0.0030259479044070434
+      }
+    },
+    "/sensors/mavlink/status": {
+      "messages": 221,
+      "unique_stamps": 221,
+      "received_rate_hz": 1.0000000558136395,
+      "unique_stamp_rate_hz": 1.0000000177545458,
+      "acquisition_gap_seconds": {
+        "samples": 220,
+        "finite": 220,
+        "unavailable": 0,
+        "minimum": 0.9988992860000001,
+        "median": 1.0000010395,
+        "p95": 1.0001059105,
+        "p99": 1.0002778439400002,
+        "maximum": 1.001093833,
+        "mean": 0.9999999822454546
+      },
+      "receive_gap_seconds": {
+        "samples": 220,
+        "finite": 220,
+        "unavailable": 0,
+        "minimum": 0.998821481,
+        "median": 1.0000056975,
+        "p95": 1.0002140693000001,
+        "p99": 1.00047920369,
+        "maximum": 1.0011694340000001,
+        "mean": 0.9999999441863635
+      },
+      "bag_receive_age_seconds": {
+        "samples": 221,
+        "finite": 221,
+        "unavailable": 0,
+        "minimum": 8.498900000000001e-05,
+        "median": 0.00010737500000000001,
+        "p95": 0.000190106,
+        "p99": 0.0003164862000000001,
+        "maximum": 0.0009409030000000001,
+        "mean": 0.00012303800904977377
+      }
+    },
+    "/sensors/navigation": {
+      "messages": 4360,
+      "unique_stamps": 4360,
+      "received_rate_hz": 19.703287024735086,
+      "unique_stamp_rate_hz": 19.702188797167032,
+      "acquisition_gap_seconds": {
+        "samples": 4359,
+        "finite": 4359,
+        "unavailable": 0,
+        "minimum": 7.935300000000001e-05,
+        "median": 0.050103423,
+        "p95": 0.0943141211,
+        "p99": 0.09995448578,
+        "maximum": 0.195890054,
+        "mean": 0.050755782024776326
+      },
+      "receive_gap_seconds": {
+        "samples": 4359,
+        "finite": 4359,
+        "unavailable": 0,
+        "minimum": 1.3684000000000001e-05,
+        "median": 0.001830187,
+        "p95": 0.10090505290000001,
+        "p99": 0.10114166258000001,
+        "maximum": 0.201032982,
+        "mean": 0.050752952984170686
+      },
+      "bag_receive_age_seconds": {
+        "samples": 4360,
+        "finite": 4360,
+        "unavailable": 0,
+        "minimum": 3.207e-05,
+        "median": 0.002784046,
+        "p95": 0.09003820270000001,
+        "p99": 0.10080640991,
+        "maximum": 0.10445736700000001,
+        "mean": 0.025169990067431196
+      }
+    },
+    "gps_observations": {
+      "messages": 2180,
+      "unique_stamps": 2180,
+      "received_rate_hz": 9.849384969483294,
+      "unique_stamp_rate_hz": 9.852039127374534,
+      "acquisition_gap_seconds": {
+        "samples": 2179,
+        "finite": 2179,
+        "unavailable": 0,
+        "minimum": 0.074124032,
+        "median": 0.10013260800000001,
+        "p95": 0.1161334784,
+        "p99": 0.1982923264,
+        "maximum": 0.202294528,
+        "mean": 0.10150182993299679
+      },
+      "receive_gap_seconds": {
+        "samples": 2179,
+        "finite": 2179,
+        "unavailable": 0,
+        "minimum": 0.09787050200000001,
+        "median": 0.10002637800000001,
+        "p95": 0.10112928680000001,
+        "p99": 0.1999031723,
+        "maximum": 0.20106968800000002,
+        "mean": 0.1015291820858192
+      },
+      "bag_receive_age_seconds": {
+        "samples": 2180,
+        "finite": 2180,
+        "unavailable": 0,
+        "minimum": 0.0036489210000000003,
+        "median": 0.0485275135,
+        "p95": 0.0968087992,
+        "p99": 0.10227400941,
+        "maximum": 0.10445736700000001,
+        "mean": 0.05023027533027523
+      }
+    },
+    "navigation_revocations": {
+      "messages": 2180,
+      "unique_stamps": 2180,
+      "received_rate_hz": 9.849384917483235,
+      "unique_stamp_rate_hz": 9.849387939186196,
+      "acquisition_gap_seconds": {
+        "samples": 2179,
+        "finite": 2179,
+        "unavailable": 0,
+        "minimum": 0.097981913,
+        "median": 0.100009313,
+        "p95": 0.1009989891,
+        "p99": 0.19999700432000003,
+        "maximum": 0.20099872300000002,
+        "mean": 0.10152915147361176
+      },
+      "receive_gap_seconds": {
+        "samples": 2179,
+        "finite": 2179,
+        "unavailable": 0,
+        "minimum": 0.097862577,
+        "median": 0.10001362700000001,
+        "p95": 0.10105628500000001,
+        "p99": 0.19994521812000002,
+        "maximum": 0.20109432500000002,
+        "mean": 0.10152918262184488
+      },
+      "bag_receive_age_seconds": {
+        "samples": 2180,
+        "finite": 2180,
+        "unavailable": 0,
+        "minimum": 3.207e-05,
+        "median": 5.9575000000000005e-05,
+        "p95": 0.0002724258999999995,
+        "p99": 0.0007765446100000025,
+        "maximum": 0.0019191710000000001,
+        "mean": 0.00010970480458715597
+      }
+    }
+  },
+  "measurements": {
+    "gps_observations/altitude": {
+      "samples": 2180,
+      "finite": 0,
+      "unavailable": 2180
+    },
+    "gps_observations/heading": {
+      "samples": 2180,
+      "finite": 0,
+      "unavailable": 2180
+    },
+    "gps_observations/horizontal_accuracy": {
+      "samples": 2180,
+      "finite": 2180,
+      "unavailable": 0,
+      "minimum": 1.076,
+      "median": 1.969,
+      "p95": 3.0772999999999984,
+      "p99": 3.62942,
+      "maximum": 3.67,
+      "mean": 1.9808270642201833
+    },
+    "gps_observations/speed_m_s": {
+      "samples": 2180,
+      "finite": 2180,
+      "unavailable": 0,
+      "minimum": 0.0,
+      "median": 1.2275992662619482,
+      "p95": 2.2865519797381784,
+      "p99": 2.852134026766872,
+      "maximum": 5.88870953605287,
+      "mean": 1.1821449444047225
+    },
+    "gps_observations/velocity_accuracy": {
+      "samples": 2180,
+      "finite": 2180,
+      "unavailable": 0,
+      "minimum": 0.165,
+      "median": 0.8130000000000001,
+      "p95": 1.5860999999999996,
+      "p99": 1.8584200000000002,
+      "maximum": 2.267,
+      "mean": 0.8842394495412845
+    },
+    "gps_observations/vertical_accuracy": {
+      "samples": 2180,
+      "finite": 2180,
+      "unavailable": 0,
+      "minimum": 1.492,
+      "median": 3.466,
+      "p95": 4.34805,
+      "p99": 4.848730000000001,
+      "maximum": 4.999,
+      "mean": 3.1937660550458715
+    },
+    "mavlink/altitude_msl_m": {
+      "samples": 221,
+      "finite": 221,
+      "unavailable": 0,
+      "minimum": 42.41,
+      "median": 51.32,
+      "p95": 56.41,
+      "p99": 57.602,
+      "maximum": 58.35,
+      "mean": 51.53434389140271
+    },
+    "mavlink/gps_fix_hz": {
+      "samples": 221,
+      "finite": 221,
+      "unavailable": 0,
+      "minimum": 7.001185,
+      "median": 9.999922,
+      "p95": 10.001189,
+      "p99": 10.0029988,
+      "maximum": 10.011082,
+      "mean": 9.846151972850679
+    },
+    "mavlink/gps_velocity_hz": {
+      "samples": 221,
+      "finite": 221,
+      "unavailable": 0,
+      "minimum": 7.001185,
+      "median": 9.999928,
+      "p95": 10.001189,
+      "p99": 10.0029988,
+      "maximum": 10.011082,
+      "mean": 9.84615242081448
+    },
+    "mavlink/heading_hz": {
+      "samples": 221,
+      "finite": 221,
+      "unavailable": 0,
+      "minimum": 7.001185,
+      "median": 9.999928,
+      "p95": 10.001189,
+      "p99": 10.0029988,
+      "maximum": 10.011082,
+      "mean": 9.84615242081448
+    },
+    "mavlink/imu_hz": {
+      "samples": 221,
+      "finite": 221,
+      "unavailable": 0,
+      "minimum": 498.450837,
+      "median": 499.070126,
+      "p95": 500.019534,
+      "p99": 500.135011,
+      "maximum": 500.554081,
+      "mean": 499.47510237556565
+    },
+    "mavlink/sync_rtt_ms": {
+      "samples": 221,
+      "finite": 221,
+      "unavailable": 0,
+      "minimum": 0.893613,
+      "median": 1.955989,
+      "p95": 2.080187,
+      "p99": 2.3456224000000003,
+      "maximum": 3.080951,
+      "mean": 1.7582064389140273
+    },
+    "msp_battery/voltage_v": {
+      "samples": 442,
+      "finite": 442,
+      "unavailable": 0,
+      "minimum": 24.490000000000002,
+      "median": 24.54,
+      "p95": 24.580000000000002,
+      "p99": 24.5959,
+      "maximum": 24.6,
+      "mean": 24.545407239819003
+    },
+    "msp_latency_seconds/1": {
+      "samples": 221,
+      "finite": 221,
+      "unavailable": 0,
+      "minimum": 0.003984905000038452,
+      "median": 0.0088687759999857,
+      "p95": 0.009909662000040953,
+      "p99": 0.009924986000078207,
+      "maximum": 0.009966378000058285,
+      "mean": 0.007892168398187165
+    },
+    "msp_latency_seconds/105": {
+      "samples": 5534,
+      "finite": 5534,
+      "unavailable": 0,
+      "minimum": 0.004799635999916063,
+      "median": 0.009930278999945585,
+      "p95": 0.014001617550042056,
+      "p99": 0.0149908675200345,
+      "maximum": 0.0164194739999175,
+      "mean": 0.009827160660101407
+    },
+    "msp_latency_seconds/111": {
+      "samples": 221,
+      "finite": 221,
+      "unavailable": 0,
+      "minimum": 0.008701971000050435,
+      "median": 0.00907183599997552,
+      "p95": 0.009948120999979437,
+      "p99": 0.010027515000001586,
+      "maximum": 0.010203669999896192,
+      "mean": 0.00941045007239329
+    },
+    "msp_latency_seconds/119": {
+      "samples": 221,
+      "finite": 221,
+      "unavailable": 0,
+      "minimum": 0.0089392999999518,
+      "median": 0.009898120000002564,
+      "p95": 0.010912056000051962,
+      "p99": 0.010930223600053069,
+      "maximum": 0.01096458800009259,
+      "mean": 0.01015614431222024
+    },
+    "msp_latency_seconds/12304": {
+      "samples": 663,
+      "finite": 663,
+      "unavailable": 0,
+      "minimum": 0.01928509899994424,
+      "median": 0.020879374999935862,
+      "p95": 0.022943669900018903,
+      "p99": 0.022956533860015043,
+      "maximum": 0.02329522899992753,
+      "mean": 0.020904482591253996
+    },
+    "msp_latency_seconds/125": {
+      "samples": 221,
+      "finite": 221,
+      "unavailable": 0,
+      "minimum": 0.0072242590000541895,
+      "median": 0.007894437000004473,
+      "p95": 0.008912798999972438,
+      "p99": 0.008949866799957818,
+      "maximum": 0.008972439999979542,
+      "mean": 0.008009214945694799
+    },
+    "msp_latency_seconds/130": {
+      "samples": 442,
+      "finite": 442,
+      "unavailable": 0,
+      "minimum": 0.00261278499999662,
+      "median": 0.007905063000009704,
+      "p95": 0.0119121962499662,
+      "p99": 0.01296396603994367,
+      "maximum": 0.013054612999894744,
+      "mean": 0.008033965837107006
+    },
+    "msp_latency_seconds/150": {
+      "samples": 5533,
+      "finite": 5533,
+      "unavailable": 0,
+      "minimum": 0.0039357680000193795,
+      "median": 0.00891632600007597,
+      "p95": 0.009941084399974898,
+      "p99": 0.011853621800019034,
+      "maximum": 0.01408778400002575,
+      "mean": 0.008647051948309429
+    },
+    "msp_latency_seconds/2": {
+      "samples": 221,
+      "finite": 221,
+      "unavailable": 0,
+      "minimum": 0.006968098000015743,
+      "median": 0.007894836999980726,
+      "p95": 0.010014809000040259,
+      "p99": 0.010938420800039239,
+      "maximum": 0.010964080000007925,
+      "mean": 0.00859390773303154
+    },
+    "msp_latency_seconds/238": {
+      "samples": 221,
+      "finite": 221,
+      "unavailable": 0,
+      "minimum": 0.00771777700003895,
+      "median": 0.011881292999987636,
+      "p95": 0.012922543999934533,
+      "p99": 0.012942743399980828,
+      "maximum": 0.012988089000032232,
+      "mean": 0.010796720438913955
+    },
+    "msp_latency_seconds/3": {
+      "samples": 221,
+      "finite": 221,
+      "unavailable": 0,
+      "minimum": 0.007811016999994536,
+      "median": 0.010023295999985748,
+      "p95": 0.010967660999995132,
+      "p99": 0.011054687399951036,
+      "maximum": 0.011339174999989154,
+      "mean": 0.009963839828050599
+    },
+    "msp_latency_seconds/34": {
+      "samples": 221,
+      "finite": 221,
+      "unavailable": 0,
+      "minimum": 0.013370890000032887,
+      "median": 0.014877448999982334,
+      "p95": 0.015935474000002614,
+      "p99": 0.015963028800001666,
+      "maximum": 0.016134378999936416,
+      "mean": 0.014863398904975431
+    },
+    "msp_latency_seconds/44": {
+      "samples": 221,
+      "finite": 221,
+      "unavailable": 0,
+      "minimum": 0.010853855000050316,
+      "median": 0.012898059000008288,
+      "p95": 0.012968266999905609,
+      "p99": 0.013194024800077388,
+      "maximum": 0.013959214000010434,
+      "mean": 0.01248316146154079
+    },
+    "msp_latency_seconds/64": {
+      "samples": 221,
+      "finite": 221,
+      "unavailable": 0,
+      "minimum": 0.00493462199995065,
+      "median": 0.007902149000074132,
+      "p95": 0.008918093000033878,
+      "p99": 0.00898509179996836,
+      "maximum": 0.009037728999942374,
+      "mean": 0.008189052466066464
+    },
+    "navigation_revocations/altitude": {
+      "samples": 2180,
+      "finite": 0,
+      "unavailable": 2180
+    },
+    "navigation_revocations/heading": {
+      "samples": 2180,
+      "finite": 0,
+      "unavailable": 2180
+    },
+    "navigation_revocations/horizontal_accuracy": {
+      "samples": 2180,
+      "finite": 0,
+      "unavailable": 2180
+    },
+    "navigation_revocations/velocity_accuracy": {
+      "samples": 2180,
+      "finite": 0,
+      "unavailable": 2180
+    },
+    "navigation_revocations/vertical_accuracy": {
+      "samples": 2180,
+      "finite": 0,
+      "unavailable": 2180
+    }
+  },
+  "counts": {
+    "/authority/armed": {
+      "false": 25583
+    },
+    "/authority/auto_switch": {
+      "false": 25583
+    },
+    "/authority/kill": {
+      "true": 25583
+    },
+    "/authority/rc_link": {
+      "false": 25583
+    },
+    "/fused_state/accuracy_known": {
+      "false": 110579
+    },
+    "/fused_state/estimator_ready": {
+      "false": 110579
+    },
+    "/fused_state/heading_valid": {
+      "false": 110579
+    },
+    "/fused_state/imu_ready": {
+      "false": 110579
+    },
+    "/fused_state/initialized": {
+      "false": 110579
+    },
+    "/fused_state/navigation_ready": {
+      "false": 110579
+    },
+    "/fused_state/navigation_valid": {
+      "false": 110579
+    },
+    "/fused_state/readiness_reason": {
+      "Initialization requires disarmed authority and stationary, fresh navigation": 110579
+    },
+    "/health/config_verified": {
+      "false": 25583
+    },
+    "/health/estimator_ready": {
+      "false": 25583
+    },
+    "/health/geofence_ok": {
+      "false": 25583
+    },
+    "/health/imu_ready": {
+      "false": 25583
+    },
+    "/health/navigation_ready": {
+      "false": 25583
+    },
+    "/health/status/reasons": {
+      "Missing configuration readback": 220,
+      "IMU startup checks or FC calibration/sensor status not ready": 25583,
+      "Fused state unavailable/stale": 25583,
+      "Thrust calibration unavailable": 25583,
+      "Geofence unconfigured, stale, or exceeded": 25583,
+      "Battery unavailable/stale": 132,
+      "Unsupported FC/API: require BTFL API 1.48": 25363
+    },
+    "/health/thrust_calibrated": {
+      "false": 25583
+    },
+    "/health/transport_healthy": {
+      "false": 25583
+    },
+    "/msp/decoded_state/armed": {
+      "false": 25583
+    },
+    "/msp/decoded_state/auto_switch": {
+      "false": 25583
+    },
+    "/msp/decoded_state/config_verified": {
+      "false": 25583
+    },
+    "/msp/decoded_state/control_mode_ok": {
+      "false": 25583
+    },
+    "/msp/decoded_state/imu_ready": {
+      "false": 25583
+    },
+    "/msp/decoded_state/kill": {
+      "true": 25583
+    },
+    "/msp/decoded_state/override_timeout_ms": {
+      "0": 220,
+      "300": 25363
+    },
+    "/msp/decoded_state/pid_profile": {
+      "255": 25583
+    },
+    "/msp/decoded_state/rate_profile": {
+      "255": 25583
+    },
+    "/msp/decoded_state/rc_link": {
+      "false": 25583
+    },
+    "/msp/decoded_state/reason": {
+      "Missing configuration readback": 220,
+      "Unsupported FC/API: require BTFL API 1.48": 25363
+    },
+    "/msp/decoded_state/receiver_valid": {
+      "false": 25583
+    },
+    "/msp/decoded_state/transport_healthy": {
+      "false": 126,
+      "true": 25457
+    },
+    "/navigation/status/reason": {
+      "Navigation stream stale": 2,
+      "True-north heading source/correction unconfirmed or invalid": 221
+    },
+    "/sensors/fc_heading/valid": {
+      "false": 2180
+    },
+    "/sensors/gps/fix/position_covariance_type": {
+      "1": 2180
+    },
+    "/sensors/gps/fix/service": {
+      "1": 2180
+    },
+    "/sensors/gps/fix/status": {
+      "0": 2180
+    },
+    "gps_observations/altitude_reference": {
+      "unknown": 2180
+    },
+    "gps_observations/clock_aligned": {
+      "true": 2180
+    },
+    "gps_observations/fix_type": {
+      "3": 2180
+    },
+    "gps_observations/heading_valid": {
+      "false": 2180
+    },
+    "mavlink/accuracy_valid": {
+      "true": 221
+    },
+    "mavlink/attitude_hz": {
+      "0.000000": 221
+    },
+    "mavlink/bad_frames": {
+      "0": 221
+    },
+    "mavlink/connected": {
+      "true": 221
+    },
+    "mavlink/duplicates": {
+      "0": 221
+    },
+    "mavlink/ellipsoid_valid": {
+      "false": 221
+    },
+    "mavlink/gps_fix_type": {
+      "3": 221
+    },
+    "mavlink/gps_mode": {
+      "gnss": 221
+    },
+    "mavlink/gps_ready": {
+      "true": 221
+    },
+    "mavlink/heading_source": {
+      "GLOBAL_POSITION_INT.hdg / FC attitude yaw": 221
+    },
+    "mavlink/heading_valid": {
+      "false": 221
+    },
+    "mavlink/imu_fresh": {
+      "true": 221
+    },
+    "mavlink/imu_publisher_conflict": {
+      "false": 221
+    },
+    "mavlink/level": {
+      "0": 221
+    },
+    "mavlink/rate_commands_ok": {
+      "true": 221
+    },
+    "mavlink/rejected_sync": {
+      "0": 221
+    },
+    "mavlink/stale": {
+      "0": 221
+    },
+    "mavlink/synchronized": {
+      "true": 221
+    },
+    "mavlink/tx_errors": {
+      "0": 221
+    },
+    "mavlink/velocity_valid": {
+      "true": 218,
+      "false": 3
+    },
+    "mavlink/wrong_source": {
+      "0": 221
+    },
+    "msp_battery/cells": {
+      "6": 442
+    },
+    "msp_events": {
+      "tx:105:": 5534,
+      "rx:105:": 5534,
+      "tx:150:": 5534,
+      "rx:150:": 5533,
+      "tx:130:": 442,
+      "rx:130:": 442,
+      "tx:1:": 221,
+      "rx:1:": 221,
+      "tx:2:": 221,
+      "rx:2:": 221,
+      "tx:3:": 221,
+      "rx:3:": 221,
+      "tx:34:": 221,
+      "rx:34:": 221,
+      "tx:238:": 221,
+      "rx:238:": 221,
+      "tx:64:": 221,
+      "rx:64:": 221,
+      "tx:44:": 221,
+      "rx:44:": 221,
+      "tx:119:": 221,
+      "rx:119:": 221,
+      "tx:111:": 221,
+      "rx:111:": 221,
+      "tx:125:": 221,
+      "rx:125:": 221,
+      "tx:12304:msp_override_channels_mask": 221,
+      "rx:12304:msp_override_channels_mask": 221,
+      "tx:12304:msp_override_failsafe": 221,
+      "rx:12304:msp_override_failsafe": 221,
+      "tx:12304:msp_override_timeout_ms": 221,
+      "rx:12304:msp_override_timeout_ms": 221
+    },
+    "msp_status/arming_disable_flag_count": {
+      "30": 5533
+    },
+    "msp_status/arming_disable_flags": {
+      "0x4010004": 5516,
+      "0x4010104": 17
+    },
+    "msp_status/mode_bits": {
+      "00000000": 5533
+    },
+    "msp_status/pid_profile": {
+      "0": 5533
+    },
+    "msp_status/rate_profile": {
+      "0": 5533
+    },
+    "msp_status/sensor_mask": {
+      "0x2f": 5533
+    },
+    "navigation_revocations/altitude_reference": {
+      "unknown": 2180
+    },
+    "navigation_revocations/clock_aligned": {
+      "true": 2180
+    },
+    "navigation_revocations/fix_type": {
+      "3": 2180
+    },
+    "navigation_revocations/heading_valid": {
+      "false": 2180
+    }
+  },
+  "msp_readbacks": [
+    {
+      "code": 1,
+      "request_name": "",
+      "count": 221,
+      "payload_hex": "000130",
+      "decoded": {
+        "protocol": 0,
+        "api": "1.48"
+      }
+    },
+    {
+      "code": 2,
+      "request_name": "",
+      "count": 221,
+      "payload_hex": "4254464c",
+      "decoded": {
+        "variant": "BTFL"
+      }
+    },
+    {
+      "code": 3,
+      "request_name": "",
+      "count": 221,
+      "payload_hex": "1a060108323032362e362e31",
+      "decoded": {
+        "version_bytes": [
+          26,
+          6,
+          1
+        ],
+        "payload_length": 12,
+        "version_string": "2026.6.1"
+      }
+    },
+    {
+      "code": 34,
+      "request_name": "",
+      "count": 221,
+      "payload_hex": "0004273001052730030210300b02283000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "decoded": {
+        "active_ranges": [
+          {
+            "permanent_id": 0,
+            "aux_index": 4,
+            "low": 1875,
+            "high": 2100
+          },
+          {
+            "permanent_id": 1,
+            "aux_index": 5,
+            "low": 1875,
+            "high": 2100
+          },
+          {
+            "permanent_id": 3,
+            "aux_index": 2,
+            "low": 1300,
+            "high": 2100
+          },
+          {
+            "permanent_id": 11,
+            "aux_index": 2,
+            "low": 1900,
+            "high": 2100
+          }
+        ]
+      }
+    },
+    {
+      "code": 44,
+      "request_name": "",
+      "count": 221,
+      "payload_hex": "096c07dc051a0400750343080000e20400000000000000000000001e00001e0100000000000000",
+      "decoded": {
+        "midrc": 1500,
+        "min_check": 1050
+      }
+    },
+    {
+      "code": 64,
+      "request_name": "",
+      "count": 221,
+      "payload_hex": "0001030204050607",
+      "decoded": {
+        "rx_map": [
+          0,
+          1,
+          3,
+          2,
+          4,
+          5,
+          6,
+          7
+        ]
+      }
+    },
+    {
+      "code": 111,
+      "request_name": "",
+      "count": 221,
+      "payload_hex": "07004343430032000000000707000064ce07ce07ce070332",
+      "decoded": {
+        "rates_type": 3,
+        "throttle_limit_type": 0,
+        "center_rate_deg_s": [
+          70,
+          70,
+          70
+        ],
+        "max_rate_deg_s": [
+          670,
+          670,
+          670
+        ],
+        "expo_percent": [
+          0,
+          0,
+          0
+        ],
+        "rate_limits_deg_s": [
+          1998,
+          1998,
+          1998
+        ]
+      }
+    },
+    {
+      "code": 119,
+      "request_name": "",
+      "count": 221,
+      "payload_hex": "0001020503061b0b2e070d0f13141a1e202122232425272d283031333435",
+      "decoded": {
+        "box_permanent_ids": [
+          0,
+          1,
+          2,
+          5,
+          3,
+          6,
+          27,
+          11,
+          46,
+          7,
+          13,
+          15,
+          19,
+          20,
+          26,
+          30,
+          32,
+          33,
+          34,
+          35,
+          36,
+          37,
+          39,
+          45,
+          40,
+          48,
+          49,
+          51,
+          52,
+          53
+        ]
+      }
+    },
+    {
+      "code": 125,
+      "request_name": "",
+      "count": 221,
+      "payload_hex": "0000053200",
+      "decoded": {
+        "deadband": 0,
+        "yaw_deadband": 0
+      }
+    },
+    {
+      "code": 238,
+      "request_name": "",
+      "count": 221,
+      "payload_hex": "140000000100000300000b0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "decoded": {}
+    },
+    {
+      "code": 12304,
+      "request_name": "msp_override_channels_mask",
+      "count": 221,
+      "payload_hex": "6d73705f6f766572726964655f6368616e6e656c735f6d61736b203d2030",
+      "decoded": {
+        "request_name": "msp_override_channels_mask",
+        "reply": "msp_override_channels_mask = 0"
+      }
+    },
+    {
+      "code": 12304,
+      "request_name": "msp_override_failsafe",
+      "count": 221,
+      "payload_hex": "6d73705f6f766572726964655f6661696c73616665203d204f4646",
+      "decoded": {
+        "request_name": "msp_override_failsafe",
+        "reply": "msp_override_failsafe = OFF"
+      }
+    },
+    {
+      "code": 12304,
+      "request_name": "msp_override_timeout_ms",
+      "count": 221,
+      "payload_hex": "6d73705f6f766572726964655f74696d656f75745f6d73203d20333030",
+      "decoded": {
+        "request_name": "msp_override_timeout_ms",
+        "reply": "msp_override_timeout_ms = 300"
+      }
+    }
+  ],
+  "msp_configurations": [
+    {
+      "count": 222,
+      "configuration": {
+        "baud": 115200,
+        "bench_aetr": [
+          1500,
+          1500,
+          1000,
+          1500
+        ],
+        "device": "/dev/ttyAMA0",
+        "mode": "monitor",
+        "msp.analog.enabled": false,
+        "msp.analog.rate_hz": 2.0,
+        "msp.attitude.enabled": false,
+        "msp.attitude.rate_hz": 10.0,
+        "msp.battery.enabled": true,
+        "msp.battery.rate_hz": 2.0,
+        "msp.gps.enabled": false,
+        "msp.gps.rate_hz": 2.0,
+        "msp.rc.enabled": true,
+        "msp.rc.rate_hz": 25.0,
+        "msp.read_configuration": true,
+        "msp.response_timeout_ms": 100.0,
+        "msp.status.enabled": true,
+        "msp.status.rate_hz": 25.0,
+        "props_removed": false
+      }
+    }
+  ]
+}

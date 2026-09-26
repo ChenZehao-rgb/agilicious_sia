@@ -1,0 +1,45 @@
+{
+  "gated": {
+    "statuses": [
+      "accepted",
+      "rejected",
+      "segment_inactive",
+      "accepted"
+    ],
+    "outlier_nis": 6633.45521360649,
+    "max_stationary_vertical_drift_m": 0.0
+  },
+  "ungated": {
+    "statuses": [
+      "accepted",
+      "accepted",
+      "segment_inactive",
+      "accepted"
+    ],
+    "outlier_nis": 6633.45521360649,
+    "max_stationary_vertical_drift_m": 0.0
+  },
+  "immediate_vs_delayed": {
+    "gps_delay_seconds": 0.02,
+    "updates_per_case": 9,
+    "max_absolute_differences": {
+      "post_px": 0.0,
+      "post_py": 0.0,
+      "post_pz": 0.0,
+      "post_vx": 0.0,
+      "post_vy": 0.0,
+      "post_vz": 0.0,
+      "post_yaw": 0.0,
+      "pvarx": 0.0,
+      "pvary": 0.0,
+      "pvarz": 0.0,
+      "vvarx": 0.0,
+      "vvary": 0.0,
+      "vvarz": 0.0,
+      "yawvar": 0.0,
+      "nis": 0.0
+    }
+  },
+  "passed": true,
+  "gravity_m_s2": 9.8066
+}

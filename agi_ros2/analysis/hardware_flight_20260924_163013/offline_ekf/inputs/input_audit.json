@@ -1,0 +1,103 @@
+{
+  "source_bag": "hardware_20260924_163013_022677",
+  "messages_checked": 154311,
+  "clock_step_seconds": 36.148772983,
+  "time_origin_header_ns": 1790238617036998144,
+  "clock_boundary_header_ns": 1790238676912733952,
+  "local_origin_lat_lon_msl": [
+    41.7608484,
+    123.4408814,
+    57.45
+  ],
+  "profile_snapshot": "hardware_snapshot.yaml",
+  "profile_sha256": "06448001681fb316e1b6501d7450789f6057a7f47877fe8929c32492fb6aae5c",
+  "source_sessions": {
+    "27.884770": 0,
+    "73.245671": 1
+  },
+  "imu_samples": 45357,
+  "gps_observations": 883,
+  "height_snapshot_count": 91,
+  "variants": {
+    "linear": {
+      "observations": 867,
+      "per_epoch": {
+        "0": 394,
+        "1": 473
+      }
+    },
+    "hold": {
+      "observations": 867,
+      "per_epoch": {
+        "0": 394,
+        "1": 473
+      }
+    }
+  },
+  "seeds": {
+    "1.0": {
+      "samples": 500,
+      "span_s": 0.9996705280000001,
+      "acceleration_mean": [
+        0.0700432230234146,
+        -0.06240131641551852,
+        9.807401918411255
+      ],
+      "gyro_mean": [
+        0.0002519476238312563,
+        -7.564912041198113e-05,
+        0.0020416930374794902
+      ],
+      "acceleration_stddev": [
+        0.011538035287365984,
+        0.013666724422592154,
+        0.020617820984105317
+      ],
+      "gyro_stddev": [
+        0.000985131142980482,
+        0.0011920463275667393,
+        0.004468499815027681
+      ],
+      "roll": -0.006362589692724706,
+      "pitch": -0.007141607438176252
+    },
+    "2.0": {
+      "samples": 999,
+      "span_s": 1.99842048,
+      "acceleration_mean": [
+        0.07174280378314946,
+        -0.06159344056548478,
+        9.800643860756814
+      ],
+      "gyro_mean": [
+        0.0002321137111133206,
+        -9.077529633744948e-05,
+        0.0017995621984629143
+      ],
+      "acceleration_stddev": [
+        0.011702537067316521,
+        0.012838673046024077,
+        0.020371561022327452
+      ],
+      "gyro_stddev": [
+        0.0010236719222984367,
+        0.0012350796802093062,
+        0.00448262828734545
+      ],
+      "roll": -0.006284549316278157,
+      "pitch": -0.00731993802698153
+    }
+  },
+  "imu_max_gap_seconds": 0.409483520000002,
+  "assumptions": [
+    "Offline only; neither online startup gates nor physical authorization are bypassed in production.",
+    "Time subtracts the measured wall step; missing IMU remains missing.",
+    "Height diagnostics are approximately associated with the latest earlier GPS fix in the same epoch.",
+    "Reconstructed height is only 1 Hz evidence; linear interpolation uses future samples and is not online replay.",
+    "Hold variant tests this reconstruction dependence; neither recovers original full-rate altitude.",
+    "No height extrapolation, no interpolation across the clock/session boundary.",
+    "ENU origin is the first GPS horizontal fix and first MSL snapshot, not a verified stationary origin.",
+    "Only 1/2 second startup seeds are explored; neither passes the actual 3 second readiness rule.",
+    "GPS position/velocity are filter inputs and cannot serve as independent localization truth."
+  ]
+}

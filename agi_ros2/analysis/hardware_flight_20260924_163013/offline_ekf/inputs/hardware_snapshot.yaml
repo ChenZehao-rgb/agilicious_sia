@@ -178,7 +178,7 @@ evidence:
   battery_timeout: 1.5
   geofence_min: [0.0, 0.0, 0.0]
   geofence_max: [0.0, 0.0, 0.0]
-  expected_pid_profile: 1
-  expected_rate_profile: 1
+  expected_pid_profile: 0
+  expected_rate_profile: 0
   # Fixed at 50 ms for this hardware policy; cannot be relaxed through configuration.
   expected_override_timeout_ms: 50

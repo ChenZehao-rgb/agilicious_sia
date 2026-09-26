@@ -1,0 +1,131 @@
+{
+  "coordinate_and_field_mapping_review": "S/G indexes, quaternion wxyz, FLU IMU and ENU navigation match native interfaces.",
+  "source_session_and_gap_review": "The two navigation epochs correspond to the two IMU intervals; real gap 41.795901696 to 42.205385216 s; second explicit seed is 42.360858368 s.",
+  "real_bag_delayed_delivery": [
+    {
+      "epoch": 0,
+      "updates": 375,
+      "delay_seconds": 0.02,
+      "statuses_match": true,
+      "max_absolute_differences": {
+        "post_px": 0.0,
+        "post_py": 0.0,
+        "post_pz": 0.0,
+        "post_vx": 0.0,
+        "post_vy": 0.0,
+        "post_vz": 0.0,
+        "post_yaw": 0.0,
+        "pvarx": 0.0,
+        "pvary": 0.0,
+        "pvarz": 0.0,
+        "vvarx": 0.0,
+        "vvary": 0.0,
+        "vvarz": 0.0,
+        "yawvar": 0.0,
+        "nis": 0.0
+      }
+    },
+    {
+      "epoch": 1,
+      "updates": 472,
+      "delay_seconds": 0.02,
+      "statuses_match": true,
+      "max_absolute_differences": {
+        "post_px": 1.3205820081907405e-07,
+        "post_py": 2.05384003137965e-08,
+        "post_pz": 3.6308300366272306e-08,
+        "post_vx": 3.371405021823648e-08,
+        "post_vy": 1.2073355981634393e-08,
+        "post_vz": 7.86095299964984e-09,
+        "post_yaw": 1.9984014443252818e-14,
+        "pvarx": 0.0,
+        "pvary": 0.0,
+        "pvarz": 0.0,
+        "vvarx": 0.0,
+        "vvary": 0.0,
+        "vvarz": 0.0,
+        "yawvar": 0.0,
+        "nis": 0.0
+      }
+    }
+  ],
+  "rejection_clusters": [
+    {
+      "start_s": 26.759099904,
+      "end_s": 26.759099904,
+      "count": 1,
+      "maximum_nis": 24.8936597721709,
+      "initial_innovation": {
+        "innovation_px": -0.0643745290983953,
+        "innovation_py": -0.0312215835304746,
+        "innovation_pz": 0.451538051041569,
+        "innovation_vx": -0.877083969488534,
+        "innovation_vy": 1.12939472592445,
+        "innovation_vz": 1.49372172723367,
+        "innovation_yaw": -0.0547400156412223
+      }
+    },
+    {
+      "start_s": 27.057586432,
+      "end_s": 27.057586432,
+      "count": 1,
+      "maximum_nis": 24.4581493097254,
+      "initial_innovation": {
+        "innovation_px": -0.175311329549242,
+        "innovation_py": 0.0620618246251547,
+        "innovation_pz": 0.54055597461478,
+        "innovation_vx": -0.505611790175312,
+        "innovation_vy": 0.84943660697781,
+        "innovation_vz": 2.02264477645333,
+        "innovation_yaw": -0.0560059279451917
+      }
+    },
+    {
+      "start_s": 27.358011392,
+      "end_s": 27.358011392,
+      "count": 1,
+      "maximum_nis": 28.6206383137304,
+      "initial_innovation": {
+        "innovation_px": -0.336543819040643,
+        "innovation_py": 0.158748194208016,
+        "innovation_pz": 0.667677704029237,
+        "innovation_vx": -0.882648622748518,
+        "innovation_vy": 0.980949545409235,
+        "innovation_vz": 2.02370720365744,
+        "innovation_yaw": -0.0625468219843803
+      }
+    },
+    {
+      "start_s": 79.263186432,
+      "end_s": 79.461634816,
+      "count": 3,
+      "maximum_nis": 47.1773654769439,
+      "initial_innovation": {
+        "innovation_px": -0.247926205215839,
+        "innovation_py": 1.1253089716501,
+        "innovation_pz": 0.0654746012068523,
+        "innovation_vx": 0.486569501018237,
+        "innovation_vy": 1.50145772536212,
+        "innovation_vz": 0.632206169483993,
+        "innovation_yaw": -0.0953963840399688
+      }
+    },
+    {
+      "start_s": 84.266281216,
+      "end_s": 90.370252544,
+      "count": 56,
+      "maximum_nis": 490.142140169701,
+      "initial_innovation": {
+        "innovation_px": -1.55969294964222,
+        "innovation_py": 1.97467815662583,
+        "innovation_pz": 1.84968316868897,
+        "innovation_vx": -1.8600840836412,
+        "innovation_vy": 0.0784078835651081,
+        "innovation_vz": 1.18813823638208,
+        "innovation_yaw": -0.0576625085919478
+      }
+    }
+  ],
+  "interpretation": "Terminal rejection starts at 84.266281216 s, well after the clock/session restart. Velocity/position innovations are already inconsistent at onset; rejection removes correction and discrepancies grow. NIS uses correlated covariance: axis magnitudes alone are not an exact NIS decomposition. Actual-bag delayed delivery preserves NIS, covariance and decisions; submicrometre rejected-state integration differences cannot explain metre-scale discrepancies. No CSV/cache artifact found. Sensor latency, IMU bias/vibration, initialization, reconstructed altitude and noise modelling remain candidates, not established causes.",
+  "robustness_note": "run_analysis.py maps two IMU chunks to source epochs by enumeration. Verified for this bag; a general tool should explicitly validate every chunk/session association."
+}

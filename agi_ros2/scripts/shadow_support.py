@@ -90,6 +90,16 @@ def u16(data, offset=0):
     return struct.unpack_from('<H', data, offset)[0]
 
 
+def valid_fc_version(payload):
+    """Accept legacy triples and the paired firmware's length-prefixed CalVer label."""
+    if len(payload) == 3:
+        return True
+    # msp.c writes year - 2000, month, patch, then sbufWritePString(version).
+    if len(payload) < 5 or payload[3] != len(payload) - 4:
+        return False
+    return all(32 <= value <= 126 for value in payload[4:])
+
+
 def evidence_config_path(runtime_config, bridge_config):
     if runtime_config and bridge_config:
         raise ValueError('runtime_config and bridge_config cannot both be set')
@@ -175,8 +185,10 @@ class MspEvidence:
             return False, 'Override setting readback stale'
         f = {c: p[0] for c, p in self.frames.items()}
         try:
-            if f[1] != bytes((0, 1, 48)) or f[2] != b'BTFL' or len(f[3]) != 3:
+            if f[1] != bytes((0, 1, 48)) or f[2] != b'BTFL':
                 return False, 'Unsupported FC/API: require BTFL API 1.48'
+            if not valid_fc_version(f[3]):
+                return False, 'Malformed FC version readback'
             if self.settings['msp_override_channels_mask'][0] != '15':
                 return False, 'Override mask must be 15 (AETR only)'
             if self.settings['msp_override_failsafe'][0] != 'OFF':

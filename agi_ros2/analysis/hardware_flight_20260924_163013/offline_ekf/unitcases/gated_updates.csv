@@ -1,0 +1,5 @@
+segment,t,status,nis,innovation_px,innovation_py,innovation_pz,innovation_vx,innovation_vy,innovation_vz,innovation_yaw,gps_px,gps_py,gps_pz,gps_vx,gps_vy,gps_vz,gps_yaw,post_px,post_py,post_pz,post_vx,post_vy,post_vz,post_yaw,covariance_t,pvarx,pvary,pvarz,vvarx,vvary,vvarz,yawvar,accepted_count,rejected_count
+0,1.1,accepted,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1.1,0.50124688319553,0.50124688319553,0.501246883028403,0.508213509883429,0.508213509883429,0.508212931450397,0.0171446938061639,1,0
+0,1.2,rejected,6633.45521360649,100,0,0,0,0,0,0,100,0,0,0,0,0,0,0,0,0,0,0,0,0,1.1,0.50124688319553,0.50124688319553,0.501246883028403,0.508213509883429,0.508213509883429,0.508212931450397,0.0171446938061639,1,1
+0,1.3,segment_inactive,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan
+1,1.305,accepted,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1.305,0.50000312498068,0.50000312498068,0.50000312498068,0.50002099134182,0.50002099134182,0.500020991338202,0.0171428617442433,1,0

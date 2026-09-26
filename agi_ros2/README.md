@@ -232,6 +232,22 @@ hardware 模式拒绝启用此开关。旧独立控制器仍可用 `run.py --no-
 
 ## CM5 实机：诊断、影子、悬停
 
+最新的 16:30 校准后飞行包见
+[IST8310 航向、GPS 精度与时钟跳变分析](analysis/hardware_flight_20260924_163013/README.md)。
+航向已全部有效；操作者确认真北一致、飞控已补偿磁偏角，故本地配置已声明航向确认，ROS 修正量为 0。
+该包的运行配置仍为未知高度基准并报告旧版解析错误，且存在约 36.149 s 的系统时钟前跳；
+下一次先同步 CM5 的配置与安装代码、处理时间同步和模式/profile 匹配，再完成未解锁静止初始化。
+这组数据已完成[原生 EKF 离线实验](analysis/hardware_flight_20260924_163013/offline_ekf/README.md)，
+附轨迹图、CSV 与可复算 notebook；在明确高度/初态重建假设后，末段仍出现连续拒绝 GPS 更新和明显偏离，
+尚不能据此确认定位正确。[时钟与 PID profile 说明](analysis/hardware_flight_20260924_163013/offline_ekf/clock_and_profiles.md)
+列出了目标机排查及启动同步步骤。
+
+2026-09-24 的手持行走诊断包已分析，见
+[本机实测配置、阻塞项与下一轮录包步骤](analysis/hardware_diagnostic_20260924/README.md)。
+`hardware.yaml` 已按操作者信息补入 0.734 kg 质量，按 MSP 回读补入 ACTUAL rates，
+并选择配套固件的 MSL 高度。该包没有有效航向、导航原点或已初始化的融合状态；
+剩余模型、导航门限及实体授权条件仍未满足，下一步继续进行拆桨地面诊断。
+
 先在 `hardware.yaml` 填写 `output.device` 与 `mavlink.device`，使用两条独立 UART，
 不能是同一设备的两个软链接。飞控连接及 MAVLink 时间/单位细节见 [MAVLINK_SENSORS.md](MAVLINK_SENSORS.md)。
 
@@ -364,7 +380,8 @@ RC 输入到全机总推力关系。以克力记录时用 `N = gf × 0.00980665`
 
 实机配置回读必须同时确认：
 
-- 已支持的 BTFL API 1.48；`MSP_STATUS_EX` 布局、当前 PID/rate profile 与预期一致。
+- 已支持的 BTFL API 1.48；`MSP_FC_VERSION` 接受旧三字节及带长度前缀版本字符串的回复；
+  `MSP_STATUS_EX` 布局、当前 PID/rate profile 与预期一致。
 - `msp_override_channels_mask=15`、`msp_override_failsafe=OFF`、`msp_override_timeout_ms=50`。
   三项通过 MSP v2 `0x3010` **只读**查询；旧固件不支持 timeout 时保持未就绪，不绕过检查。
 - `map AETR1234`，内部 RX map `[0,1,3,2,4,5,6,7]`；AUX1 ARM、AUX2 MSP OVERRIDE、AUX3 FAILSAFE；

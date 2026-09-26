@@ -1,0 +1,8 @@
+[EKF]          Timing Process in 501 calls
+mean|std:  1.46e-05 | 1.04e-09 ms    [min|max:  1e-05 | 0.00103 ms]
+[EKF]          Timing Update Pose has no call yet.
+[EKF]          Timing Kalman gain computation has no call yet.
+[EKF]          Timing Propagation Prior in 518 calls
+mean|std:  0.0179 | 0.00912 ms    [min|max:  0.000487 | 1.88 ms]
+[EKF]          Timing Propagation Jacobian has no call yet.
+Processed 511 CSV lines using agi::EkfImu

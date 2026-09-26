@@ -137,6 +137,45 @@ class EvidenceTests(unittest.TestCase):
         d.accept(0x3010, b'msp_override_channels_mask = 31', 10.01, 'one', 'msp_override_channels_mask')
         self.assertFalse(d.snapshot(10.02)['config_verified'])
 
+    def test_calver_version_readback(self):
+        # Actual hardware reply: 26, 6, 1, length 8, ASCII "2026.6.1".
+        for label in (b'2026.6.1', b'2026.6.1-rc1', b'custom/git-0123456'):
+            d = ready_decoder()
+            d.frames[3] = bytes((26, 6, 1, len(label))) + label, 10.
+            s = d.snapshot(10.02)
+            self.assertTrue(s['config_verified'], s)
+            self.assertTrue(s['receiver_valid'], s)
+
+    def test_malformed_calver_version_readback(self):
+        valid = bytes.fromhex('1a060108323032362e362e31')
+        payloads = (b'', valid[:2], valid[:4], valid[:-1], valid + b'\x00',
+                    bytes((26, 6, 1, 0)), bytes((26, 6, 1, 7)) + b'2026.6.1',
+                    bytes((26, 6, 1, 8)) + b'2026.6.\xff',
+                    bytes((26, 6, 1, 12)) + b'2026.6.1-rc\x001')
+        for payload in payloads:
+            with self.subTest(payload=payload):
+                d = ready_decoder()
+                d.frames[3] = payload, 10.
+                s = d.snapshot(10.02)
+                self.assertFalse(s['config_verified'], s)
+                self.assertFalse(s['receiver_valid'], s)
+                self.assertEqual(s['reason'], 'Malformed FC version readback')
+
+    def test_calver_keeps_api_and_override_requirements(self):
+        for code, payload in ((1, bytes((0, 1, 47))), (2, b'INAV'), (119, bytes((27, 0)))):
+            with self.subTest(code=code):
+                d = ready_decoder()
+                d.frames[3] = bytes.fromhex('1a060108323032362e362e31'), 10.
+                d.frames[code] = payload, 10.
+                self.assertFalse(d.snapshot(10.02)['config_verified'])
+        for name, value in (('msp_override_channels_mask', '0'), ('msp_override_failsafe', 'ON'),
+                            ('msp_override_timeout_ms', '300')):
+            with self.subTest(name=name):
+                d = ready_decoder()
+                d.frames[3] = bytes.fromhex('1a060108323032362e362e31'), 10.
+                d.settings[name] = value, 10.
+                self.assertFalse(d.snapshot(10.02)['config_verified'])
+
     def test_stale_ignored_timeout_latched_and_session_reset(self):
         d = ready_decoder()
         d.accept(105, bytes(14), 9., 'one')

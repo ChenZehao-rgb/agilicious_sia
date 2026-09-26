@@ -1,0 +1,38 @@
+{
+  "hold_2s": {
+    "0": {
+      "common_updates": 375,
+      "horizontal_difference_max_m": 0.018737072886342285,
+      "vertical_difference_max_m": 0.6664104276004803
+    },
+    "1": {
+      "common_updates": 472,
+      "horizontal_difference_max_m": 0.029829424851163872,
+      "vertical_difference_max_m": 0.3513688618376012
+    }
+  },
+  "linear_1s": {
+    "0": {
+      "common_updates": 375,
+      "horizontal_difference_max_m": 0.08243066838878743,
+      "vertical_difference_max_m": 0.18104695530858006
+    },
+    "1": {
+      "common_updates": 472,
+      "horizontal_difference_max_m": 0.13591741277793928,
+      "vertical_difference_max_m": 0.4451921788237012
+    }
+  },
+  "linear_2s_ungated": {
+    "0": {
+      "common_updates": 375,
+      "horizontal_difference_max_m": 0.23087493566935405,
+      "vertical_difference_max_m": 0.27788186292853023
+    },
+    "1": {
+      "common_updates": 472,
+      "horizontal_difference_max_m": 18.20180690244443,
+      "vertical_difference_max_m": 2.9982885325352004
+    }
+  }
+}

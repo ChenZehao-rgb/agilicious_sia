@@ -1,0 +1,571 @@
+{
+  "filter": "production agi::EkfImu from rebuilt libagilib",
+  "profile": "agi_ros2/analysis/hardware_flight_20260924_163013/offline_ekf/inputs/hardware_snapshot.yaml",
+  "profile_sha256": "06448001681fb316e1b6501d7450789f6057a7f47877fe8929c32492fb6aae5c",
+  "state_output": "all GPS updates plus approximately 50 Hz IMU predictions",
+  "cases": [
+    {
+      "name": "linear_2s",
+      "height_method": "linear",
+      "seed_duration_s": 2.0,
+      "nis_limit": 24.322,
+      "seeds": [
+        {
+          "epoch": 0,
+          "time_s": 2.057287168,
+          "method": "2.0s ground IMU mean, first available GPS state",
+          "quaternion_wxyz": [
+            0.33463628620792873,
+            0.002397457925105201,
+            -0.004185821528404553,
+            0.942335018476229
+          ],
+          "gyro_bias": [
+            0.0002321137111133206,
+            -9.077529633744948e-05,
+            0.0017995621984629143
+          ],
+          "acceleration_bias": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "epoch": 1,
+          "time_s": 42.360858368,
+          "method": "Explicit reseed: previous segment tilt/bias held; yaw and p/v from current GPS. No propagation over missing IMU, no valid stationary restart claim.",
+          "quaternion_wxyz": [
+            0.4346944220339157,
+            -0.02230139096554639,
+            -0.06219355161739995,
+            0.8981510839223074
+          ],
+          "gyro_bias": [
+            0.00484617898729795,
+            -0.00183267633386766,
+            -0.0010193282052949
+          ],
+          "acceleration_bias": [
+            -0.72100233174725,
+            1.39109920912657,
+            -0.319137857813087
+          ]
+        }
+      ],
+      "segments": [
+        {
+          "epoch": 0,
+          "updates": 375,
+          "accepted": 372,
+          "rejected": 3,
+          "not_evaluated": 0,
+          "nis": {
+            "count": 375,
+            "median": 4.06293627794957,
+            "p95": 17.701643830531722,
+            "maximum": 28.6206383137304,
+            "rms": 8.468229093950814
+          },
+          "horizontal_input_residual_m": {
+            "count": 375,
+            "median": 0.42023068715029016,
+            "p95": 0.6854401424641929,
+            "maximum": 0.8655862349658784,
+            "rms": 0.4406583588149837
+          },
+          "vertical_input_residual_m": {
+            "count": 375,
+            "median": 0.6795269953507397,
+            "p95": 2.6018434757281863,
+            "maximum": 2.7032183176095304,
+            "rms": 1.2126204557240317
+          },
+          "velocity_input_residual_m_s": {
+            "count": 375,
+            "median": 0.7399626045037008,
+            "p95": 1.755669343450295,
+            "maximum": 2.41593076225571,
+            "rms": 0.9767716697146168
+          },
+          "input_residual_caveat": "Same GPS was fused; these are not independent accuracy errors."
+        },
+        {
+          "epoch": 1,
+          "updates": 472,
+          "accepted": 413,
+          "rejected": 59,
+          "not_evaluated": 0,
+          "nis": {
+            "count": 472,
+            "median": 5.67040083770495,
+            "p95": 192.5517225439766,
+            "maximum": 490.142140169701,
+            "rms": 80.26633940262947
+          },
+          "horizontal_input_residual_m": {
+            "count": 472,
+            "median": 0.34842222945815493,
+            "p95": 10.506229109490484,
+            "maximum": 20.912470669622245,
+            "rms": 4.004848686527363
+          },
+          "vertical_input_residual_m": {
+            "count": 472,
+            "median": 1.2365656414091042,
+            "p95": 4.547607644440946,
+            "maximum": 6.202157538883531,
+            "rms": 1.8798317838762397
+          },
+          "velocity_input_residual_m_s": {
+            "count": 472,
+            "median": 0.6991527625760074,
+            "p95": 3.5381838533133476,
+            "maximum": 5.023559411149853,
+            "rms": 1.4194098808427411
+          },
+          "input_residual_caveat": "Same GPS was fused; these are not independent accuracy errors."
+        }
+      ],
+      "stored_state_samples": 5243,
+      "segment_events": [
+        {
+          "segment": "0",
+          "t": "2.057287168",
+          "action": "initialized",
+          "detail": "explicit_state"
+        },
+        {
+          "segment": "1",
+          "t": "42.360858368",
+          "action": "initialized",
+          "detail": "explicit_state"
+        }
+      ]
+    },
+    {
+      "name": "hold_2s",
+      "height_method": "hold",
+      "seed_duration_s": 2.0,
+      "nis_limit": 24.322,
+      "seeds": [
+        {
+          "epoch": 0,
+          "time_s": 2.057287168,
+          "method": "2.0s ground IMU mean, first available GPS state",
+          "quaternion_wxyz": [
+            0.33463628620792873,
+            0.002397457925105201,
+            -0.004185821528404553,
+            0.942335018476229
+          ],
+          "gyro_bias": [
+            0.0002321137111133206,
+            -9.077529633744948e-05,
+            0.0017995621984629143
+          ],
+          "acceleration_bias": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "epoch": 1,
+          "time_s": 42.360858368,
+          "method": "Explicit reseed: previous segment tilt/bias held; yaw and p/v from current GPS. No propagation over missing IMU, no valid stationary restart claim.",
+          "quaternion_wxyz": [
+            0.4346988833898849,
+            -0.022168085645347616,
+            -0.06136933269559624,
+            0.8982089187727459
+          ],
+          "gyro_bias": [
+            0.00483286621645667,
+            -0.00181567807128158,
+            -0.00117191475325393
+          ],
+          "acceleration_bias": [
+            -0.716499693998038,
+            1.37661575629625,
+            -0.321286814114764
+          ]
+        }
+      ],
+      "segments": [
+        {
+          "epoch": 0,
+          "updates": 375,
+          "accepted": 372,
+          "rejected": 3,
+          "not_evaluated": 0,
+          "nis": {
+            "count": 375,
+            "median": 4.15412679385803,
+            "p95": 17.63933701412139,
+            "maximum": 28.7852011696391,
+            "rms": 8.47867828072002
+          },
+          "horizontal_input_residual_m": {
+            "count": 375,
+            "median": 0.42331541900372577,
+            "p95": 0.6840562624960771,
+            "maximum": 0.8732817948751206,
+            "rms": 0.4409605386272194
+          },
+          "vertical_input_residual_m": {
+            "count": 375,
+            "median": 0.7622919188730295,
+            "p95": 2.3996168578524255,
+            "maximum": 3.1383603839369503,
+            "rms": 1.184561485822637
+          },
+          "velocity_input_residual_m_s": {
+            "count": 375,
+            "median": 0.7642940168196881,
+            "p95": 1.758001070194649,
+            "maximum": 2.422697911120042,
+            "rms": 0.9807075464590925
+          },
+          "input_residual_caveat": "Same GPS was fused; these are not independent accuracy errors."
+        },
+        {
+          "epoch": 1,
+          "updates": 472,
+          "accepted": 413,
+          "rejected": 59,
+          "not_evaluated": 0,
+          "nis": {
+            "count": 472,
+            "median": 5.745205807260405,
+            "p95": 191.5626102930589,
+            "maximum": 488.08431238966,
+            "rms": 79.89304251335068
+          },
+          "horizontal_input_residual_m": {
+            "count": 472,
+            "median": 0.34819654092938246,
+            "p95": 10.502625215577996,
+            "maximum": 20.91112468030798,
+            "rms": 4.004040414479878
+          },
+          "vertical_input_residual_m": {
+            "count": 472,
+            "median": 1.139369096544955,
+            "p95": 4.222184565058814,
+            "maximum": 5.710788767912399,
+            "rms": 1.7914416089143201
+          },
+          "velocity_input_residual_m_s": {
+            "count": 472,
+            "median": 0.7008251001965631,
+            "p95": 3.537083899006884,
+            "maximum": 5.022690430186544,
+            "rms": 1.4186180215957562
+          },
+          "input_residual_caveat": "Same GPS was fused; these are not independent accuracy errors."
+        }
+      ],
+      "stored_state_samples": 5243,
+      "segment_events": [
+        {
+          "segment": "0",
+          "t": "2.057287168",
+          "action": "initialized",
+          "detail": "explicit_state"
+        },
+        {
+          "segment": "1",
+          "t": "42.360858368",
+          "action": "initialized",
+          "detail": "explicit_state"
+        }
+      ]
+    },
+    {
+      "name": "linear_1s",
+      "height_method": "linear",
+      "seed_duration_s": 1.0,
+      "nis_limit": 24.322,
+      "seeds": [
+        {
+          "epoch": 0,
+          "time_s": 1.057566464,
+          "method": "1.0s ground IMU mean, first available GPS state",
+          "quaternion_wxyz": [
+            0.33381375011244396,
+            0.002304034076623742,
+            -0.004190746550564079,
+            0.9426269194682431
+          ],
+          "gyro_bias": [
+            0.0002519476238312563,
+            -7.564912041198113e-05,
+            0.0020416930374794902
+          ],
+          "acceleration_bias": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "epoch": 1,
+          "time_s": 42.360858368,
+          "method": "Explicit reseed: previous segment tilt/bias held; yaw and p/v from current GPS. No propagation over missing IMU, no valid stationary restart claim.",
+          "quaternion_wxyz": [
+            0.4350681930765208,
+            -0.01563742225701138,
+            -0.061841152019410664,
+            0.8981351848776437
+          ],
+          "gyro_bias": [
+            0.0048519761011939,
+            -0.00195555946635975,
+            -0.000584025641998787
+          ],
+          "acceleration_bias": [
+            -0.843344006625454,
+            1.33015755636919,
+            -0.320998370833858
+          ]
+        }
+      ],
+      "segments": [
+        {
+          "epoch": 0,
+          "updates": 385,
+          "accepted": 382,
+          "rejected": 3,
+          "not_evaluated": 0,
+          "nis": {
+            "count": 385,
+            "median": 4.28807544118273,
+            "p95": 18.012166121934115,
+            "maximum": 29.2941631231217,
+            "rms": 8.687414765565155
+          },
+          "horizontal_input_residual_m": {
+            "count": 385,
+            "median": 0.41134443315510505,
+            "p95": 0.7399507052931812,
+            "maximum": 0.8930385114807547,
+            "rms": 0.4453441672122185
+          },
+          "vertical_input_residual_m": {
+            "count": 385,
+            "median": 0.6893629989013892,
+            "p95": 2.5102846577154896,
+            "maximum": 2.6257137613902293,
+            "rms": 1.1573027288589899
+          },
+          "velocity_input_residual_m_s": {
+            "count": 385,
+            "median": 0.7964829404948941,
+            "p95": 1.7660091004512903,
+            "maximum": 2.442776244443209,
+            "rms": 0.9954921415103772
+          },
+          "input_residual_caveat": "Same GPS was fused; these are not independent accuracy errors."
+        },
+        {
+          "epoch": 1,
+          "updates": 472,
+          "accepted": 413,
+          "rejected": 59,
+          "not_evaluated": 0,
+          "nis": {
+            "count": 472,
+            "median": 5.627707689897435,
+            "p95": 192.55693062596666,
+            "maximum": 491.457093154765,
+            "rms": 80.46418700364424
+          },
+          "horizontal_input_residual_m": {
+            "count": 472,
+            "median": 0.34859622403164126,
+            "p95": 10.558895591497935,
+            "maximum": 21.014300660780208,
+            "rms": 4.023266323483963
+          },
+          "vertical_input_residual_m": {
+            "count": 472,
+            "median": 1.2377343389807003,
+            "p95": 4.244415212321916,
+            "maximum": 5.75696536005983,
+            "rms": 1.7921352800627726
+          },
+          "velocity_input_residual_m_s": {
+            "count": 472,
+            "median": 0.6963595677512879,
+            "p95": 3.548422917935713,
+            "maximum": 5.0354163268962,
+            "rms": 1.4176201075265502
+          },
+          "input_residual_caveat": "Same GPS was fused; these are not independent accuracy errors."
+        }
+      ],
+      "stored_state_samples": 5303,
+      "segment_events": [
+        {
+          "segment": "0",
+          "t": "1.057566464",
+          "action": "initialized",
+          "detail": "explicit_state"
+        },
+        {
+          "segment": "1",
+          "t": "42.360858368",
+          "action": "initialized",
+          "detail": "explicit_state"
+        }
+      ]
+    },
+    {
+      "name": "linear_2s_ungated",
+      "height_method": "linear",
+      "seed_duration_s": 2.0,
+      "nis_limit": null,
+      "seeds": [
+        {
+          "epoch": 0,
+          "time_s": 2.057287168,
+          "method": "2.0s ground IMU mean, first available GPS state",
+          "quaternion_wxyz": [
+            0.33463628620792873,
+            0.002397457925105201,
+            -0.004185821528404553,
+            0.942335018476229
+          ],
+          "gyro_bias": [
+            0.0002321137111133206,
+            -9.077529633744948e-05,
+            0.0017995621984629143
+          ],
+          "acceleration_bias": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "epoch": 1,
+          "time_s": 42.360858368,
+          "method": "Explicit reseed: previous segment tilt/bias held; yaw and p/v from current GPS. No propagation over missing IMU, no valid stationary restart claim.",
+          "quaternion_wxyz": [
+            0.43468978280613274,
+            -0.022379952586223918,
+            -0.06221762009522957,
+            0.8981497081199109
+          ],
+          "gyro_bias": [
+            0.00484956689248783,
+            -0.00184351957687867,
+            -0.000968098135486197
+          ],
+          "acceleration_bias": [
+            -0.720868311042667,
+            1.39192977331038,
+            -0.31899822828909
+          ]
+        }
+      ],
+      "segments": [
+        {
+          "epoch": 0,
+          "updates": 375,
+          "accepted": 375,
+          "rejected": 0,
+          "not_evaluated": 0,
+          "nis": {
+            "count": 375,
+            "median": 4.06293627794957,
+            "p95": 16.837402374897962,
+            "maximum": 26.8293551827529,
+            "rms": 8.193740585265914
+          },
+          "horizontal_input_residual_m": {
+            "count": 375,
+            "median": 0.39081170648895824,
+            "p95": 0.6854401424641929,
+            "maximum": 0.8701255625545504,
+            "rms": 0.439508211606743
+          },
+          "vertical_input_residual_m": {
+            "count": 375,
+            "median": 0.6798297377485203,
+            "p95": 2.6018434757281863,
+            "maximum": 2.7032183176095304,
+            "rms": 1.2092400994448047
+          },
+          "velocity_input_residual_m_s": {
+            "count": 375,
+            "median": 0.7399626045037008,
+            "p95": 1.7089532998498662,
+            "maximum": 2.294845646394573,
+            "rms": 0.9647001605559508
+          },
+          "input_residual_caveat": "Same GPS was fused; these are not independent accuracy errors."
+        },
+        {
+          "epoch": 1,
+          "updates": 472,
+          "accepted": 472,
+          "rejected": 0,
+          "not_evaluated": 0,
+          "nis": {
+            "count": 472,
+            "median": 5.643556425443196,
+            "p95": 49.76728095034856,
+            "maximum": 73.7438392397415,
+            "rms": 18.188285635748898
+          },
+          "horizontal_input_residual_m": {
+            "count": 472,
+            "median": 0.3484367615355429,
+            "p95": 2.7623371501742318,
+            "maximum": 3.016455441879961,
+            "rms": 1.1629453893561845
+          },
+          "vertical_input_residual_m": {
+            "count": 472,
+            "median": 1.2241256394377096,
+            "p95": 2.6722712397350157,
+            "maximum": 3.203869006348331,
+            "rms": 1.4285903510827056
+          },
+          "velocity_input_residual_m_s": {
+            "count": 472,
+            "median": 0.6991408123622703,
+            "p95": 2.148531478586124,
+            "maximum": 2.5484480915262466,
+            "rms": 1.0539458340320305
+          },
+          "input_residual_caveat": "Same GPS was fused; these are not independent accuracy errors."
+        }
+      ],
+      "stored_state_samples": 5243,
+      "segment_events": [
+        {
+          "segment": "0",
+          "t": "2.057287168",
+          "action": "initialized",
+          "detail": "explicit_state"
+        },
+        {
+          "segment": "1",
+          "t": "42.360858368",
+          "action": "initialized",
+          "detail": "explicit_state"
+        }
+      ]
+    }
+  ],
+  "strict_online_result": "No initialization in recorded bag; offline seeds are conditional experiments.",
+  "limitations": [
+    "No independent localization truth.",
+    "Original full-rate GPS altitude not recorded.",
+    "Short startup seed and in-flight reseed are offline assumptions.",
+    "All finite covariance is conditional on the chosen model/noise; it is not proven accuracy."
+  ]
+}
