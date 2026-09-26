@@ -1,0 +1,549 @@
+{
+  "bag": "/home/ubuntu/agi_bags/agi_ekf_tuning_20260926_a",
+  "bag_duration_seconds": 95.47095647900001,
+  "topic_counts": {
+    "/rosout": 35,
+    "/msp/status": 2386,
+    "/fused_state": 47655,
+    "/msp/events": 12417,
+    "/msp/rc": 2385,
+    "/msp/config": 97,
+    "/sensors/imu": 47636,
+    "/sensors/gps/fix": 924,
+    "/sensors/fc_heading": 924,
+    "/sensors/gps/velocity": 924,
+    "/sensors/navigation": 924,
+    "/msp/battery": 191,
+    "/authority": 10965,
+    "/msp/decoded_state": 10963,
+    "/health": 10962,
+    "/health/status": 10961,
+    "/navigation/status": 95,
+    "/sensors/mavlink/status": 95,
+    "/navigation/origin": 88,
+    "/sensors/local_navigation": 853,
+    "/state": 42225
+  },
+  "first_initialized_bag_seconds": 10.915933585000001,
+  "initialized_message_count": 42226,
+  "post_first_initialized_count": 42226,
+  "post_first_initialized_false_count": 0,
+  "initialized_span_seconds": 84.5548038482666,
+  "all_reset_counters": [
+    1,
+    2
+  ],
+  "post_initialized_reset_counters": [
+    2
+  ],
+  "post_initialized_finite_state_count": 42226,
+  "quaternion_norm": {
+    "count": 42226,
+    "min": 0.9999999999999999,
+    "p50": 1.0,
+    "p95": 1.0,
+    "p99": 1.0000000000000002,
+    "max": 1.0000000000000002,
+    "mean": 1.0
+  },
+  "post_initialized_readiness_counts": {
+    "imu_ready": {
+      "true": 42226
+    },
+    "navigation_valid": {
+      "true": 42226
+    },
+    "navigation_ready": {
+      "false": 42226
+    },
+    "estimator_ready": {
+      "false": 42226
+    }
+  },
+  "all_readiness_reasons": {
+    "Initialization requires disarmed authority and stationary, fresh navigation": 3930,
+    "Collecting stationary IMU samples; checking gravity, gyro bias and noise": 1499,
+    "GNSS accuracy unknown, above limits, or flight accuracy limits unconfigured": 42226
+  },
+  "post_initialized_readiness_reasons": {
+    "GNSS accuracy unknown, above limits, or flight accuracy limits unconfigured": 42226
+  },
+  "covariance_time": {
+    "first": 1790410348.5777388,
+    "last": 1790410432.968802,
+    "distinct": 826,
+    "advances": 825,
+    "decreases": 0,
+    "repeats": 41400,
+    "positive_step_seconds": {
+      "count": 825,
+      "min": 0.07811546325683594,
+      "p50": 0.1001443862915039,
+      "p95": 0.11813712120056152,
+      "p99": 0.2003328800201416,
+      "max": 0.20626211166381836,
+      "mean": 0.10229219783436168
+    }
+  },
+  "navigation_time": {
+    "first": 1790410348.468755,
+    "last": 1790410432.968802,
+    "distinct": 826,
+    "advances": 825,
+    "decreases": 0,
+    "repeats": 41400,
+    "positive_step_seconds": {
+      "count": 825,
+      "min": 0.07811546325683594,
+      "p50": 0.10014486312866211,
+      "p95": 0.11814117431640625,
+      "p99": 0.2003328800201416,
+      "max": 0.20626211166381836,
+      "mean": 0.1024242993557092
+    }
+  },
+  "state_time": {
+    "first": 1790410348.5777388,
+    "last": 1790410433.1325426,
+    "distinct": 42226,
+    "advances": 42225,
+    "decreases": 0,
+    "repeats": 0,
+    "positive_step_seconds": {
+      "count": 42225,
+      "min": 0.0009975433349609375,
+      "p50": 0.0020012855529785156,
+      "p95": 0.0020051002502441406,
+      "p99": 0.002125978469848633,
+      "max": 0.003142118453979492,
+      "mean": 0.002002482033114662
+    }
+  },
+  "nis_finite": {
+    "count": 42175,
+    "min": 0.01861651083691243,
+    "p50": 0.686816459209949,
+    "p95": 10.732241179570307,
+    "p99": 15.308583307827975,
+    "max": 18.911466539176203,
+    "mean": 2.211125387586599
+  },
+  "nis_nonfinite_count": 51,
+  "rejection_counter_values": [
+    0
+  ],
+  "navigation_accepted_updates_values": [
+    0
+  ],
+  "steady_sample_count": 37232,
+  "steady_covariance": {
+    "position_stddev": [
+      {
+        "count": 37232,
+        "min": 0.15247587397203954,
+        "p50": 0.15936216392550148,
+        "p95": 0.17107761200768243,
+        "p99": 0.17377819922597001,
+        "max": 0.1757026725345381,
+        "mean": 0.16037807739181334
+      },
+      {
+        "count": 37232,
+        "min": 0.15246327010124752,
+        "p50": 0.15935797370973515,
+        "p95": 0.17107754071363476,
+        "p99": 0.1737781936925007,
+        "max": 0.17570266972892193,
+        "mean": 0.1603733774181917
+      },
+      {
+        "count": 37232,
+        "min": 0.20447070036158466,
+        "p50": 0.22185754178901407,
+        "p95": 0.2493290865945737,
+        "p99": 0.2596880276272167,
+        "max": 0.26439740699386954,
+        "mean": 0.2240626806940609
+      }
+    ],
+    "velocity_stddev": [
+      {
+        "count": 37232,
+        "min": 0.02884945103795211,
+        "p50": 0.03133097140625919,
+        "p95": 0.07116919924081483,
+        "p99": 0.08251052952260576,
+        "max": 0.08687266016857961,
+        "mean": 0.0386341258252831
+      },
+      {
+        "count": 37232,
+        "min": 0.02883138432824801,
+        "p50": 0.03134183328778106,
+        "p95": 0.07116841881802341,
+        "p99": 0.08250959077693489,
+        "max": 0.08687187417427158,
+        "mean": 0.03862773964429093
+      },
+      {
+        "count": 37232,
+        "min": 0.01582963959532607,
+        "p50": 0.020983616377540964,
+        "p95": 0.048606335705972704,
+        "p99": 0.056461671697041554,
+        "max": 0.059327185123748634,
+        "mean": 0.025225872175328054
+      }
+    ],
+    "heading_stddev_rad": {
+      "count": 37232,
+      "min": 0.0122827410746847,
+      "p50": 0.016100074889200146,
+      "p95": 0.02971729899075983,
+      "p99": 0.03375342497445763,
+      "max": 0.035225022032530015,
+      "mean": 0.017926819629410833
+    }
+  },
+  "all_initialized_covariance": {
+    "position_stddev": [
+      {
+        "count": 42226,
+        "min": 0.15247587397203954,
+        "p50": 0.16087616626066098,
+        "p95": 0.1939225472348435,
+        "p99": 0.356732111786633,
+        "max": 1.0,
+        "mean": 0.16889654420786723
+      },
+      {
+        "count": 42226,
+        "min": 0.15246327010124752,
+        "p50": 0.16085387730963718,
+        "p95": 0.19392253988626618,
+        "p99": 0.3567321866148935,
+        "max": 1.0,
+        "mean": 0.1688924007693756
+      },
+      {
+        "count": 42226,
+        "min": 0.20447070036158466,
+        "p50": 0.22521462379573387,
+        "p95": 0.33907601550369737,
+        "p99": 0.7085269778392445,
+        "max": 2.0,
+        "mean": 0.24652010952834164
+      }
+    ],
+    "velocity_stddev": [
+      {
+        "count": 42226,
+        "min": 0.02884945103795211,
+        "p50": 0.03288461030100619,
+        "p95": 0.13507744244835673,
+        "p99": 0.1906949864228246,
+        "max": 0.3,
+        "mean": 0.04987522066631742
+      },
+      {
+        "count": 42226,
+        "min": 0.02883138432824801,
+        "p50": 0.0328823362250985,
+        "p95": 0.1350765631801305,
+        "p99": 0.1907029098375271,
+        "max": 0.3,
+        "mean": 0.0498697908886397
+      },
+      {
+        "count": 42226,
+        "min": 0.01582963959532607,
+        "p50": 0.022641711244384216,
+        "p95": 0.0889434294254485,
+        "p99": 0.11560361947051175,
+        "max": 0.3,
+        "mean": 0.03293405049273729
+      }
+    ],
+    "heading_stddev_rad": {
+      "count": 42226,
+      "min": 0.0122827410746847,
+      "p50": 0.01702708095345477,
+      "p95": 0.04764281109781629,
+      "p99": 0.06432381921906609,
+      "max": 0.21460753215242082,
+      "mean": 0.02168976045724271
+    }
+  },
+  "steady_position_axes": [
+    {
+      "count": 37232,
+      "min": 0.23521243990246762,
+      "p50": 1.6370317927464606,
+      "p95": 2.4363039115471308,
+      "p99": 2.4483108376609874,
+      "max": 2.4537694583983076,
+      "mean": 1.4851156737912157
+    },
+    {
+      "count": 37232,
+      "min": 1.269063998244098,
+      "p50": 1.6802286936119464,
+      "p95": 2.4795155555543875,
+      "p99": 2.510890530118967,
+      "max": 2.516664279661717,
+      "mean": 1.7771510249478992
+    },
+    {
+      "count": 37232,
+      "min": -6.891817938445238,
+      "p50": -4.3486789902100265,
+      "p95": 0.1716136740941835,
+      "p99": 0.6961925685320127,
+      "max": 0.7998524303768707,
+      "mean": -4.07762827278434
+    }
+  ],
+  "steady_velocity_axes": [
+    {
+      "count": 37232,
+      "min": -0.15173675421131977,
+      "p50": -0.004451499279121231,
+      "p95": 0.06906400518654196,
+      "p99": 0.07561782632370317,
+      "max": 0.07756211820636419,
+      "mean": -0.01307930327946068
+    },
+    {
+      "count": 37232,
+      "min": -0.09331923443618394,
+      "p50": 0.020964420005535438,
+      "p95": 0.2638065128756604,
+      "p99": 0.3322297670486097,
+      "max": 0.34939832518070185,
+      "mean": 0.03834625714124247
+    },
+    {
+      "count": 37232,
+      "min": -0.11035673105025018,
+      "p50": 0.10985813586158152,
+      "p95": 0.7777028288421944,
+      "p99": 0.824175658141161,
+      "max": 0.8349601060843732,
+      "mean": 0.19011407028834063
+    }
+  ],
+  "navigation_accuracy": {
+    "horizontal_accuracy": {
+      "count": 853,
+      "min": 0.724,
+      "p50": 0.791,
+      "p95": 0.997,
+      "p99": 1.014,
+      "max": 1.018,
+      "mean": 0.8275709261430246
+    },
+    "vertical_accuracy": {
+      "count": 853,
+      "min": 1.2770000000000001,
+      "p50": 1.4020000000000001,
+      "p95": 1.79,
+      "p99": 1.815,
+      "max": 1.821,
+      "mean": 1.4779320046893316
+    },
+    "velocity_accuracy": {
+      "count": 853,
+      "min": 0.124,
+      "p50": 0.247,
+      "p95": 0.336,
+      "p99": 0.362,
+      "max": 0.435,
+      "mean": 0.2485978898007034
+    }
+  },
+  "navigation_flags": {
+    "observation_valid": {
+      "true": 853
+    },
+    "accuracy_known": {
+      "true": 853
+    },
+    "accuracy_ok": {
+      "false": 853
+    },
+    "clock_aligned": {
+      "true": 853
+    },
+    "heading_valid": {
+      "true": 853
+    },
+    "fix_type": {
+      "3": 853
+    }
+  },
+  "msp_all_reason_counts": {
+    "Missing configuration readback": 38,
+    "Physical receiver evidence decoded": 10843,
+    "RC/STATUS stale": 82
+  },
+  "msp_tail20_count": 2300,
+  "msp_tail20_flags": {
+    "config_verified": {
+      "true": 2300
+    },
+    "receiver_valid": {
+      "true": 2300
+    },
+    "rc_link": {
+      "true": 2300
+    },
+    "imu_ready": {
+      "true": 2300
+    },
+    "armed": {
+      "false": 2300
+    },
+    "transport_healthy": {
+      "true": 2300
+    }
+  },
+  "imu_tail20_count": 9988,
+  "imu_tail20_source_intervals": {
+    "count": 9987,
+    "min": 0.0010001659393310547,
+    "p50": 0.0020012855529785156,
+    "p95": 0.0020046234130859375,
+    "p99": 0.0021245479583740234,
+    "max": 0.003142118453979492,
+    "mean": 0.002002407364078001
+  },
+  "imu_tail20_mature_windows": 8489,
+  "imu_tail20_gravity_error": {
+    "count": 8489,
+    "min": 0.48033097591710394,
+    "p50": 0.4899159073324526,
+    "p95": 0.4990088944894193,
+    "p99": 0.5015545130110759,
+    "max": 0.5020874225185104,
+    "mean": 0.4895590488783899
+  },
+  "imu_tail20_pass_tolerance0_7": 8489,
+  "imu_tail20_other_criteria_pass": 8489,
+  "first_initialized": {
+    "bag_time": 10.915933585000001,
+    "stamp": 1790410348.5777388,
+    "covariance_stamp": 1790410348.5777388,
+    "rtk_stamp": 1790410348.468755,
+    "initialized": true,
+    "imu_ready": true,
+    "navigation_valid": true,
+    "navigation_ready": false,
+    "estimator_ready": false,
+    "readiness_reason": "GNSS accuracy unknown, above limits, or flight accuracy limits unconfigured",
+    "reset_counter": 2,
+    "navigation_accepted_updates": 0,
+    "navigation_rejections": 0,
+    "nis": null,
+    "position": [
+      0.10642599528212489,
+      0.4522736682248663,
+      -1.0998723586400354
+    ],
+    "velocity": [
+      0.01,
+      0.07,
+      -0.06
+    ],
+    "quaternion": [
+      0.007277308078416556,
+      0.018217340665638473,
+      0.19744648962391395,
+      0.9801173669624458
+    ],
+    "body_rates": [
+      -0.0001996908485889428,
+      -0.0007672661113499544,
+      -0.005291364277807891
+    ],
+    "acceleration": [
+      -0.0001333299012181621,
+      -0.007280156352224043,
+      -0.5071534004001776
+    ],
+    "position_variance": [
+      1.0,
+      1.0,
+      4.0
+    ],
+    "velocity_variance": [
+      0.09,
+      0.09,
+      0.09
+    ],
+    "heading_variance": 0.04605639285655234
+  },
+  "last_fused": {
+    "bag_time": 95.470197122,
+    "stamp": 1790410433.1325426,
+    "covariance_stamp": 1790410432.968802,
+    "rtk_stamp": 1790410432.968802,
+    "initialized": true,
+    "imu_ready": true,
+    "navigation_valid": true,
+    "navigation_ready": false,
+    "estimator_ready": false,
+    "readiness_reason": "GNSS accuracy unknown, above limits, or flight accuracy limits unconfigured",
+    "reset_counter": 2,
+    "navigation_accepted_updates": 0,
+    "navigation_rejections": 0,
+    "nis": 16.649340094052906,
+    "position": [
+      1.5715297222314741,
+      2.197186358156063,
+      0.7998524303768707
+    ],
+    "velocity": [
+      -0.15173675421131977,
+      0.34939832518070185,
+      0.8349601060843732
+    ],
+    "quaternion": [
+      0.00292502106537761,
+      0.017128075361158446,
+      0.1999640197256777,
+      0.979649153575574
+    ],
+    "body_rates": [
+      -0.0007928012820246806,
+      0.0007456714315849712,
+      0.004918733845997248
+    ],
+    "acceleration": [
+      -0.03815914278669871,
+      0.05955447247079444,
+      0.09615891076340866
+    ],
+    "position_variance": [
+      0.02587379143470445,
+      0.02585863183597747,
+      0.04384005787459605
+    ],
+    "velocity_variance": [
+      0.0008797887611216674,
+      0.0008758545597049213,
+      0.0002505774897179149
+    ],
+    "heading_variance": 0.00015086572830774663
+  },
+  "last_msp": {
+    "bag_time": 95.46338765200001,
+    "stamp": 1790410433.129702,
+    "config_verified": true,
+    "receiver_valid": true,
+    "rc_link": true,
+    "imu_ready": true,
+    "armed": false,
+    "transport_healthy": true,
+    "reason": "Physical receiver evidence decoded"
+  }
+}

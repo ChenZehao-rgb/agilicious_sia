@@ -114,7 +114,9 @@ fusion:
   imu_max_gyro_stddev: 0.02
   imu_max_gyro_bias: 0.15
   imu_max_acceleration_stddev: 0.2
-  imu_gravity_tolerance: 0.5
+  # 2026-09-26 stationary 3 s windows: gravity residual 0.537-0.622 m/s^2; allow 0.7 for EKF initialization.
+  # Evidence: ../analysis/ekf_initialization_20260926/README.md. This does not calibrate acceleration.
+  imu_gravity_tolerance: 0.7
   imu_initialization_max_speed: 0.3
   navigation_ready_updates: 30
   navigation_nis_threshold: 24.322
@@ -171,14 +173,14 @@ evidence:
   # Zero-based AUX indices: AUX1=0, ..., AUX14=13; choose three distinct channels.
   arm_aux: 0
   auto_aux: 1
-  kill_aux: 2
-  aux_low: 1700
+  kill_aux: 4
+  aux_low: 1875
   aux_high: 2100
   rx_map: [0, 1, 3, 2, 4, 5, 6, 7]
   battery_timeout: 1.5
   geofence_min: [0.0, 0.0, 0.0]
   geofence_max: [0.0, 0.0, 0.0]
   expected_pid_profile: 1
-  expected_rate_profile: 1
+  expected_rate_profile: 0
   # Fixed at 50 ms for this hardware policy; cannot be relaxed through configuration.
   expected_override_timeout_ms: 50
