@@ -33,7 +33,10 @@
 - [重新初始化](../../src/state_fusion_node.cpp#L253) 要求新鲜授权、rc_link=true、未解锁，再采集连续 3 秒静止 IMU。全包输出 armed=false，但 rc_link 条件持续不满足，GNSS 恢复后仍无法重新初始化。
 - 失效后的融合位置零值是未初始化的占位，不是测得的位置回到了原点。
 
-触发系统校时的进程没有记录在 bag；可能是自动校时或人工改时，但不能从本包唯一确定。需查看当时 CM5 的系统时间服务日志，例如同次开机中的 `journalctl -b -u chrony -u systemd-timesyncd --no-pager`；如已重启，需选取对应历史 boot。
+**本机系统日志补查已确认：此次跳变由 `systemd-timesyncd` 首次 NTP 校时触发。**
+对应 boot 为 `06236981b7cf4ec4af725c23786bf504`；11:23:33.424 记录连接 `185.125.190.57:123 (ntp.ubuntu.com)` 并完成首次同步。
+系统 journal 独立复算前跳 33.398679 s，与 bag 的 33.398676986 s 一致。启动时 RTC 日期为 1970 年，系统先恢复历史保存时间；ROS 在准确对时前启动，三个 IPv6 NTP 地址超时后 IPv4 对时成功。
+完整证据、根因边界及处理建议见[系统时间跳变补充调查](system_clock_investigation.md)。bag 本身未记录改时进程，该归因来自同次开机的系统 journal。
 
 **融合门限和实际权重**
 
@@ -73,10 +76,9 @@
 **如何让估计更可信**
 
 1. 先解决 CM5 启动校时顺序，完成校时后重新启动整套 diagnostic 栈，使 MSP 会话重建。保持当前 R/NIS 做完整静止复测。
-   若目标机使用 chrony，可在 ROS 启动前执行 `chronyc tracking`、`chronyc sources -v`，然后 `chronyc waitsync 60 0.01 0 1`；确认成功后启动。
-   该命令最多检查约 60 次，每次间隔 1 秒，要求剩余校正小于 10 ms；它是启动门槛，不能保证后续永不跳时。
-   大幅 step 校时应在节点启动前完成，运行中采用渐进校时并查明本次 step 来源。
-   参考 [chrony 官方说明](https://chrony-project.org/doc/4.6/chronyc.html#waitsync)。
+   已确认本机使用 `systemd-timesyncd`，应在 ROS 启动前确认 `timedatectl show -p NTPSynchronized --value` 为 `yes`。
+   自动启动可结合 `systemd-time-wait-sync.service` 与 `time-sync.target`；仅等待 timesyncd 服务启动不等于校时完成。
+   同时核查 RTC 保时和 IPv6 NTP 超时，见[补充调查](system_clock_investigation.md)。启动门槛不能保证后续永不跳时，运行中仍需明确校时策略。
 2. “提高预测权重”与“放宽接受门限”是两件事。增大 GNSS 位置 R 会减小位置校正增益，但同时更依赖 IMU 积分；放宽 NIS 只改变接受/拒绝条件，不能让估计自动更准。
    本包 NIS 很低，没有证据支持调大 NIS 或扩大队列；不能仅凭本次短静止段给出已验证的新 R/Q。
 3. 若目标是确认静止时位置更稳定，应将可靠的静止信息用于零速更新（ZUPT）/偏置估计，并在移动时解除。
