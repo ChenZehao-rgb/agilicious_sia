@@ -355,6 +355,7 @@ RC 输入到全机总推力关系。以克力记录时用 `N = gf × 0.00980665`
    ```bash
    cd /home/sia/betaflight
    make TARGET=实际板卡TARGET -j4
+   make GEPRC_TAKER_H743 EXTRA_FLAGS="-DUSE_MAG" //把磁力计编译进固件中
    ```
 
    核对该构建包含本次 Override 超时/只读回读和磁航向有效性修改，以及
@@ -367,6 +368,7 @@ RC 输入到全机总推力关系。以克力记录时用 `N = gf × 0.00980665`
 4. 在 CLI 明确写入以下三项，再 `save` 重启；以下是操作员执行的配置命令，不是 ROS 自动写入：
 
    ```text
+   serial 1 512 115200 115200 921600 115200 //设置921600 mavlink回传，其中1是端口号，代表uart2
    set msp_override_channels_mask = 15
    set msp_override_failsafe = OFF
    set msp_override_timeout_ms = 50

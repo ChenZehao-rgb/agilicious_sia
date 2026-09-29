@@ -1,0 +1,1183 @@
+{
+  "provenance": {
+    "bag": "/home/sia/agilicious_internal-main/bags/hardware_20260926_161859_702449",
+    "extracted_source": "/home/sia/agilicious_internal-main/agi_ros2/analysis/hardware_diagnostic_20260926/hardware_20260926_161859_702449",
+    "metadata_start_ns": 1790410741198646709,
+    "duration_s": 247.706965228,
+    "primary_window": "0 <= bag receipt time minus metadata starting_time < 100 s",
+    "valid_rows_definition": "Finite position/velocity/heading with fix 3..6, heading_valid and clock_aligned; does not apply receipt freshness or accuracy gates.",
+    "stationarity": "User-confirmed first 100 seconds; no survey position/height truth supplied.",
+    "source_files_sha256": {
+      "sensors_navigation.csv.gz": "30fbf215b1b46d4f78c06b704bd54fd7d1016d1b9f656b4ca51e849128d27d81",
+      "sensors_local_navigation.csv.gz": "ead897d003cfc3e43e47bae6ba06311665560c3ecc656c95d312aa43a134e28b",
+      "navigation_origin.csv.gz": "559bcf757bf49d84d4268f3faa62a6b1fdf1fe8309eedaddac34d6311889f421",
+      "sensors_mavlink_status.csv.gz": "9bfe28dfbab96a73f1770757038adef41ec67df004b2ee2e7e6e9a4eff37af23",
+      "metadata.yaml": "b5a26f86d9d15f45e2af285150e6d584179f8d66e2f7f694e9a44ee737925ffb"
+    },
+    "reconstruction_matched_local_rows": 2396,
+    "maximum_reconstructed_minus_published_enu_m": [
+      5.4254173376122594e-09,
+      2.4294231765198404e-09,
+      7.993605777301127e-15
+    ]
+  },
+  "caveats": [
+    "Whole-bag position spread includes possible motion after 100 seconds; do not label it static drift or true absolute error.",
+    "Receiver accuracy estimates are not ground-truth error bounds.",
+    "Receipt-time primary static window includes several pre-start measurement stamps; acquisition-time sensitivity is separate. Their buffering location is not established.",
+    "MSL z is altitude minus fixed origin altitude; no barometer-derived height is used here."
+  ],
+  "first_100s": {
+    "received_rows": 970,
+    "valid_rows": 970,
+    "invalid_rows": 0,
+    "receipt_interval_s": [
+      3.8039e-05,
+      99.917244818
+    ],
+    "measurement_interval_s": [
+      -0.408317365,
+      99.904834635
+    ],
+    "fix_type_counts": {
+      "3": 970
+    },
+    "heading_valid_counts": {
+      "True": 970
+    },
+    "clock_aligned_counts": {
+      "True": 970
+    },
+    "source_session_counts": {
+      "1725.187755": 970
+    },
+    "coordinate_min_enu_m": [
+      -1.2978524389033372,
+      -0.14364877965640377,
+      -9.579
+    ],
+    "coordinate_max_enu_m": [
+      0.04102566701224993,
+      4.254669610844433,
+      0.21099999999999852
+    ],
+    "axis_ranges_enu_m": [
+      1.3388781059155872,
+      4.398318390500837,
+      9.79
+    ],
+    "horizontal_diameter_m": 4.52140743328721,
+    "first_to_last_enu_m": [
+      -1.106029115286143,
+      4.076219321938103,
+      -9.350000000000001
+    ],
+    "first_to_last_horizontal_m": 4.223607979488884,
+    "horizontal_excursion_from_first_m": {
+      "n": 970,
+      "min": 0.0,
+      "p05": 0.2971284656447549,
+      "median": 1.2240648760402375,
+      "p95": 3.9114362808795344,
+      "max": 4.223607979488884,
+      "mean": 1.5414949112220802,
+      "std": 1.0956704955269971
+    },
+    "velocity_enu_m_s": {
+      "e": {
+        "n": 970,
+        "min": -0.22,
+        "p05": -0.11549999999999996,
+        "median": 0.0,
+        "p95": 0.13,
+        "max": 0.26,
+        "mean": 0.007474226804123712,
+        "std": 0.07281180271146216
+      },
+      "n": {
+        "n": 970,
+        "min": -0.23,
+        "p05": -0.11,
+        "median": 0.01,
+        "p95": 0.13,
+        "max": 0.26,
+        "mean": 0.009237113402061856,
+        "std": 0.07051676311578224
+      },
+      "u": {
+        "n": 970,
+        "min": -0.34,
+        "p05": -0.14,
+        "median": -0.02,
+        "p95": 0.11,
+        "max": 0.26,
+        "mean": -0.019278350515463918,
+        "std": 0.07686173719544648
+      }
+    },
+    "speed_3d_m_s": {
+      "n": 970,
+      "min": 0.01,
+      "p05": 0.03741657386773942,
+      "median": 0.11224972160321824,
+      "p95": 0.2137163099579383,
+      "max": 0.3627671429443411,
+      "mean": 0.11726098778925165,
+      "std": 0.054264196398087515
+    },
+    "speed_horizontal_m_s": {
+      "n": 970,
+      "min": 0.0,
+      "p05": 0.02,
+      "median": 0.0806225774829855,
+      "p95": 0.18,
+      "max": 0.33421549934136807,
+      "mean": 0.08824379276145292,
+      "std": 0.051267863850720526
+    },
+    "speed_over_point3_count": 2,
+    "accuracy": {
+      "horizontal_accuracy": {
+        "n": 970,
+        "min": 0.5680000000000001,
+        "p05": 0.64135,
+        "median": 0.957,
+        "p95": 1.049,
+        "max": 1.065,
+        "mean": 0.9152257731958763,
+        "std": 0.12620224954156173
+      },
+      "vertical_accuracy": {
+        "n": 970,
+        "min": 0.959,
+        "p05": 1.0736999999999999,
+        "median": 1.6960000000000002,
+        "p95": 2.013,
+        "max": 2.114,
+        "mean": 1.650882474226804,
+        "std": 0.27780821576115
+      },
+      "velocity_accuracy": {
+        "n": 970,
+        "min": 0.14,
+        "p05": 0.184,
+        "median": 0.266,
+        "p95": 0.36,
+        "max": 0.48,
+        "mean": 0.26879690721649485,
+        "std": 0.05744671211394723
+      }
+    },
+    "heading_degrees_unwrapped": {
+      "n": 970,
+      "min": 27.199999999999996,
+      "p05": 27.199999999999996,
+      "median": 27.29999999999999,
+      "p95": 27.400000000000002,
+      "max": 27.5,
+      "mean": 27.333814432989687,
+      "std": 0.06218435012072394
+    },
+    "heading_first_to_last_deg": 0.10000000000001208,
+    "heading_range_deg": 0.30000000000000426,
+    "header_gaps_s": {
+      "n": 969,
+      "min": 0.07812403199999807,
+      "p05": 0.08417530880000398,
+      "median": 0.10016691200000594,
+      "p95": 0.11821096960000048,
+      "max": 0.20429107200000018,
+      "mean": 0.10352234468524252,
+      "std": 0.019544229465953657
+    },
+    "header_gaps_over_point3": 0,
+    "duplicate_header_count": 0,
+    "nonpositive_header_gaps": 0,
+    "bag_receipt_age_s": {
+      "n": 970,
+      "min": 0.0048347880000000005,
+      "p05": 0.00842879975,
+      "median": 0.0480591915,
+      "p95": 0.10127910225,
+      "max": 0.40835540400000003,
+      "mean": 0.05121841379690722,
+      "std": 0.03384879723760855
+    },
+    "receipt_age_over_point3_count": 2,
+    "header_before_bag_start_count": 5,
+    "measurement_rate_hz": 9.659750298744475,
+    "velocity_consistency": {
+      "method": "Trapezoidal ENU velocity integral using source header time; skip >0.3 s, nonpositive, or session-crossing intervals.",
+      "supported_duration_s": 100.313152,
+      "omitted_duration_s": 0.0,
+      "supported_position_displacement_enu_m": [
+        -1.1060291152861432,
+        4.076219321938103,
+        -9.350000000000001
+      ],
+      "integrated_velocity_enu_m": [
+        0.7599623027199989,
+        0.9137582463999985,
+        -1.9335105049600074
+      ],
+      "displacement_minus_velocity_integral_enu_m": [
+        -1.865991418006142,
+        3.162461075538104,
+        -7.416489495039994
+      ],
+      "per_frame_finite_difference_minus_mean_velocity_enu_m_s": {
+        "e": {
+          "n": 969,
+          "min": -0.19759564208788918,
+          "p05": -0.09720567534370371,
+          "median": -0.02,
+          "p95": 0.059524101201101506,
+          "max": 0.14358995591016688,
+          "mean": -0.018660486027208326,
+          "std": 0.04890074398044669
+        },
+        "n": {
+          "n": 969,
+          "min": -0.46344586735535354,
+          "p05": -0.21676678992403234,
+          "median": 0.02999999060509186,
+          "p95": 0.3039234695543433,
+          "max": 0.6146091960033214,
+          "mean": 0.030433073797080174,
+          "std": 0.15709088979268504
+        },
+        "u": {
+          "n": 969,
+          "min": -1.1694322790472442,
+          "p05": -0.5986570003230072,
+          "median": -0.08184965491705491,
+          "p95": 0.4536136809324353,
+          "max": 1.3634284362929587,
+          "mean": -0.07151686781234096,
+          "std": 0.32787182256597186
+        }
+      }
+    }
+  },
+  "common_6_100s_local_navigation": {
+    "received_rows": 912,
+    "valid_rows": 912,
+    "invalid_rows": 0,
+    "receipt_interval_s": [
+      6.001295880000001,
+      99.918360324
+    ],
+    "measurement_interval_s": [
+      5.991505227,
+      99.904834635
+    ],
+    "fix_type_counts": {
+      "3": 912
+    },
+    "heading_valid_counts": {
+      "True": 912
+    },
+    "clock_aligned_counts": {
+      "True": 912
+    },
+    "source_session_counts": {
+      "1725.187755": 912
+    },
+    "coordinate_min_enu_m": [
+      -1.2978524413594226,
+      -0.0436869981933775,
+      -9.579
+    ],
+    "coordinate_max_enu_m": [
+      -0.1668746633339497,
+      4.25466961118143,
+      -0.2889999999999944
+    ],
+    "axis_ranges_enu_m": [
+      1.1309777780254728,
+      4.298356609374808,
+      9.290000000000006
+    ],
+    "horizontal_diameter_m": 4.389491577943041,
+    "first_to_last_enu_m": [
+      -0.8898127732713152,
+      4.298356609374808,
+      -9.290000000000006
+    ],
+    "first_to_last_horizontal_m": 4.389491577943041,
+    "horizontal_excursion_from_first_m": {
+      "n": 912,
+      "min": 0.0,
+      "p05": 0.2920028148212564,
+      "median": 1.0548406344320034,
+      "p95": 4.091405839885658,
+      "max": 4.389491577943041,
+      "mean": 1.5477929218935276,
+      "std": 1.2174724431521846
+    },
+    "velocity_enu_m_s": {
+      "e": {
+        "n": 912,
+        "min": -0.22,
+        "p05": -0.11449999999999996,
+        "median": 0.0,
+        "p95": 0.13,
+        "max": 0.26,
+        "mean": 0.007379385964912281,
+        "std": 0.07267625831335828
+      },
+      "n": {
+        "n": 912,
+        "min": -0.23,
+        "p05": -0.10449999999999995,
+        "median": 0.01,
+        "p95": 0.13,
+        "max": 0.26,
+        "mean": 0.009868421052631578,
+        "std": 0.06956304891751014
+      },
+      "u": {
+        "n": 912,
+        "min": -0.34,
+        "p05": -0.14,
+        "median": -0.02,
+        "p95": 0.10449999999999932,
+        "max": 0.26,
+        "mean": -0.020405701754385965,
+        "std": 0.07630839646460125
+      }
+    },
+    "speed_3d_m_s": {
+      "n": 912,
+      "min": 0.01,
+      "p05": 0.03741657386773942,
+      "median": 0.1118033988749895,
+      "p95": 0.21118712081942875,
+      "max": 0.3627671429443411,
+      "mean": 0.11667427609784052,
+      "std": 0.05384398481310286
+    },
+    "speed_horizontal_m_s": {
+      "n": 912,
+      "min": 0.0,
+      "p05": 0.02,
+      "median": 0.0806225774829855,
+      "p95": 0.17804493814764857,
+      "max": 0.33421549934136807,
+      "mean": 0.08775760548123318,
+      "std": 0.05070798801590618
+    },
+    "speed_over_point3_count": 2,
+    "accuracy": {
+      "horizontal_accuracy": {
+        "n": 912,
+        "min": 0.662,
+        "p05": 0.72655,
+        "median": 0.9655,
+        "p95": 1.04945,
+        "max": 1.065,
+        "mean": 0.9350646929824561,
+        "std": 0.10150782736603323
+      },
+      "vertical_accuracy": {
+        "n": 912,
+        "min": 1.107,
+        "p05": 1.2371,
+        "median": 1.712,
+        "p95": 2.01545,
+        "max": 2.114,
+        "mean": 1.6914791666666666,
+        "std": 0.233219424586737
+      },
+      "velocity_accuracy": {
+        "n": 912,
+        "min": 0.14,
+        "p05": 0.184,
+        "median": 0.268,
+        "p95": 0.361,
+        "max": 0.48,
+        "mean": 0.26978508771929827,
+        "std": 0.058158188291445104
+      }
+    },
+    "heading_degrees_unwrapped": {
+      "n": 912,
+      "min": 27.199999999999996,
+      "p05": 27.29999999999999,
+      "median": 27.29999999999999,
+      "p95": 27.400000000000002,
+      "max": 27.5,
+      "mean": 27.338925438596483,
+      "std": 0.05931024335570937
+    },
+    "heading_first_to_last_deg": 0.10000000000001208,
+    "heading_range_deg": 0.30000000000000426,
+    "header_gaps_s": {
+      "n": 911,
+      "min": 0.07812403199999807,
+      "p05": 0.08416985599999727,
+      "median": 0.10016819199999816,
+      "p95": 0.1181887999999951,
+      "max": 0.20429107200000018,
+      "mean": 0.10308817717672888,
+      "std": 0.0185334071710271
+    },
+    "header_gaps_over_point3": 0,
+    "duplicate_header_count": 0,
+    "nonpositive_header_gaps": 0,
+    "bag_receipt_age_s": {
+      "n": 912,
+      "min": 0.005950424,
+      "p05": 0.010901657350000002,
+      "median": 0.048959681500000005,
+      "p95": 0.10009828900000001,
+      "max": 0.10651268600000001,
+      "mean": 0.051431125010964925,
+      "std": 0.02894965991314105
+    },
+    "receipt_age_over_point3_count": 0,
+    "header_before_bag_start_count": 0,
+    "measurement_rate_hz": 9.70043342880778,
+    "velocity_consistency": {
+      "method": "Trapezoidal ENU velocity integral using source header time; skip >0.3 s, nonpositive, or session-crossing intervals.",
+      "supported_duration_s": 93.91332940800001,
+      "omitted_duration_s": 0.0,
+      "supported_position_displacement_enu_m": [
+        -0.8898127732713152,
+        4.298356609374808,
+        -9.290000000000006
+      ],
+      "integrated_velocity_enu_m": [
+        0.699596646399999,
+        0.9104025523199983,
+        -1.924775541760007
+      ],
+      "displacement_minus_velocity_integral_enu_m": [
+        -1.5894094196713142,
+        3.3879540570548095,
+        -7.365224458239999
+      ],
+      "per_frame_finite_difference_minus_mean_velocity_enu_m_s": {
+        "e": {
+          "n": 911,
+          "min": -0.16379087891899918,
+          "p05": -0.09631410305107875,
+          "median": -0.019999968770845256,
+          "p95": 0.0610637390324424,
+          "max": 0.14358993246666552,
+          "mean": -0.017164856691038677,
+          "std": 0.04896023676488957
+        },
+        "n": {
+          "n": 911,
+          "min": -0.4634458604212945,
+          "p05": -0.2175796512328555,
+          "median": 0.035,
+          "p95": 0.3114514564755383,
+          "max": 0.6146091960033266,
+          "mean": 0.03485560132715184,
+          "std": 0.15904167785791534
+        },
+        "u": {
+          "n": 911,
+          "min": -1.1694322790472442,
+          "p05": -0.6094837960430317,
+          "median": -0.09,
+          "p95": 0.45938857163234004,
+          "max": 1.3634284362929587,
+          "mean": -0.07556369119820985,
+          "std": 0.3337116660477046
+        }
+      }
+    }
+  },
+  "common_6_100s_endpoint_windows": {
+    "method": "Mean over receipt-time [90,100) minus mean over [6,16) seconds",
+    "start_rows": 91,
+    "end_rows": 93,
+    "start_mean_enu_m": [
+      -0.41306520452957785,
+      0.02271009285913905,
+      -0.8655934065934036
+    ],
+    "end_mean_enu_m": [
+      -0.9737956574604685,
+      3.9626665486356485,
+      -8.798784946236555
+    ],
+    "displacement_enu_m": [
+      -0.5607304529308906,
+      3.9399564557765094,
+      -7.933191539643151
+    ],
+    "horizontal_displacement_m": 3.9796577132033697,
+    "heading_change_deg": 0.03226987588869574
+  },
+  "first_100s_by_acquisition_time_sensitivity": {
+    "received_rows": 966,
+    "valid_rows": 966,
+    "invalid_rows": 0,
+    "receipt_interval_s": [
+      0.193671323,
+      100.017290114
+    ],
+    "measurement_interval_s": [
+      0.092352587,
+      99.992989259
+    ],
+    "fix_type_counts": {
+      "3": 966
+    },
+    "heading_valid_counts": {
+      "True": 966
+    },
+    "clock_aligned_counts": {
+      "True": 966
+    },
+    "source_session_counts": {
+      "1725.187755": 966
+    },
+    "coordinate_min_enu_m": [
+      -1.2978524389033372,
+      -0.14364877965640377,
+      -9.598999999999997
+    ],
+    "coordinate_max_enu_m": [
+      0.024393641838912246,
+      4.254669612769167,
+      0.21099999999999852
+    ],
+    "axis_ranges_enu_m": [
+      1.3222460807422496,
+      4.398318392425571,
+      9.809999999999995
+    ],
+    "horizontal_diameter_m": 4.525290757224383,
+    "first_to_last_enu_m": [
+      -1.1060291057825353,
+      4.131753646561598,
+      -9.439999999999998
+    ],
+    "first_to_last_horizontal_m": 4.277229077184571,
+    "horizontal_excursion_from_first_m": {
+      "n": 966,
+      "min": 0.0,
+      "p05": 0.24748872836103925,
+      "median": 1.222655721490819,
+      "p95": 3.968267408729222,
+      "max": 4.277229077184571,
+      "mean": 1.5532563997789932,
+      "std": 1.1249121512132854
+    },
+    "velocity_enu_m_s": {
+      "e": {
+        "n": 966,
+        "min": -0.22,
+        "p05": -0.12,
+        "median": 0.0,
+        "p95": 0.13,
+        "max": 0.26,
+        "mean": 0.007246376811594203,
+        "std": 0.0730883024908404
+      },
+      "n": {
+        "n": 966,
+        "min": -0.23,
+        "p05": -0.11,
+        "median": 0.01,
+        "p95": 0.13,
+        "max": 0.26,
+        "mean": 0.009327122153209109,
+        "std": 0.07048238572225703
+      },
+      "u": {
+        "n": 966,
+        "min": -0.34,
+        "p05": -0.14,
+        "median": -0.02,
+        "p95": 0.1075,
+        "max": 0.26,
+        "mean": -0.01987577639751553,
+        "std": 0.07663325241662396
+      }
+    },
+    "speed_3d_m_s": {
+      "n": 966,
+      "min": 0.01,
+      "p05": 0.03741657386773942,
+      "median": 0.11224972160321824,
+      "p95": 0.2139503290238704,
+      "max": 0.3627671429443411,
+      "mean": 0.1173410987157491,
+      "std": 0.05429493768469548
+    },
+    "speed_horizontal_m_s": {
+      "n": 966,
+      "min": 0.0,
+      "p05": 0.02,
+      "median": 0.0806225774829855,
+      "p95": 0.18,
+      "max": 0.33421549934136807,
+      "mean": 0.08842942265716405,
+      "std": 0.05127776371070354
+    },
+    "speed_over_point3_count": 2,
+    "accuracy": {
+      "horizontal_accuracy": {
+        "n": 966,
+        "min": 0.5700000000000001,
+        "p05": 0.6515,
+        "median": 0.9584999999999999,
+        "p95": 1.049,
+        "max": 1.065,
+        "mean": 0.9171231884057971,
+        "std": 0.12401086216274573
+      },
+      "vertical_accuracy": {
+        "n": 966,
+        "min": 0.965,
+        "p05": 1.09075,
+        "median": 1.7000000000000002,
+        "p95": 2.013,
+        "max": 2.114,
+        "mean": 1.6546780538302281,
+        "std": 0.2739920939957864
+      },
+      "velocity_accuracy": {
+        "n": 966,
+        "min": 0.14,
+        "p05": 0.184,
+        "median": 0.266,
+        "p95": 0.36,
+        "max": 0.48,
+        "mean": 0.2688312629399586,
+        "std": 0.057544757050807444
+      }
+    },
+    "heading_degrees_unwrapped": {
+      "n": 966,
+      "min": 27.199999999999996,
+      "p05": 27.199999999999996,
+      "median": 27.29999999999999,
+      "p95": 27.400000000000002,
+      "max": 27.5,
+      "mean": 27.33426501035196,
+      "std": 0.0620210689953629
+    },
+    "heading_first_to_last_deg": 0.10000000000001208,
+    "heading_range_deg": 0.30000000000000426,
+    "header_gaps_s": {
+      "n": 965,
+      "min": 0.07812403199999807,
+      "p05": 0.08417443840000231,
+      "median": 0.10016742399999856,
+      "p95": 0.11821434880000084,
+      "max": 0.20429107200000018,
+      "mean": 0.10352397582590672,
+      "std": 0.019581813351025858
+    },
+    "header_gaps_over_point3": 0,
+    "duplicate_header_count": 0,
+    "nonpositive_header_gaps": 0,
+    "bag_receipt_age_s": {
+      "n": 966,
+      "min": 0.0048347880000000005,
+      "p05": 0.008415984750000001,
+      "median": 0.047571787500000004,
+      "p95": 0.10100094325,
+      "max": 0.105220273,
+      "mean": 0.05029393930848861,
+      "std": 0.0303274958574074
+    },
+    "receipt_age_over_point3_count": 0,
+    "header_before_bag_start_count": 0,
+    "measurement_rate_hz": 9.659598098141737,
+    "velocity_consistency": {
+      "method": "Trapezoidal ENU velocity integral using source header time; skip >0.3 s, nonpositive, or session-crossing intervals.",
+      "supported_duration_s": 99.90063667199999,
+      "omitted_duration_s": 0.0,
+      "supported_position_displacement_enu_m": [
+        -1.1060291057825355,
+        4.131753646561598,
+        -9.439999999999998
+      ],
+      "integrated_velocity_enu_m": [
+        0.7453779327999992,
+        0.9267550899199988,
+        -1.9805171596800073
+      ],
+      "displacement_minus_velocity_integral_enu_m": [
+        -1.8514070385825347,
+        3.2049985566415993,
+        -7.459482840319991
+      ],
+      "per_frame_finite_difference_minus_mean_velocity_enu_m_s": {
+        "e": {
+          "n": 965,
+          "min": -0.19759564208788918,
+          "p05": -0.09720613261841488,
+          "median": -0.02,
+          "p95": 0.059626543562835525,
+          "max": 0.14358995591016688,
+          "mean": -0.0186046157980695,
+          "std": 0.04897101157556349
+        },
+        "n": {
+          "n": 965,
+          "min": -0.46344586735535354,
+          "p05": -0.21677460960648395,
+          "median": 0.03,
+          "p95": 0.3048013964602224,
+          "max": 0.6146091960033214,
+          "mean": 0.031023357202061078,
+          "std": 0.1570969134552628
+        },
+        "u": {
+          "n": 965,
+          "min": -1.1694322790472442,
+          "p05": -0.5988426475355257,
+          "median": -0.08465145811802303,
+          "p95": 0.4543045057689083,
+          "max": 1.3634284362929587,
+          "mean": -0.07232653373566734,
+          "std": 0.3282285276283576
+        }
+      }
+    }
+  },
+  "whole_recording": {
+    "received_rows": 2425,
+    "valid_rows": 2425,
+    "invalid_rows": 0,
+    "receipt_interval_s": [
+      3.8039e-05,
+      247.70321949100003
+    ],
+    "measurement_interval_s": [
+      -0.408317365,
+      247.604713803
+    ],
+    "fix_type_counts": {
+      "3": 2425
+    },
+    "heading_valid_counts": {
+      "True": 2425
+    },
+    "clock_aligned_counts": {
+      "True": 2425
+    },
+    "source_session_counts": {
+      "1725.187755": 2425
+    },
+    "coordinate_min_enu_m": [
+      -1.9548162354115528,
+      -0.14364877965640377,
+      -12.268999999999998
+    ],
+    "coordinate_max_enu_m": [
+      1.754123884238811,
+      5.143218899523437,
+      0.21099999999999852
+    ],
+    "axis_ranges_enu_m": [
+      3.7089401196503635,
+      5.286867679179841,
+      12.479999999999997
+    ],
+    "horizontal_diameter_m": 5.560057032165006,
+    "first_to_last_enu_m": [
+      0.1580041454303254,
+      3.643051532091836,
+      -8.009999999999998
+    ],
+    "first_to_last_horizontal_m": 3.646476350595166,
+    "horizontal_excursion_from_first_m": {
+      "n": 2425,
+      "min": 0.0,
+      "p05": 0.583411789655886,
+      "median": 2.3098393633117644,
+      "p95": 4.7967794260596115,
+      "max": 5.274087078205881,
+      "mean": 2.4263320401155055,
+      "std": 1.3559357482077594
+    },
+    "velocity_enu_m_s": {
+      "e": {
+        "n": 2425,
+        "min": -0.9,
+        "p05": -0.15,
+        "median": 0.0,
+        "p95": 0.16,
+        "max": 1.08,
+        "mean": 0.007509278350515464,
+        "std": 0.1297114260102924
+      },
+      "n": {
+        "n": 2425,
+        "min": -1.04,
+        "p05": -0.17,
+        "median": 0.0,
+        "p95": 0.16,
+        "max": 1.01,
+        "mean": 0.0009690721649484528,
+        "std": 0.1264869052028664
+      },
+      "u": {
+        "n": 2425,
+        "min": -1.29,
+        "p05": -0.16,
+        "median": 0.0,
+        "p95": 0.19,
+        "max": 1.75,
+        "mean": -0.0002721649484536098,
+        "std": 0.15046021547806168
+      }
+    },
+    "speed_3d_m_s": {
+      "n": 2425,
+      "min": 0.01,
+      "p05": 0.0412310562561766,
+      "median": 0.12124355652982141,
+      "p95": 0.4728846105933786,
+      "max": 1.7574128712399941,
+      "mean": 0.16592709839271208,
+      "std": 0.16729575046027925
+    },
+    "speed_horizontal_m_s": {
+      "n": 2425,
+      "min": 0.0,
+      "p05": 0.02,
+      "median": 0.09,
+      "p95": 0.382099463490856,
+      "max": 1.0965856099730655,
+      "mean": 0.12423297022922279,
+      "std": 0.1320889423670805
+    },
+    "speed_over_point3_count": 241,
+    "accuracy": {
+      "horizontal_accuracy": {
+        "n": 2425,
+        "min": 0.5680000000000001,
+        "p05": 0.722,
+        "median": 0.966,
+        "p95": 1.137399999999999,
+        "max": 1.306,
+        "mean": 0.9340387628865979,
+        "std": 0.13598066017172292
+      },
+      "vertical_accuracy": {
+        "n": 2425,
+        "min": 0.959,
+        "p05": 1.204,
+        "median": 1.712,
+        "p95": 2.0657999999999994,
+        "max": 2.486,
+        "mean": 1.6664284536082474,
+        "std": 0.28758886593355604
+      },
+      "velocity_accuracy": {
+        "n": 2425,
+        "min": 0.123,
+        "p05": 0.174,
+        "median": 0.268,
+        "p95": 0.4697999999999997,
+        "max": 1.13,
+        "mean": 0.28733608247422676,
+        "std": 0.1080743636553015
+      }
+    },
+    "heading_degrees_unwrapped": {
+      "n": 2425,
+      "min": -140.29999999999998,
+      "p05": -6.479999999999997,
+      "median": 27.29999999999999,
+      "p95": 34.89999999999999,
+      "max": 66.3,
+      "mean": 22.437319587628863,
+      "std": 19.59304918384436
+    },
+    "heading_first_to_last_deg": -7.29999999999999,
+    "heading_range_deg": 206.59999999999997,
+    "header_gaps_s": {
+      "n": 2424,
+      "min": 0.0761256959999912,
+      "p05": 0.08415466240000598,
+      "median": 0.10016780799999836,
+      "p95": 0.11817036799999414,
+      "max": 0.20429107200000018,
+      "mean": 0.10231560691749175,
+      "std": 0.01659498267610133
+    },
+    "header_gaps_over_point3": 0,
+    "duplicate_header_count": 0,
+    "nonpositive_header_gaps": 0,
+    "bag_receipt_age_s": {
+      "n": 2425,
+      "min": 0.0048347880000000005,
+      "p05": 0.0100339876,
+      "median": 0.054121309000000006,
+      "p95": 0.09913668419999998,
+      "max": 0.40835540400000003,
+      "mean": 0.05425287071587629,
+      "std": 0.029571491538863192
+    },
+    "receipt_age_over_point3_count": 2,
+    "header_before_bag_start_count": 5,
+    "measurement_rate_hz": 9.77367999005674,
+    "velocity_consistency": {
+      "method": "Trapezoidal ENU velocity integral using source header time; skip >0.3 s, nonpositive, or session-crossing intervals.",
+      "supported_duration_s": 248.013031168,
+      "omitted_duration_s": 0.0,
+      "supported_position_displacement_enu_m": [
+        0.1580041454303247,
+        3.643051532091836,
+        -8.009999999999998
+      ],
+      "integrated_velocity_enu_m": [
+        1.9227278502400105,
+        0.26193626624002603,
+        -0.17967855103997302
+      ],
+      "displacement_minus_velocity_integral_enu_m": [
+        -1.7647237048096858,
+        3.38111526585181,
+        -7.830321448960025
+      ],
+      "per_frame_finite_difference_minus_mean_velocity_enu_m_s": {
+        "e": {
+          "n": 2424,
+          "min": -0.5359615581992345,
+          "p05": -0.12998417276609867,
+          "median": -0.013036103286734858,
+          "p95": 0.12651457977396469,
+          "max": 0.5849093314986575,
+          "mean": -0.0065355462183330545,
+          "std": 0.08337905791623137
+        },
+        "n": {
+          "n": 2424,
+          "min": -0.9925898984914779,
+          "p05": -0.2966590355342896,
+          "median": 0.010000000000000002,
+          "p95": 0.332722376373768,
+          "max": 0.8535330804526375,
+          "mean": 0.012436555806381578,
+          "std": 0.19905730598101704
+        },
+        "u": {
+          "n": 2424,
+          "min": -2.1058277746261003,
+          "p05": -0.6742751197072592,
+          "median": -0.04484382830951375,
+          "p95": 0.6234998349828154,
+          "max": 2.7146419083235753,
+          "mean": -0.03013299727396924,
+          "std": 0.4140027546206785
+        }
+      }
+    }
+  },
+  "local_navigation": {
+    "rows": 2396,
+    "observation_valid": {
+      "True": 2396
+    },
+    "accuracy_known": {
+      "True": 2396
+    },
+    "accuracy_ok": {
+      "False": 2396
+    },
+    "reasons": {
+      "Navigation for diagnostics only: accuracy unknown, above limit, or limits unconfigured": 2396
+    }
+  },
+  "first_100s_endpoint_windows": {
+    "method": "Mean over receipt-time [90,100) minus mean over [0,10) seconds",
+    "start_rows": 94,
+    "end_rows": 93,
+    "start_mean_enu_m": [
+      -0.12750630098996327,
+      -0.029035389168965284,
+      -0.2402765957446788
+    ],
+    "end_mean_enu_m": [
+      -0.9737956544567874,
+      3.9626665485873724,
+      -8.798784946236557
+    ],
+    "displacement_enu_m": [
+      -0.8462893534668241,
+      3.991701937756338,
+      -8.558508350491879
+    ],
+    "horizontal_displacement_m": 4.080427677300383,
+    "heading_change_deg": 0.1072523460905799
+  },
+  "large_navigation_gaps": [],
+  "invalid_navigation_events": [],
+  "largest_heading_steps": [
+    {
+      "bag_s": 190.83131407,
+      "stamp_s": 190.802436683,
+      "heading": -1.8989182261698303,
+      "heading_step_deg": -105.89999999999999
+    },
+    {
+      "bag_s": 192.13234734,
+      "stamp_s": 192.098528587,
+      "heading": -0.8115781021773634,
+      "heading_step_deg": 49.99999999999999
+    },
+    {
+      "bag_s": 192.232527352,
+      "stamp_s": 192.198724939,
+      "heading": -0.0349065850398864,
+      "heading_step_deg": 44.50000000000002
+    },
+    {
+      "bag_s": 190.931254937,
+      "stamp_s": 190.918588235,
+      "heading": -2.305579941884509,
+      "heading_step_deg": -23.299999999999986
+    },
+    {
+      "bag_s": 190.73126003,
+      "stamp_s": 190.702265419,
+      "heading": -0.0506145483078355,
+      "heading_step_deg": -20.999999999999986
+    },
+    {
+      "bag_s": 186.426251404,
+      "stamp_s": 186.401108555,
+      "heading": -0.2042035224833365,
+      "heading_step_deg": 17.89999999999999
+    },
+    {
+      "bag_s": 186.526467297,
+      "stamp_s": 186.501248587,
+      "heading": 0.0994837673636768,
+      "heading_step_deg": 17.4
+    },
+    {
+      "bag_s": 175.01125477800002,
+      "stamp_s": 175.001877323,
+      "heading": -0.111701072127637,
+      "heading_step_deg": 17.300000000000004
+    },
+    {
+      "bag_s": 192.032271908,
+      "stamp_s": 191.994356299,
+      "heading": -1.684242728174528,
+      "heading_step_deg": 16.89999999999999
+    },
+    {
+      "bag_s": 175.11222963900002,
+      "stamp_s": 175.100077131,
+      "heading": 0.1570796326794896,
+      "heading_step_deg": 15.39999999999999
+    }
+  ],
+  "mavlink_diagnostic_numeric_fields": {
+    "sync_rtt_ms": {
+      "n": 249,
+      "min": 0.797491,
+      "p05": 0.9635684,
+      "median": 1.93687,
+      "p95": 2.043774,
+      "max": 3.245597,
+      "mean": 1.6980977710843375,
+      "std": 0.45816931964623314
+    },
+    "bad_frames": {
+      "n": 249,
+      "min": 0.0,
+      "p05": 0.0,
+      "median": 0.0,
+      "p95": 0.0,
+      "max": 0.0,
+      "mean": 0.0,
+      "std": 0.0
+    },
+    "wrong_source": {
+      "n": 249,
+      "min": 0.0,
+      "p05": 0.0,
+      "median": 0.0,
+      "p95": 0.0,
+      "max": 0.0,
+      "mean": 0.0,
+      "std": 0.0
+    },
+    "duplicates": {
+      "n": 249,
+      "min": 0.0,
+      "p05": 0.0,
+      "median": 0.0,
+      "p95": 0.0,
+      "max": 0.0,
+      "mean": 0.0,
+      "std": 0.0
+    },
+    "stale": {
+      "n": 249,
+      "min": 0.0,
+      "p05": 0.0,
+      "median": 0.0,
+      "p95": 0.0,
+      "max": 0.0,
+      "mean": 0.0,
+      "std": 0.0
+    },
+    "rejected_sync": {
+      "n": 249,
+      "min": 0.0,
+      "p05": 0.0,
+      "median": 0.0,
+      "p95": 0.0,
+      "max": 0.0,
+      "mean": 0.0,
+      "std": 0.0
+    },
+    "tx_errors": {
+      "n": 249,
+      "min": 0.0,
+      "p05": 0.0,
+      "median": 0.0,
+      "p95": 0.0,
+      "max": 0.0,
+      "mean": 0.0,
+      "std": 0.0
+    },
+    "imu_hz": {
+      "n": 249,
+      "min": 295.947792,
+      "p05": 498.9462076,
+      "median": 499.022154,
+      "p95": 500.0325242,
+      "max": 500.476057,
+      "mean": 498.55816944578316,
+      "std": 12.875465255018195
+    },
+    "gps_fix_hz": {
+      "n": 249,
+      "min": 5.998942,
+      "p05": 8.999411,
+      "median": 9.99988,
+      "p95": 10.0014544,
+      "max": 10.018742,
+      "mean": 9.759035248995984,
+      "std": 0.5435031217823268
+    },
+    "gps_velocity_hz": {
+      "n": 249,
+      "min": 5.998942,
+      "p05": 8.999411,
+      "median": 9.99988,
+      "p95": 10.00136,
+      "max": 10.018742,
+      "mean": 9.759032907630521,
+      "std": 0.5434632302200105
+    }
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "python": "3.10.12",
+  "raw_source_validation": "source_validation.json",
+  "notebook_schema_valid": true,
+  "executed_code_cells": 4,
+  "notebook_errors": 0,
+  "embedded_images_equal_reviewed_pngs": true,
+  "figures_visually_reviewed": [
+    "static_positions.png",
+    "corrections_and_failure.png"
+  ],
+  "independent_jump_recalculation": "912 updates; integer-time calculation agrees; acceleration approximation sensitivity < 3.3e-7 m",
+  "production_changes": false
+}

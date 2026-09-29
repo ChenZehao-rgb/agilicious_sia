@@ -1,0 +1,144 @@
+{
+  "clock_jump": {
+    "primary_evidence": "Single matched MSP request/reply, wall-clock elapsed minus monotonic elapsed",
+    "matched_request_reply": {
+      "bag_s": 76.227339294,
+      "stamp_s": 76.223773831,
+      "steady_time": 73.387311584,
+      "request_stamp_s": 42.816351993,
+      "request_steady_time": 73.378566732,
+      "code": 105,
+      "wall_request_age_s": 33.407421838000005,
+      "steady_request_age_s": 0.008744852000006631,
+      "clock_step_s": 33.398676986,
+      "latency_seconds": 0.0087362220000102
+    },
+    "median_ros_minus_steady_before_s": -30.562215108999997,
+    "median_ros_minus_steady_after_s": 2.836463377000001,
+    "median_offset_change_s": 33.398678485999994,
+    "explicit_mavlink_clock_jump_status": [
+      {
+        "bag_s": 76.488570627,
+        "stamp_s": 76.48844533100001,
+        "status.0.message": "ROS clock jumped; resynchronizing"
+      }
+    ],
+    "wallclock_gap_does_not_equal_data_outage": true,
+    "fused_first_to_last_monotonic_span_s": 159.37700894900001,
+    "fused_first_to_last_bag_wallclock_span_s": 192.775423434,
+    "fused_max_publication_monotonic_gap_s": 0.4043401289999906,
+    "source_epoch_changes": [
+      {
+        "bag_s": 0.001425186,
+        "stamp_s": -0.072520597,
+        "source_session": 29.653606,
+        "clock_aligned": true
+      },
+      {
+        "bag_s": 76.227285034,
+        "stamp_s": 76.22244846000001,
+        "source_session": 73.385971,
+        "clock_aligned": false
+      }
+    ]
+  },
+  "navigation_recovery": {
+    "first_revocation": {
+      "bag_s": 76.22738433100001,
+      "stamp_s": 76.223934238,
+      "source_session": 73.385971,
+      "reason": "Invalid fix, clock alignment or navigation age"
+    },
+    "first_valid_local_navigation_after_revocation": {
+      "bag_s": 76.633033127,
+      "stamp_s": 76.624259179,
+      "source_session": 73.385971,
+      "reason": "Navigation for diagnostics only: accuracy unknown, above limit, or limits unconfigured"
+    },
+    "revocation_to_valid_local_navigation_wall_s": 0.40564879599999415,
+    "valid_local_navigation_count_after_recovery": 1112,
+    "origin_coordinates_and_session_constant": true
+  },
+  "reinitialization_blocker": {
+    "msp_reason_transitions": [
+      {
+        "bag_s": 0.219021167,
+        "stamp_s": 0.218637931,
+        "reason": "Missing configuration readback",
+        "rc_link": false,
+        "kill": true,
+        "armed": false
+      },
+      {
+        "bag_s": 0.382257926,
+        "stamp_s": 0.381846635,
+        "reason": "Physical receiver evidence decoded",
+        "rc_link": true,
+        "kill": false,
+        "armed": false
+      },
+      {
+        "bag_s": 76.227502442,
+        "stamp_s": 76.225408363,
+        "reason": "Configuration readback stale",
+        "rc_link": false,
+        "kill": true,
+        "armed": false
+      },
+      {
+        "bag_s": 76.229906571,
+        "stamp_s": 76.22922634700001,
+        "reason": "MSP transport/request failure; restart required",
+        "rc_link": false,
+        "kill": true,
+        "armed": false
+      }
+    ],
+    "authority_false_rc_link_from_bag_s": 76.22751686800001,
+    "authority_false_rc_link_persists_to_bag_s": 192.849142238,
+    "all_post_reset_initialized_false": true,
+    "mechanism": "msp_evidence.py injects transport_error for the cross-clock request; MspEvidence.failed latches for unchanged session; configuration() returns failure; snapshot returns rc_link=false and kill=true defaults; StateFusionNode requires fresh authority.rc_link and not armed to initialize.",
+    "kill_and_rc_link_are_evidence_defaults_not_proof_of_physical_switch_or_rf_loss": true
+  },
+  "raw_msp_transport": {
+    "event_counts": {
+      "rx": 10366,
+      "tx": 10366
+    },
+    "error_field_nonzero_count": 0,
+    "session_count": 1,
+    "post_jump_rx_counts_by_code": {
+      "1": 117,
+      "2": 117,
+      "3": 117,
+      "34": 117,
+      "44": 117,
+      "64": 117,
+      "105": 2913,
+      "111": 117,
+      "119": 117,
+      "125": 117,
+      "130": 233,
+      "150": 2913,
+      "238": 117,
+      "12304": 351
+    },
+    "last_rx_bag_s": 192.836138491,
+    "normal_payload_replay_without_wallclock_error_injection": {
+      "counterfactual_not_live_recovery": true,
+      "first_verified_snapshot_bag_s": 76.803228645,
+      "verified_status_snapshot_count": 2902,
+      "all_rc_link_true": true,
+      "all_kill_false": true,
+      "all_armed_false": true,
+      "config_file_used": "agi_ros2/config/hardware.yaml"
+    }
+  },
+  "boundaries": [
+    "The bag proves a ROS/wall-clock step; the clock-setting process (NTP/chrony/operator) is not recorded.",
+    "Normal serial replies and decoder replay refute a need to infer physical RF/serial failure from the latched authority alone.",
+    "Exact ROS callback receipt time is not recorded; the matched MSP event has enough independent evidence to violate both 3-second wall age and 50-ms clock disagreement rules.",
+    "The origin remains unchanged; source_session reset is a time synchronization epoch change."
+  ],
+  "verified": true
+}

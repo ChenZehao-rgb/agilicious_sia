@@ -1,0 +1,7 @@
+bag_s,stamp_s,published_steady_time,initialized,reset_counter,navigation_innovation_squared,navigation_rejections,readiness_reason
+0.084330741,0.078309995,30.646139646,False,1,,0,"Initialization requires disarmed authority and stationary, fresh navigation"
+5.612365497000001,5.609391979000001,36.174407421,False,2,,0,"Collecting stationary IMU samples; checking gravity, gyro bias and noise"
+8.61407644,8.610407787,39.176214086,True,2,,0,"GNSS accuracy unknown, above limits, or flight accuracy limits unconfigured"
+76.227463516,42.819748715,73.388868251,False,3,,0,"Invalid fix, clock alignment or navigation age"
+76.629787627,76.62714327500001,73.79320838,False,3,,0,"Initialization requires disarmed authority and stationary, fresh navigation"
+76.63514692300001,76.631144299,73.79738651,False,4,,0,"Initialization requires disarmed authority and stationary, fresh navigation"

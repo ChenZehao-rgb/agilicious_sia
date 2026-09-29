@@ -1,0 +1,258 @@
+{
+  "scope": "Read-only static-bag analysis; receipt time is discontinuous at the clock step.\n\nThe user reports the vehicle was stationary. Position drift is relative, not\nabsolute accuracy. Runtime parameters are not fully recorded in this bag.\n",
+  "bag_manifest": {
+    "bag": "/home/sia/agilicious_internal-main/bags/hardware_20260929_112215_827325",
+    "start_ns": 1790652137202234261,
+    "duration_s": 192.859754175,
+    "topic_counts": {
+      "/navigation/status": 159,
+      "/sensors/local_navigation": 1461,
+      "/health/status": 18322,
+      "/msp/config": 160,
+      "/health": 18328,
+      "/msp/analog": 0,
+      "/msp/attitude": 0,
+      "/sensors/mavlink/status": 160,
+      "/msp/events": 20732,
+      "/sensors/gps/velocity": 1516,
+      "/fused_state": 79401,
+      "/msp/gps": 0,
+      "/msp/decoded_state": 18324,
+      "/sensors/navigation": 1517,
+      "/sensors/fc_attitude": 0,
+      "/state": 17085,
+      "/msp/status": 3985,
+      "/msp/rc": 3984,
+      "/msp/battery": 318,
+      "/sensors/imu": 79436,
+      "/rosout": 35,
+      "/sensors/gps/fix": 1516,
+      "/sensors/fc_heading": 1515,
+      "/navigation/origin": 155,
+      "/authority": 18327,
+      "/parameter_events": 10,
+      "/events/write_split": 0
+    },
+    "schemas": {
+      "/sensors/navigation": "agi_ros2/msg/Navigation",
+      "/sensors/imu": "sensor_msgs/msg/Imu",
+      "/rosout": "rcl_interfaces/msg/Log",
+      "/fused_state": "agi_ros2/msg/FusedState",
+      "/sensors/mavlink/status": "diagnostic_msgs/msg/DiagnosticArray",
+      "/health": "agi_ros2/msg/Health",
+      "/authority": "agi_ros2/msg/Authority",
+      "/msp/decoded_state": "agi_ros2/msg/MspState",
+      "/navigation/status": "std_msgs/msg/String",
+      "/navigation/origin": "agi_ros2/msg/NavigationOrigin",
+      "/sensors/local_navigation": "agi_ros2/msg/LocalNavigation",
+      "/parameter_events": "rcl_interfaces/msg/ParameterEvent"
+    },
+    "validation": {
+      "embedded_schemas": true,
+      "stored_crcs_checked": true,
+      "all_topic_counts_match_metadata": true
+    },
+    "tables": {
+      "/sensors/navigation": "sensors_navigation.csv.gz",
+      "/sensors/imu": "sensors_imu.csv.gz",
+      "/rosout": "rosout.csv.gz",
+      "/fused_state": "fused_state.csv.gz",
+      "/sensors/mavlink/status": "sensors_mavlink_status.csv.gz",
+      "/health": "health.csv.gz",
+      "/authority": "authority.csv.gz",
+      "/msp/decoded_state": "msp_decoded_state.csv.gz",
+      "/navigation/status": "navigation_status.csv.gz",
+      "/navigation/origin": "navigation_origin.csv.gz",
+      "/sensors/local_navigation": "sensors_local_navigation.csv.gz",
+      "/parameter_events": "parameter_events.csv.gz"
+    }
+  },
+  "initialized_count": 17085,
+  "initialized_acquisition_interval_s": [
+    8.610407787,
+    42.819748715
+  ],
+  "initialized_duration_s": 34.209340928,
+  "accepted_updates_excluding_initialization": 317,
+  "rejections_max": 0,
+  "accepted_update_nis": {
+    "min": 0.0058726311557795,
+    "median": 0.1546605529156227,
+    "p95": 0.3648221557072449,
+    "max": 0.5887873925461654
+  },
+  "clock_step": {
+    "last_pre_step_receipt_s": 42.821192253,
+    "first_post_step_receipt_s": 76.22742423800001,
+    "receipt_delta_s": 33.406231985000005,
+    "steady_delta_s": 0.005335443999996414,
+    "estimated_positive_step_s": 33.40089654100001,
+    "method": "Adjacent fused-state receipt time delta minus publisher steady-time delta; includes small DDS scheduling error.",
+    "physical_fused_stream_duration_s": 159.37700894900001
+  },
+  "all_valid_navigation": {
+    "n": 1460,
+    "acquisition_interval_s": [
+      5.5269520430000005,
+      192.834741355
+    ],
+    "axis_span_m": [
+      1.0311858422764073,
+      1.9770218539700457,
+      2.359999999999999
+    ],
+    "end_minus_start_m": [
+      -0.008315998757594104,
+      -1.9659149899566974,
+      0.9299999999999997
+    ],
+    "horizontal_max_from_first_m": 1.9773016734349749,
+    "speed_mps": {
+      "min": 0.0,
+      "median": 0.0806225774829855,
+      "p95": 0.17378147196982768,
+      "max": 0.42118879377305374
+    }
+  },
+  "same_acquisition_window": {
+    "fused": {
+      "n": 17085,
+      "acquisition_interval_s": [
+        8.610407787,
+        42.819748715
+      ],
+      "axis_span_m": [
+        0.3234526853796373,
+        0.5041446439815018,
+        1.0663214358608237
+      ],
+      "end_minus_start_m": [
+        -0.230496397923134,
+        -0.2884254092228408,
+        0.9134814570026915
+      ],
+      "horizontal_max_from_first_m": 0.5044328082674641,
+      "speed_mps": {
+        "min": 0.0022778080564103444,
+        "median": 0.036183618562016615,
+        "p95": 0.09166958503886824,
+        "max": 0.12758093382598862
+      }
+    },
+    "navigation": {
+      "n": 317,
+      "acquisition_interval_s": [
+        8.625439083,
+        42.722178667
+      ],
+      "axis_span_m": [
+        0.44074880972928593,
+        0.577556943019307,
+        1.4299999999999993
+      ],
+      "end_minus_start_m": [
+        -0.2827445081790992,
+        -0.3220990706070639,
+        0.8799999999999955
+      ],
+      "horizontal_max_from_first_m": 0.5891745277701322,
+      "speed_mps": {
+        "min": 0.01,
+        "median": 0.09539392014169455,
+        "p95": 0.17492855684535902,
+        "max": 0.2308679276123039
+      }
+    }
+  },
+  "navigation_horizontal_diameter_m": 2.01907231912187,
+  "observed_measurement_variances": {
+    "position_variance.0": [
+      1.0
+    ],
+    "position_variance.1": [
+      1.0
+    ],
+    "position_variance.2": [
+      4.0
+    ],
+    "velocity_variance.0": [
+      0.09
+    ],
+    "velocity_variance.1": [
+      0.09
+    ],
+    "velocity_variance.2": [
+      0.09
+    ],
+    "heading_variance": [
+      0.0304617419786708
+    ]
+  },
+  "receiver_reported_accuracy": {
+    "horizontal_accuracy": {
+      "min": 0.559,
+      "median": 0.608,
+      "p95": 0.6910000000000001,
+      "max": 0.7010000000000001
+    },
+    "vertical_accuracy": {
+      "min": 0.879,
+      "median": 0.929,
+      "p95": 1.02005,
+      "max": 1.05
+    },
+    "velocity_accuracy": {
+      "min": 0.114,
+      "median": 0.18,
+      "p95": 0.22204999999999997,
+      "max": 0.251
+    }
+  },
+  "pre_clock_jump_imu": {
+    "samples": 21382,
+    "mean_acceleration_xyz_mps2": [
+      -0.2232317931796077,
+      0.028012560696481545,
+      9.836805936028185
+    ],
+    "mean_acceleration_norm_mps2": 9.839393835277793,
+    "acceleration_std_xyz_mps2": [
+      0.012099058217418208,
+      0.012502598008625883,
+      0.02207128648612922
+    ],
+    "gyro_mean_xyz_radps": [
+      -0.0009521787815222763,
+      0.0001667652986272627,
+      0.0004179736665926081
+    ],
+    "gyro_std_xyz_radps": [
+      0.0012073242971403786,
+      0.0015061352669803049,
+      0.004833990830992764
+    ]
+  },
+  "later_sensor_disturbance": {
+    "max_gyro_norm_radps": 1.3233162018467748,
+    "max_gyro_bag_s": 145.63825789700002,
+    "acceleration_norm_mps2": {
+      "min": 8.981475196107349,
+      "median": 9.878899358892632,
+      "p95": 9.929136917976903,
+      "max": 11.192858422356464
+    },
+    "note": "Reported stationary; sensor rotation/vibration/anomaly cannot be assigned a cause or translated into position motion from this bag."
+  },
+  "all_authority_armed_values": [
+    false
+  ],
+  "recorded_parameter_nodes": [
+    "/_ros2cli_1550",
+    "/_ros2cli_1909",
+    "/_ros2cli_daemon_2_0dbe0407154c4794be8fa0777df43b9e",
+    "/_ros2cli_daemon_2_8addea0f660f455980a0063006e13bde",
+    "/_ros2cli_daemon_2_9a8ddcd8ccc643fa8742ac1c1006e133"
+  ],
+  "satellite_count_limit": "No satellite count field in recorded Navigation/LocalNavigation or MAVLink diagnostic schemas; approximately 17 is operator-reported.",
+  "runtime_config_limit": "rosout records /home/ubuntu/agilicious_sia/agi_ros2/config/hardware.yaml, without full content or deployed binary hash."
+}

@@ -1,0 +1,788 @@
+{
+  "manifest": {
+    "bag": "/home/sia/agilicious_internal-main/bags/hardware_20260926_162634_732735",
+    "start_ns": 1790411195876249383,
+    "duration_s": 165.355913748,
+    "topic_counts": {
+      "/sensors/mavlink/status": 165,
+      "/sensors/gps/fix": 1614,
+      "/sensors/fc_heading": 1614,
+      "/sensors/fc_attitude": 0,
+      "/navigation/status": 165,
+      "/navigation/origin": 159,
+      "/parameter_events": 0,
+      "/authority": 18836,
+      "/rosout": 36,
+      "/events/write_split": 0,
+      "/msp/config": 166,
+      "/state": 0,
+      "/msp/status": 4127,
+      "/msp/rc": 4126,
+      "/sensors/gps/velocity": 1618,
+      "/msp/events": 21481,
+      "/sensors/navigation": 1614,
+      "/msp/decoded_state": 18837,
+      "/msp/attitude": 0,
+      "/fused_state": 82398,
+      "/msp/gps": 0,
+      "/sensors/local_navigation": 1546,
+      "/health/status": 18837,
+      "/msp/analog": 0,
+      "/health": 18837,
+      "/sensors/imu": 82403,
+      "/msp/battery": 331
+    },
+    "schemas": {
+      "/rosout": "rcl_interfaces/msg/Log",
+      "/health": "agi_ros2/msg/Health",
+      "/authority": "agi_ros2/msg/Authority",
+      "/sensors/imu": "sensor_msgs/msg/Imu",
+      "/fused_state": "agi_ros2/msg/FusedState",
+      "/sensors/navigation": "agi_ros2/msg/Navigation",
+      "/navigation/status": "std_msgs/msg/String",
+      "/sensors/mavlink/status": "diagnostic_msgs/msg/DiagnosticArray",
+      "/navigation/origin": "agi_ros2/msg/NavigationOrigin",
+      "/sensors/local_navigation": "agi_ros2/msg/LocalNavigation"
+    },
+    "validation": {
+      "embedded_schemas": true,
+      "stored_crcs_checked": true,
+      "all_topic_counts_match_metadata": true
+    },
+    "tables": {
+      "/rosout": "rosout.csv.gz",
+      "/health": "health.csv.gz",
+      "/authority": "authority.csv.gz",
+      "/sensors/imu": "sensors_imu.csv.gz",
+      "/fused_state": "fused_state.csv.gz",
+      "/sensors/navigation": "sensors_navigation.csv.gz",
+      "/navigation/status": "navigation_status.csv.gz",
+      "/sensors/mavlink/status": "sensors_mavlink_status.csv.gz",
+      "/navigation/origin": "navigation_origin.csv.gz",
+      "/sensors/local_navigation": "sensors_local_navigation.csv.gz"
+    }
+  },
+  "fused_counts": {
+    "initialized": {
+      "False": 82398
+    },
+    "imu_ready": {
+      "False": 82398
+    },
+    "navigation_valid": {
+      "False": 82398
+    },
+    "navigation_ready": {
+      "False": 82398
+    },
+    "estimator_ready": {
+      "False": 82398
+    },
+    "readiness_reason": {
+      "Initialization requires disarmed authority and stationary, fresh navigation": 79901,
+      "Collecting stationary IMU samples; checking gravity, gyro bias and noise": 2497
+    },
+    "reset_counter": {
+      "3": 78959,
+      "2": 3439
+    }
+  },
+  "fused_transitions": {
+    "initialized": [
+      {
+        "bag_s": 0.400200364,
+        "stamp_s": 0.396176601,
+        "initialized": false
+      }
+    ],
+    "reset_counter": [
+      {
+        "bag_s": 0.400200364,
+        "stamp_s": 0.396176601,
+        "reset_counter": 2
+      },
+      {
+        "bag_s": 7.284825994,
+        "stamp_s": 7.279823321,
+        "reset_counter": 3
+      }
+    ]
+  },
+  "authority_transitions": {
+    "armed": [
+      {
+        "bag_s": 0.050940907,
+        "stamp_s": -1790411195.8762496,
+        "armed": false
+      },
+      {
+        "bag_s": 10.921568393,
+        "stamp_s": 10.880299481000002,
+        "armed": true
+      },
+      {
+        "bag_s": 163.561733621,
+        "stamp_s": 163.520482265,
+        "armed": false
+      }
+    ],
+    "rc_link": [
+      {
+        "bag_s": 0.050940907,
+        "stamp_s": -1790411195.8762496,
+        "rc_link": false
+      },
+      {
+        "bag_s": 3.4015378750000003,
+        "stamp_s": 3.360276953,
+        "rc_link": true
+      }
+    ]
+  },
+  "gnss_reported_accuracy": {
+    "horizontal_accuracy": {
+      "finite_n": 1614,
+      "min": 0.763,
+      "median": 1.035,
+      "p95": 1.083,
+      "max": 1.556,
+      "mean": 1.0189708798017347,
+      "std": 0.0760065853117354
+    },
+    "vertical_accuracy": {
+      "finite_n": 1614,
+      "min": 1.197,
+      "median": 1.836,
+      "p95": 2.122,
+      "max": 2.661,
+      "mean": 1.8373184634448574,
+      "std": 0.19249776758838366
+    },
+    "velocity_accuracy": {
+      "finite_n": 1614,
+      "min": 0.135,
+      "median": 0.314,
+      "p95": 0.4763499999999999,
+      "max": 0.839,
+      "mean": 0.31938166047087985,
+      "std": 0.09359163086912321
+    }
+  },
+  "fix_type_counts": {
+    "3": 1614
+  },
+  "clock_aligned_counts": {
+    "True": 1614
+  },
+  "gnss_speed_m_s": {
+    "finite_n": 1614,
+    "min": 0.0,
+    "median": 0.1301920240520265,
+    "p95": 0.6745368781616021,
+    "max": 1.613753388842298,
+    "mean": 0.1874336741716145,
+    "std": 0.1967381925896849
+  },
+  "navigation_whole_recording": {
+    "n": 1546,
+    "interval_s": [
+      7.282382886000001,
+      165.336737195
+    ],
+    "min_xyz_m": [
+      -0.4043661610009772,
+      -0.1187046108565836,
+      -7.835625
+    ],
+    "max_xyz_m": [
+      2.4480260910744684,
+      5.912322790699946,
+      -0.1556250000000005
+    ],
+    "span_xyz_m": [
+      2.852392252075446,
+      6.031027401556529,
+      7.68
+    ],
+    "end_minus_start_xyz_m": [
+      0.5987526270874536,
+      4.942554687893572,
+      -6.009999999999998
+    ],
+    "horizontal_radius_about_mean_m": {
+      "finite_n": 1546,
+      "min": 0.01675062516319159,
+      "median": 1.673485754344529,
+      "p95": 3.3999735505865476,
+      "max": 3.62966423798337,
+      "mean": 1.671780334515023,
+      "std": 0.7065953255651298
+    },
+    "max_horizontal_distance_from_first_m": 6.027519521900059,
+    "std_xyz_m": [
+      0.6256496131148056,
+      1.7037279720046121,
+      1.73204437739488
+    ]
+  },
+  "fused_initialized_whole_recording": {
+    "n": 0,
+    "meaning": "Whole-recording extent across resets, not continuous drift or truth error"
+  },
+  "streams": {
+    "imu": {
+      "n": 82403,
+      "duplicate_header_n": 0,
+      "nonpositive_header_gap_n": 0,
+      "header_gap_s": {
+        "finite_n": 82402,
+        "min": 0.000602112,
+        "median": 0.002001152,
+        "p95": 0.002004224,
+        "max": 0.0033968640000000003,
+        "mean": 0.002001951719618456,
+        "std": 5.387112002907032e-05
+      },
+      "bag_age_s": {
+        "finite_n": 82403,
+        "min": 0.001723537,
+        "median": 0.0030793680000000003,
+        "p95": 0.0037608995000000004,
+        "max": 0.010252224,
+        "mean": 0.0030942184196691863,
+        "std": 0.0004922277046343693
+      },
+      "hz": 499.51254578236586
+    },
+    "navigation": {
+      "n": 1614,
+      "duplicate_header_n": 0,
+      "nonpositive_header_gap_n": 0,
+      "header_gap_s": {
+        "finite_n": 1613,
+        "min": 0.07809126400000001,
+        "median": 0.100134912,
+        "p95": 0.1181510144,
+        "max": 0.204253184,
+        "mean": 0.10221168478115314,
+        "std": 0.01616987956427778
+      },
+      "bag_age_s": {
+        "finite_n": 1614,
+        "min": 0.004452997,
+        "median": 0.0560993855,
+        "p95": 0.09965109520000001,
+        "max": 0.105426292,
+        "mean": 0.05513345231908302,
+        "std": 0.0288074206571235
+      },
+      "hz": 9.783617226749701
+    },
+    "local_navigation": {
+      "n": 1546,
+      "duplicate_header_n": 0,
+      "nonpositive_header_gap_n": 0,
+      "header_gap_s": {
+        "finite_n": 1545,
+        "min": 0.07809126400000001,
+        "median": 0.100135424,
+        "p95": 0.1181513728,
+        "max": 0.204253184,
+        "mean": 0.10229824621359222,
+        "std": 0.016434573552475334
+      },
+      "bag_age_s": {
+        "finite_n": 1546,
+        "min": 0.00528185,
+        "median": 0.05508858850000001,
+        "p95": 0.10083450275,
+        "max": 0.107540805,
+        "mean": 0.0560361705847348,
+        "std": 0.029428250911501322
+      },
+      "hz": 9.775338649619306
+    },
+    "fused": {
+      "n": 82398,
+      "duplicate_header_n": 0,
+      "nonpositive_header_gap_n": 0,
+      "header_gap_s": {
+        "finite_n": 82397,
+        "min": 0.000602112,
+        "median": 0.002001152,
+        "p95": 0.002004224,
+        "max": 0.0033968640000000003,
+        "mean": 0.0020019517526123523,
+        "std": 5.3872753672223604e-05
+      },
+      "bag_age_s": {
+        "finite_n": 82398,
+        "min": 0.001902695,
+        "median": 0.0033064425000000003,
+        "p95": 0.0042712632,
+        "max": 0.017484152000000003,
+        "mean": 0.0033549823838442683,
+        "std": 0.0006291526124386459
+      },
+      "hz": 499.512537549967
+    }
+  },
+  "windows": {
+    "0_10": {
+      "meaning": "Diagnostic interval; do not interpret moving-recording spread as position error",
+      "imu_n": 4802,
+      "acc_mean_xyz": [
+        0.6434437258573236,
+        -0.09096332137061372,
+        9.396460208034872
+      ],
+      "acc_mean_norm": 9.418904320321058,
+      "acc_std_xyz": [
+        0.012471744487533088,
+        0.013428721024474545,
+        0.020587700816077914
+      ],
+      "gyro_std_xyz": [
+        0.0010600765040550194,
+        0.0013593810729655047,
+        0.004356863327486276
+      ],
+      "navigation": {
+        "n": 28,
+        "interval_s": [
+          7.282382886000001,
+          9.983704606
+        ],
+        "min_xyz_m": [
+          0.0280665504475831,
+          -0.1187046108565836,
+          -0.7356249999999989
+        ],
+        "max_xyz_m": [
+          0.219334891246918,
+          -0.0631702879192335,
+          -0.1556250000000005
+        ],
+        "span_xyz_m": [
+          0.19126834079933488,
+          0.0555343229373501,
+          0.5799999999999983
+        ],
+        "end_minus_start_xyz_m": [
+          0.18295232626779628,
+          3.169996307117451e-09,
+          -0.5700000000000003
+        ],
+        "horizontal_radius_about_mean_m": {
+          "finite_n": 28,
+          "min": 0.009071706722647854,
+          "median": 0.06741386607338921,
+          "p95": 0.1058908338101804,
+          "max": 0.11162991675546388,
+          "mean": 0.06252512716243126,
+          "std": 0.02594387252452696
+        },
+        "max_horizontal_distance_from_first_m": 0.1829523262677963,
+        "std_xyz_m": [
+          0.06624310338783741,
+          0.013940132775385815,
+          0.168699633451085
+        ]
+      },
+      "fused": {
+        "n": 0
+      }
+    },
+    "0_60": {
+      "meaning": "Diagnostic interval; do not interpret moving-recording spread as position error",
+      "imu_n": 29779,
+      "acc_mean_xyz": [
+        0.6471153266284828,
+        -0.09377646059779117,
+        9.410890478216588
+      ],
+      "acc_mean_norm": 9.43357895305421,
+      "acc_std_xyz": [
+        0.02038173336603794,
+        0.031198871397215982,
+        0.030730823853879707
+      ],
+      "gyro_std_xyz": [
+        0.0036077185759822994,
+        0.0022219001681529895,
+        0.004732703024214067
+      ],
+      "navigation": {
+        "n": 508,
+        "interval_s": [
+          7.282382886000001,
+          59.930774375000006
+        ],
+        "min_xyz_m": [
+          -0.4043661610009772,
+          -0.1187046108565836,
+          -5.505625000000002
+        ],
+        "max_xyz_m": [
+          1.3669444836331732,
+          2.280378221744474,
+          -0.1556250000000005
+        ],
+        "span_xyz_m": [
+          1.7713106446341504,
+          2.399082832601058,
+          5.350000000000001
+        ],
+        "end_minus_start_xyz_m": [
+          1.3222459066506347,
+          2.3546553788270685,
+          -4.93
+        ],
+        "horizontal_radius_about_mean_m": {
+          "finite_n": 508,
+          "min": 0.22731759318260716,
+          "median": 0.5984212761941853,
+          "p95": 1.5220389234404774,
+          "max": 1.565815873251179,
+          "mean": 0.7795828272707775,
+          "std": 0.4189285406328089
+        },
+        "max_horizontal_distance_from_first_m": 2.7101965274423705,
+        "std_xyz_m": [
+          0.4448700092486103,
+          0.7650759319200777,
+          1.23132486094626
+        ]
+      },
+      "fused": {
+        "n": 0
+      }
+    },
+    "0_120": {
+      "meaning": "Diagnostic interval; do not interpret moving-recording spread as position error",
+      "imu_n": 59749,
+      "acc_mean_xyz": [
+        0.6214870754714321,
+        -0.08832114217245544,
+        9.41399324109667
+      ],
+      "acc_mean_norm": 9.434898809873186,
+      "acc_std_xyz": [
+        0.1379929334685607,
+        0.1369950577026832,
+        0.142419206682238
+      ],
+      "gyro_std_xyz": [
+        0.03675353348700142,
+        0.03419774133302208,
+        0.0235597213089365
+      ],
+      "navigation": {
+        "n": 1108,
+        "interval_s": [
+          7.282382886000001,
+          119.990766665
+        ],
+        "min_xyz_m": [
+          -0.4043661610009772,
+          -0.1187046108565836,
+          -7.835625
+        ],
+        "max_xyz_m": [
+          1.416840337537112,
+          5.912322790699946,
+          -0.1556250000000005
+        ],
+        "span_xyz_m": [
+          1.8212064985380891,
+          6.031027401556529,
+          7.68
+        ],
+        "end_minus_start_xyz_m": [
+          1.1725571914249608,
+          5.30908128779814,
+          -6.229999999999997
+        ],
+        "horizontal_radius_about_mean_m": {
+          "finite_n": 1108,
+          "min": 0.9779273570768906,
+          "median": 1.923570664646845,
+          "p95": 3.2826358150181667,
+          "max": 3.4865318401708074,
+          "mean": 1.9159483646195217,
+          "std": 0.5932622584977172
+        },
+        "max_horizontal_distance_from_first_m": 6.027519521900059,
+        "std_xyz_m": [
+          0.5078884679856601,
+          1.9403266599552793,
+          1.918099156668563
+        ]
+      },
+      "fused": {
+        "n": 0
+      }
+    },
+    "6_60": {
+      "meaning": "Diagnostic interval; do not interpret moving-recording spread as position error",
+      "imu_n": 26975,
+      "acc_mean_xyz": [
+        0.6475074593428664,
+        -0.09407868001037348,
+        9.412613062606685
+      ],
+      "acc_mean_norm": 9.4353273061559,
+      "acc_std_xyz": [
+        0.020997349378516342,
+        0.032473904740355254,
+        0.031139069756794837
+      ],
+      "gyro_std_xyz": [
+        0.0037742636948812033,
+        0.0022913364173630544,
+        0.00476647138209745
+      ],
+      "navigation": {
+        "n": 508,
+        "interval_s": [
+          7.282382886000001,
+          59.930774375000006
+        ],
+        "min_xyz_m": [
+          -0.4043661610009772,
+          -0.1187046108565836,
+          -5.505625000000002
+        ],
+        "max_xyz_m": [
+          1.3669444836331732,
+          2.280378221744474,
+          -0.1556250000000005
+        ],
+        "span_xyz_m": [
+          1.7713106446341504,
+          2.399082832601058,
+          5.350000000000001
+        ],
+        "end_minus_start_xyz_m": [
+          1.3222459066506347,
+          2.3546553788270685,
+          -4.93
+        ],
+        "horizontal_radius_about_mean_m": {
+          "finite_n": 508,
+          "min": 0.22731759318260716,
+          "median": 0.5984212761941853,
+          "p95": 1.5220389234404774,
+          "max": 1.565815873251179,
+          "mean": 0.7795828272707775,
+          "std": 0.4189285406328089
+        },
+        "max_horizontal_distance_from_first_m": 2.7101965274423705,
+        "std_xyz_m": [
+          0.4448700092486103,
+          0.7650759319200777,
+          1.23132486094626
+        ]
+      },
+      "fused": {
+        "n": 0
+      }
+    },
+    "10_60": {
+      "meaning": "Diagnostic interval; do not interpret moving-recording spread as position error",
+      "imu_n": 24977,
+      "acc_mean_xyz": [
+        0.6478212171238628,
+        -0.09431730595827906,
+        9.413664796886268
+      ],
+      "acc_mean_norm": 9.43640042556985,
+      "acc_std_xyz": [
+        0.021500859142715597,
+        0.03352644919768929,
+        0.03157099959830694
+      ],
+      "gyro_std_xyz": [
+        0.003910489006418789,
+        0.002351421262409453,
+        0.00480158069404623
+      ],
+      "navigation": {
+        "n": 480,
+        "interval_s": [
+          10.083980475,
+          59.930774375000006
+        ],
+        "min_xyz_m": [
+          -0.4043661610009772,
+          -0.0853840170088902,
+          -5.505625000000002
+        ],
+        "max_xyz_m": [
+          1.3669444836331732,
+          2.280378221744474,
+          -0.7256250000000009
+        ],
+        "span_xyz_m": [
+          1.7713106446341504,
+          2.3657622387533643,
+          4.780000000000001
+        ],
+        "end_minus_start_xyz_m": [
+          1.1476095952381733,
+          2.3546553755705486,
+          -4.359999999999999
+        ],
+        "horizontal_radius_about_mean_m": {
+          "finite_n": 480,
+          "min": 0.1670165340780604,
+          "median": 0.5084982775473594,
+          "p95": 1.4683678761158088,
+          "max": 1.6121854526453432,
+          "mean": 0.7035367645734258,
+          "std": 0.4325205687403671
+        },
+        "max_horizontal_distance_from_first_m": 2.6294179485534355,
+        "std_xyz_m": [
+          0.45416085467622824,
+          0.6897651336286087,
+          1.0462450019793006
+        ]
+      },
+      "fused": {
+        "n": 0
+      }
+    },
+    "60_120": {
+      "meaning": "Diagnostic interval; do not interpret moving-recording spread as position error",
+      "imu_n": 29970,
+      "acc_mean_xyz": [
+        0.5960221541766103,
+        -0.08290059070805525,
+        9.417076229945716
+      ],
+      "acc_mean_norm": 9.436283147342374,
+      "acc_std_xyz": [
+        0.1903914189826207,
+        0.19076049185264735,
+        0.19869514208078243
+      ],
+      "gyro_std_xyz": [
+        0.05176955880382957,
+        0.048229503857216804,
+        0.03292445400737594
+      ],
+      "navigation": {
+        "n": 600,
+        "interval_s": [
+          60.030777296,
+          119.990766665
+        ],
+        "min_xyz_m": [
+          -0.2713097838237834,
+          2.2692713585616584,
+          -7.835625
+        ],
+        "max_xyz_m": [
+          1.416840337537112,
+          5.912322790699946,
+          -4.755625000000002
+        ],
+        "span_xyz_m": [
+          1.6881501213608954,
+          3.6430514321382876,
+          3.0799999999999983
+        ],
+        "end_minus_start_xyz_m": [
+          -0.15800472508713548,
+          2.9433190446783577,
+          -1.269999999999996
+        ],
+        "horizontal_radius_about_mean_m": {
+          "finite_n": 600,
+          "min": 0.18570974746961239,
+          "median": 0.7012135092393517,
+          "p95": 2.289547243875253,
+          "max": 2.8435021668577125,
+          "mean": 0.8130842680484067,
+          "std": 0.5542234527868748
+        },
+        "max_horizontal_distance_from_first_m": 3.704938098903498,
+        "std_xyz_m": [
+          0.5412318278573736,
+          0.8217893714821243,
+          0.8945946367862188
+        ]
+      },
+      "fused": {
+        "n": 0
+      }
+    },
+    "120_210": {
+      "meaning": "Diagnostic interval; do not interpret moving-recording spread as position error",
+      "imu_n": 22654,
+      "acc_mean_xyz": [
+        0.7054274638270549,
+        -0.13996339962000742,
+        9.406371477033955
+      ],
+      "acc_mean_norm": 9.433824358334887,
+      "acc_std_xyz": [
+        0.3062964279603494,
+        0.32696781599224745,
+        0.5367175033312874
+      ],
+      "gyro_std_xyz": [
+        0.1236439085032442,
+        0.1007621821188829,
+        0.11546104323715457
+      ],
+      "navigation": {
+        "n": 438,
+        "interval_s": [
+          120.090719083,
+          165.336737195
+        ],
+        "min_xyz_m": [
+          0.1112266348108259,
+          2.158203004467377,
+          -6.985624999999999
+        ],
+        "max_xyz_m": [
+          2.4480260910744684,
+          5.234804134734524,
+          -2.255625000000002
+        ],
+        "span_xyz_m": [
+          2.3367994562636425,
+          3.0766011302671474,
+          4.729999999999997
+        ],
+        "end_minus_start_xyz_m": [
+          -0.5821205727264012,
+          -0.3665266011757069,
+          0.21000000000000085
+        ],
+        "horizontal_radius_about_mean_m": {
+          "finite_n": 438,
+          "min": 0.16385175578116024,
+          "median": 0.9061556684393344,
+          "p95": 1.9300030441504696,
+          "max": 2.189747530729537,
+          "mean": 0.9589738639374108,
+          "std": 0.3967547778366144
+        },
+        "max_horizontal_distance_from_first_m": 3.3033393226756127,
+        "std_xyz_m": [
+          0.704164096710477,
+          0.7623635290038128,
+          1.1235556581614985
+        ]
+      },
+      "fused": {
+        "n": 0
+      }
+    }
+  },
+  "fused_by_reset_counter": {}
+}

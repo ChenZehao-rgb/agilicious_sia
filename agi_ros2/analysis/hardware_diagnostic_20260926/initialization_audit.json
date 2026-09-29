@@ -1,0 +1,982 @@
+{
+  "methodology": {
+    "units": "seconds from bag start; accelerations m/s^2; angular rates rad/s",
+    "thresholds": {
+      "duration_s": 3.0,
+      "minimum_samples": 1000,
+      "max_gyro_bias_rad_s": 0.15,
+      "max_gyro_axis_std_rad_s": 0.02,
+      "max_accel_axis_std_m_s2": 0.2,
+      "gravity_tolerance_m_s2": 0.7,
+      "navigation_max_speed_m_s": 0.3,
+      "max_imu_gap_s": 0.025
+    },
+    "rolling_window_rule": "Keep the most recent sample at/before t-3s and every later sample; reset across gaps >25ms or nonpositive time.",
+    "observed_collection": "Contiguous uninitialized FusedState rows whose recorded reason is Collecting stationary IMU samples; first-stage failures clear online buffer.",
+    "collection_metrics": "Metrics over each contiguous recorded collecting segment, not a rolling 3s window when segment exceeds 3s.",
+    "raw_windows": "Ignore navigation/authority resets to isolate IMU-only physical gates; this does not claim online eligibility.",
+    "limitations": [
+      "Bag reception order differs from subscriber callback order. The preconditions proxy is approximate and excludes actual monotonic receipt ages.",
+      "User confirms approximately first 120s of first bag stationary; exact later movement timestamps and external ground truth unavailable.",
+      "Low IMU noise alone does not prove no translation. Armed is a software startup exclusion even when motors spin without vehicle motion.",
+      "A few initial IMU/fused messages were not recorded; observed segments reflect available rows."
+    ]
+  },
+  "bags": [
+    {
+      "bag": "hardware_20260926_161859_702449",
+      "sample_counts": {
+        "imu": 123682,
+        "local_navigation": 2396,
+        "authority": 28460,
+        "fused": 123672
+      },
+      "authority_runs": [
+        {
+          "armed": false,
+          "rc_link": false,
+          "start_bag_s": 0.200613335,
+          "end_bag_s": 1.032031686,
+          "start_stamp_s": 0.114981195,
+          "end_stamp_s": 1.003051595,
+          "samples": 101,
+          "stamp_span_s": 0.8880704
+        },
+        {
+          "armed": false,
+          "rc_link": true,
+          "start_bag_s": 1.0440548,
+          "end_bag_s": 247.694953306,
+          "start_stamp_s": 1.003051595,
+          "end_stamp_s": 247.674978891,
+          "samples": 28359,
+          "stamp_span_s": 246.671927296
+        }
+      ],
+      "fused_runs": [
+        {
+          "initialized": false,
+          "reset_counter": 1,
+          "start_bag_s": 0.052204206,
+          "end_bag_s": 2.796440418,
+          "start_stamp_s": 0.048167243,
+          "end_stamp_s": 2.792457035,
+          "samples": 1372,
+          "stamp_span_s": 2.744289792
+        },
+        {
+          "initialized": false,
+          "reset_counter": 2,
+          "start_bag_s": 2.798627663,
+          "end_bag_s": 5.796299512,
+          "start_stamp_s": 2.794456395,
+          "end_stamp_s": 5.793491275,
+          "samples": 1498,
+          "stamp_span_s": 2.99903488
+        },
+        {
+          "initialized": true,
+          "reset_counter": 2,
+          "start_bag_s": 5.798378881,
+          "end_bag_s": 227.869972399,
+          "start_stamp_s": 5.795491915,
+          "end_stamp_s": 227.605817675,
+          "samples": 110768,
+          "stamp_span_s": 221.81032576
+        },
+        {
+          "initialized": false,
+          "reset_counter": 3,
+          "start_bag_s": 227.871511025,
+          "end_bag_s": 244.794370232,
+          "start_stamp_s": 227.607823179,
+          "end_stamp_s": 244.791693899,
+          "samples": 8582,
+          "stamp_span_s": 17.18387072
+        },
+        {
+          "initialized": true,
+          "reset_counter": 3,
+          "start_bag_s": 244.796335458,
+          "end_bag_s": 247.702296197,
+          "start_stamp_s": 244.793694795,
+          "end_stamp_s": 247.699271243,
+          "samples": 1452,
+          "stamp_span_s": 2.905576448
+        }
+      ],
+      "reset_events": [
+        {
+          "bag_s": 0.052204206,
+          "stamp_s": 0.048167243,
+          "initialized": false,
+          "reset_counter": 1,
+          "readiness_reason": "Initialization requires disarmed authority and stationary, fresh navigation"
+        },
+        {
+          "bag_s": 2.798627663,
+          "stamp_s": 2.794456395,
+          "initialized": false,
+          "reset_counter": 2,
+          "readiness_reason": "Collecting stationary IMU samples; checking gravity, gyro bias and noise"
+        },
+        {
+          "bag_s": 227.871511025,
+          "stamp_s": 227.607823179,
+          "initialized": false,
+          "reset_counter": 3,
+          "readiness_reason": "EKF prediction failed; reinitialization required"
+        }
+      ],
+      "successful_initializations": [
+        {
+          "bag_s": 5.7983788810000005,
+          "stamp_s": 5.795491915,
+          "reset_counter": 2,
+          "raw_window": {
+            "bag_s": 5.798172555,
+            "stamp_s": 5.795491915,
+            "left": 1380,
+            "samples": 1499,
+            "duration_s": 3.00103552,
+            "acc_mean_norm": 9.395308374266,
+            "acc_max_axis_std": 0.021256882952,
+            "acc_mean_x": -0.272104824142,
+            "acc_std_x": 0.011793560365,
+            "acc_mean_y": 0.180129219088,
+            "acc_std_y": 0.012499942785,
+            "acc_mean_z": 9.389639603129,
+            "acc_std_z": 0.021256882952,
+            "gyro_mean_norm": 0.010435273451,
+            "gyro_max_axis_std": 0.004423592238,
+            "gyro_mean_x": -0.010067900431,
+            "gyro_std_x": 0.00107052723,
+            "gyro_mean_y": 0.000156165314,
+            "gyro_std_y": 0.001165435546,
+            "gyro_mean_z": 0.00274005936,
+            "gyro_std_z": 0.004423592238,
+            "gravity_residual": 0.411291625734,
+            "full_window": true,
+            "gyro_bias_pass": true,
+            "gyro_noise_pass": true,
+            "accel_noise_pass": true,
+            "gravity_pass": true,
+            "all_imu_pass": true
+          }
+        },
+        {
+          "bag_s": 244.796335458,
+          "stamp_s": 244.793694795,
+          "reset_counter": 3,
+          "raw_window": {
+            "bag_s": 244.79619395,
+            "stamp_s": 244.793694795,
+            "left": 120730,
+            "samples": 1499,
+            "duration_s": 3.001116928,
+            "acc_mean_norm": 9.352209214905,
+            "acc_max_axis_std": 0.021947098513,
+            "acc_mean_x": 0.629818117046,
+            "acc_std_x": 0.013140555878,
+            "acc_mean_y": -0.083897680626,
+            "acc_std_y": 0.012531256236,
+            "acc_mean_z": 9.330600597924,
+            "acc_std_z": 0.021947098513,
+            "gyro_mean_norm": 0.009572686551,
+            "gyro_max_axis_std": 0.004261860713,
+            "gyro_mean_x": -0.009267547395,
+            "gyro_std_x": 0.001120686227,
+            "gyro_mean_y": -0.000273695458,
+            "gyro_std_y": 0.00144834672,
+            "gyro_mean_z": 0.002382012573,
+            "gyro_std_z": 0.004261860713,
+            "gravity_residual": 0.454390785095,
+            "full_window": true,
+            "gyro_bias_pass": true,
+            "gyro_noise_pass": true,
+            "accel_noise_pass": true,
+            "gravity_pass": true,
+            "all_imu_pass": true
+          }
+        }
+      ],
+      "prediction_failure_evidence": [
+        {
+          "bag_s": 227.871511025,
+          "stamp_s": 227.607823179,
+          "previous_accepted_fix_stamp_ns": 1790410960604088832,
+          "elapsed_since_accepted_fix_s": 8.202381056,
+          "imu_samples_after_accepted_fix": 4096,
+          "ekf_imu_queue_capacity": 4096,
+          "navigation_rejections_before_reset": 65,
+          "code_mechanism": "EkfImu::propagatePrior returns false when queue length is 4096 and oldest IMU is newer than posterior time."
+        }
+      ],
+      "rolling_validation": {
+        "direct_windows_checked": 31,
+        "max_absolute_metric_difference": 7.469978489937912e-10
+      },
+      "observed_collection_runs": [
+        {
+          "start_bag_s": 2.798627663,
+          "end_bag_s": 5.796299512,
+          "start_stamp_s": 2.794456395,
+          "end_stamp_s": 5.793491275,
+          "span_s": 2.99903488,
+          "recorded_imu_samples": 1498,
+          "acceleration_mean_norm": 9.395294457660068,
+          "gravity_residual": 0.41130554233993166,
+          "acceleration_max_axis_std": 0.02125740520607418,
+          "gyro_mean_norm": 0.010435877999616743,
+          "gyro_max_axis_std": 0.004425063226462538
+        },
+        {
+          "start_bag_s": 227.883673342,
+          "end_bag_s": 227.97735509,
+          "start_stamp_s": 227.877340491,
+          "end_stamp_s": 227.973570379,
+          "span_s": 0.09622988799998211,
+          "recorded_imu_samples": 49,
+          "acceleration_mean_norm": 9.519234391263332,
+          "gravity_residual": 0.2873656087366676,
+          "acceleration_max_axis_std": 0.14080846370587963,
+          "gyro_mean_norm": 0.05468447074961037,
+          "gyro_max_axis_std": 0.05682735751820773
+        },
+        {
+          "start_bag_s": 228.079579519,
+          "end_bag_s": 230.380364071,
+          "start_stamp_s": 228.07573767500003,
+          "end_stamp_s": 230.377143371,
+          "span_s": 2.3014056959999607,
+          "recorded_imu_samples": 1150,
+          "acceleration_mean_norm": 9.365270900850739,
+          "gravity_residual": 0.4413290991492609,
+          "acceleration_max_axis_std": 0.2579473148149032,
+          "gyro_mean_norm": 0.05630652541973889,
+          "gyro_max_axis_std": 0.07073142932436681
+        },
+        {
+          "start_bag_s": 230.883746431,
+          "end_bag_s": 230.98339490100005,
+          "start_stamp_s": 230.880111179,
+          "end_stamp_s": 230.98031341900003,
+          "span_s": 0.10020224000001576,
+          "recorded_imu_samples": 51,
+          "acceleration_mean_norm": 9.384231353747435,
+          "gravity_residual": 0.42236864625256487,
+          "acceleration_max_axis_std": 0.06297554652020476,
+          "gyro_mean_norm": 0.04149625006435908,
+          "gyro_max_axis_std": 0.04317798008042884
+        },
+        {
+          "start_bag_s": 231.084188084,
+          "end_bag_s": 231.381355796,
+          "start_stamp_s": 231.08049005900003,
+          "end_stamp_s": 231.378095947,
+          "span_s": 0.2976058879999641,
+          "recorded_imu_samples": 150,
+          "acceleration_mean_norm": 9.396767555157181,
+          "gravity_residual": 0.40983244484281833,
+          "acceleration_max_axis_std": 0.10593886034176728,
+          "gyro_mean_norm": 0.017744662440583616,
+          "gyro_max_axis_std": 0.048377512000317126
+        },
+        {
+          "start_bag_s": 231.48359712,
+          "end_bag_s": 234.887501235,
+          "start_stamp_s": 231.480283467,
+          "end_stamp_s": 234.884121419,
+          "span_s": 3.4038379520000035,
+          "recorded_imu_samples": 1701,
+          "acceleration_mean_norm": 9.436662589653617,
+          "gravity_residual": 0.36993741034638283,
+          "acceleration_max_axis_std": 0.3105638450367417,
+          "gyro_mean_norm": 0.036833377277433736,
+          "gyro_max_axis_std": 0.1193182028839663
+        },
+        {
+          "start_bag_s": 236.693823274,
+          "end_bag_s": 237.18828446,
+          "start_stamp_s": 236.689577803,
+          "end_stamp_s": 237.185596747,
+          "span_s": 0.49601894400001356,
+          "recorded_imu_samples": 249,
+          "acceleration_mean_norm": 9.289448092796293,
+          "gravity_residual": 0.5171519072037061,
+          "acceleration_max_axis_std": 0.23606273312823858,
+          "gyro_mean_norm": 0.18352409360638636,
+          "gyro_max_axis_std": 0.13239753394629383
+        },
+        {
+          "start_bag_s": 238.995428032,
+          "end_bag_s": 241.69561500300003,
+          "start_stamp_s": 238.991950923,
+          "end_stamp_s": 241.691393611,
+          "span_s": 2.699442688000005,
+          "recorded_imu_samples": 1349,
+          "acceleration_mean_norm": 9.395126304081998,
+          "gravity_residual": 0.4114736959180014,
+          "acceleration_max_axis_std": 0.2943055481445177,
+          "gyro_mean_norm": 0.01680412808429284,
+          "gyro_max_axis_std": 0.14135495509987323
+        },
+        {
+          "start_bag_s": 241.796788168,
+          "end_bag_s": 244.794370232,
+          "start_stamp_s": 241.792577867,
+          "end_stamp_s": 244.791693899,
+          "span_s": 2.999116031999989,
+          "recorded_imu_samples": 1498,
+          "acceleration_mean_norm": 9.352225095743878,
+          "gravity_residual": 0.45437490425612204,
+          "acceleration_max_axis_std": 0.021946137207524145,
+          "gyro_mean_norm": 0.009571511534182484,
+          "gyro_max_axis_std": 0.004262121191125245
+        }
+      ],
+      "longest_observed_collection_span_s": 3.4038379520000035,
+      "imu_nonpositive_or_over_25ms_gaps": [],
+      "imu_interval_s": {
+        "n": 123681,
+        "minimum": 0.0008947200000193334,
+        "median": 0.002001151999998285,
+        "p95": 0.002003967999996803,
+        "maximum": 0.0031088639999836687
+      },
+      "initial_navigation_speed_exceedances": [],
+      "raw_imu_window_summaries": {
+        "initial_first_10s": {
+          "full_windows": 3480,
+          "all_imu_pass": 3480,
+          "failing_windows": {
+            "gyro_bias_pass": 0,
+            "gyro_noise_pass": 0,
+            "accel_noise_pass": 0,
+            "gravity_pass": 0
+          },
+          "metrics": {
+            "acc_mean_norm": {
+              "n": 3480,
+              "minimum": 9.383728535733146,
+              "median": 9.398371333571138,
+              "p95": 9.416391140249798,
+              "maximum": 9.41970014987061
+            },
+            "gravity_residual": {
+              "n": 3480,
+              "minimum": 0.38689985012938877,
+              "median": 0.4082286664288608,
+              "p95": 0.42189976077751734,
+              "maximum": 0.4228714642668532
+            },
+            "acc_max_axis_std": {
+              "n": 3480,
+              "minimum": 0.017964346730354186,
+              "median": 0.019753784280558066,
+              "p95": 0.021885286401325355,
+              "maximum": 0.02238448811787028
+            },
+            "gyro_mean_norm": {
+              "n": 3480,
+              "minimum": 0.01033879074514634,
+              "median": 0.010436575583749268,
+              "p95": 0.010623518247546856,
+              "maximum": 0.01066710599811053
+            },
+            "gyro_max_axis_std": {
+              "n": 3480,
+              "minimum": 0.004254944964296022,
+              "median": 0.00437567088704496,
+              "p95": 0.0045240885416892975,
+              "maximum": 0.004633547962382985
+            }
+          }
+        },
+        "initial_first_30s": {
+          "full_windows": 13467,
+          "all_imu_pass": 13467,
+          "failing_windows": {
+            "gyro_bias_pass": 0,
+            "gyro_noise_pass": 0,
+            "accel_noise_pass": 0,
+            "gravity_pass": 0
+          },
+          "metrics": {
+            "acc_mean_norm": {
+              "n": 13467,
+              "minimum": 9.383728535733146,
+              "median": 9.42218641514216,
+              "p95": 9.4292300760397,
+              "maximum": 9.432188535634776
+            },
+            "gravity_residual": {
+              "n": 13467,
+              "minimum": 0.3744114643652239,
+              "median": 0.38441358485783894,
+              "p95": 0.4195765268926975,
+              "maximum": 0.4228714642668532
+            },
+            "acc_max_axis_std": {
+              "n": 13467,
+              "minimum": 0.017468885599218772,
+              "median": 0.019723920308097605,
+              "p95": 0.02148122569077444,
+              "maximum": 0.02238448811787028
+            },
+            "gyro_mean_norm": {
+              "n": 13467,
+              "minimum": 0.01033879074514634,
+              "median": 0.010797097480261919,
+              "p95": 0.010945684379795305,
+              "maximum": 0.010992214891416356
+            },
+            "gyro_max_axis_std": {
+              "n": 13467,
+              "minimum": 0.004103175449434619,
+              "median": 0.004334682266546035,
+              "p95": 0.00459588433087928,
+              "maximum": 0.004644607211777477
+            }
+          }
+        },
+        "all_recording": {
+          "full_windows": 122183,
+          "all_imu_pass": 77889,
+          "failing_windows": {
+            "gyro_bias_pass": 8916,
+            "gyro_noise_pass": 44291,
+            "accel_noise_pass": 38219,
+            "gravity_pass": 2869
+          },
+          "metrics": {
+            "acc_mean_norm": {
+              "n": 122183,
+              "minimum": 6.332681712169986,
+              "median": 9.450762174902806,
+              "p95": 9.491234047973686,
+              "maximum": 9.938598441883721
+            },
+            "gravity_residual": {
+              "n": 122183,
+              "minimum": 9.067565180131965e-05,
+              "median": 0.3558378250971934,
+              "p95": 0.4696845767802095,
+              "maximum": 3.4739182878300134
+            },
+            "acc_max_axis_std": {
+              "n": 122183,
+              "minimum": 0.017468885599218772,
+              "median": 0.021341543711787325,
+              "p95": 1.071544611512563,
+              "maximum": 6.160316388315789
+            },
+            "gyro_mean_norm": {
+              "n": 122183,
+              "minimum": 0.0009855948153909583,
+              "median": 0.011660252425030306,
+              "p95": 0.3877846480387421,
+              "maximum": 0.7616051536803753
+            },
+            "gyro_max_axis_std": {
+              "n": 122183,
+              "minimum": 0.003867331948063383,
+              "median": 0.0044371944923001,
+              "p95": 0.820451109289437,
+              "maximum": 1.6916652349316423
+            }
+          }
+        },
+        "user_confirmed_static_first_120s": {
+          "full_windows": 58411,
+          "all_imu_pass": 58411,
+          "failing_windows": {
+            "gyro_bias_pass": 0,
+            "gyro_noise_pass": 0,
+            "accel_noise_pass": 0,
+            "gravity_pass": 0
+          },
+          "metrics": {
+            "acc_mean_norm": {
+              "n": 58411,
+              "minimum": 9.383728535733146,
+              "median": 9.45948989224743,
+              "p95": 9.490234932143743,
+              "maximum": 9.498975678293146
+            },
+            "gravity_residual": {
+              "n": 58411,
+              "minimum": 0.3076243217068537,
+              "median": 0.34711010775257023,
+              "p95": 0.39507685397066616,
+              "maximum": 0.4228714642668532
+            },
+            "acc_max_axis_std": {
+              "n": 58411,
+              "minimum": 0.017468885599218772,
+              "median": 0.02012462736760949,
+              "p95": 0.022103992540872766,
+              "maximum": 0.023248458823124363
+            },
+            "gyro_mean_norm": {
+              "n": 58411,
+              "minimum": 0.01033879074514634,
+              "median": 0.011390377596841847,
+              "p95": 0.011907690953719994,
+              "maximum": 0.012069668836534302
+            },
+            "gyro_max_axis_std": {
+              "n": 58411,
+              "minimum": 0.003867331948063383,
+              "median": 0.004280521048348985,
+              "p95": 0.004521324904725262,
+              "maximum": 0.00467066996640597
+            }
+          }
+        },
+        "before_late_reset_215_to_228s": {
+          "full_windows": 6492,
+          "all_imu_pass": 1061,
+          "failing_windows": {
+            "gyro_bias_pass": 0,
+            "gyro_noise_pass": 5428,
+            "accel_noise_pass": 5270,
+            "gravity_pass": 67
+          },
+          "metrics": {
+            "acc_mean_norm": {
+              "n": 6492,
+              "minimum": 8.951393289071166,
+              "median": 9.379301969181332,
+              "p95": 9.653760315532557,
+              "maximum": 9.938598441883721
+            },
+            "gravity_residual": {
+              "n": 6492,
+              "minimum": 9.067565180131965e-05,
+              "median": 0.42729803081866713,
+              "p95": 0.5779203619113805,
+              "maximum": 0.855206710928833
+            },
+            "acc_max_axis_std": {
+              "n": 6492,
+              "minimum": 0.019999124545269892,
+              "median": 0.8612407096707517,
+              "p95": 1.8597968888881076,
+              "maximum": 1.8682943304389497
+            },
+            "gyro_mean_norm": {
+              "n": 6492,
+              "minimum": 0.003085264141334197,
+              "median": 0.03945971478383779,
+              "p95": 0.07742313756620121,
+              "maximum": 0.10244726682463914
+            },
+            "gyro_max_axis_std": {
+              "n": 6492,
+              "minimum": 0.004278603497196946,
+              "median": 0.24355920327477595,
+              "p95": 0.4263243704306507,
+              "maximum": 0.4296663346510291
+            }
+          }
+        },
+        "after_late_reset_228_to_248s": {
+          "full_windows": 9839,
+          "all_imu_pass": 2467,
+          "failing_windows": {
+            "gyro_bias_pass": 0,
+            "gyro_noise_pass": 7372,
+            "accel_noise_pass": 6349,
+            "gravity_pass": 630
+          },
+          "metrics": {
+            "acc_mean_norm": {
+              "n": 9839,
+              "minimum": 8.81611651833812,
+              "median": 9.354240717443465,
+              "p95": 9.488818251469691,
+              "maximum": 9.684096637570635
+            },
+            "gravity_residual": {
+              "n": 9839,
+              "minimum": 0.12250336242936477,
+              "median": 0.4523592825565341,
+              "p95": 0.7809248137695004,
+              "maximum": 0.9904834816618795
+            },
+            "acc_max_axis_std": {
+              "n": 9839,
+              "minimum": 0.020868151883021074,
+              "median": 0.24762843172636803,
+              "p95": 1.1350816518861746,
+              "maximum": 1.3628722115150362
+            },
+            "gyro_mean_norm": {
+              "n": 9839,
+              "minimum": 0.0009855948153909583,
+              "median": 0.035237439257512666,
+              "p95": 0.08447098212079611,
+              "maximum": 0.12121670722363236
+            },
+            "gyro_max_axis_std": {
+              "n": 9839,
+              "minimum": 0.00419359922842969,
+              "median": 0.09007995537169676,
+              "p95": 0.32884636175971216,
+              "maximum": 0.39827988241871615
+            }
+          }
+        }
+      },
+      "preconditions_bag_order_proxy_samples": 110248
+    },
+    {
+      "bag": "hardware_20260926_162634_732735",
+      "sample_counts": {
+        "imu": 82403,
+        "local_navigation": 1546,
+        "authority": 18836,
+        "fused": 82398
+      },
+      "authority_runs": [
+        {
+          "armed": false,
+          "rc_link": false,
+          "start_bag_s": 0.050940907,
+          "end_bag_s": 3.391137955,
+          "start_stamp_s": -1790411195.8762496,
+          "end_stamp_s": 3.360276953,
+          "samples": 210,
+          "stamp_span_s": 1790411199.2365265
+        },
+        {
+          "armed": false,
+          "rc_link": true,
+          "start_bag_s": 3.401537875,
+          "end_bag_s": 10.911437975,
+          "start_stamp_s": 3.360276953,
+          "end_stamp_s": 10.867191001,
+          "samples": 859,
+          "stamp_span_s": 7.506914048
+        },
+        {
+          "armed": true,
+          "rc_link": true,
+          "start_bag_s": 10.921568393,
+          "end_bag_s": 163.551262018,
+          "start_stamp_s": 10.880299481,
+          "end_stamp_s": 163.507070425,
+          "samples": 17558,
+          "stamp_span_s": 152.626770944
+        },
+        {
+          "armed": false,
+          "rc_link": true,
+          "start_bag_s": 163.561733621,
+          "end_bag_s": 165.353299806,
+          "start_stamp_s": 163.520482265,
+          "end_stamp_s": 165.313336537,
+          "samples": 209,
+          "stamp_span_s": 1.792854272
+        }
+      ],
+      "fused_runs": [
+        {
+          "initialized": false,
+          "reset_counter": 2,
+          "start_bag_s": 0.400200364,
+          "end_bag_s": 7.281161851,
+          "start_stamp_s": 0.396176601,
+          "end_stamp_s": 7.277820121,
+          "samples": 3439,
+          "stamp_span_s": 6.88164352
+        },
+        {
+          "initialized": false,
+          "reset_counter": 3,
+          "start_bag_s": 7.284825994,
+          "end_bag_s": 165.354071783,
+          "start_stamp_s": 7.279823321,
+          "end_stamp_s": 165.350995161,
+          "samples": 78959,
+          "stamp_span_s": 158.07117184
+        }
+      ],
+      "reset_events": [
+        {
+          "bag_s": 0.400200364,
+          "stamp_s": 0.396176601,
+          "initialized": false,
+          "reset_counter": 2,
+          "readiness_reason": "Initialization requires disarmed authority and stationary, fresh navigation"
+        },
+        {
+          "bag_s": 7.284825994,
+          "stamp_s": 7.279823321,
+          "initialized": false,
+          "reset_counter": 3,
+          "readiness_reason": "Collecting stationary IMU samples; checking gravity, gyro bias and noise"
+        }
+      ],
+      "successful_initializations": [],
+      "prediction_failure_evidence": [],
+      "rolling_validation": {
+        "direct_windows_checked": 31,
+        "max_absolute_metric_difference": 2.3702584686646766e-10
+      },
+      "observed_collection_runs": [
+        {
+          "start_bag_s": 7.284825994,
+          "end_bag_s": 7.983166888,
+          "start_stamp_s": 7.279823321,
+          "end_stamp_s": 7.979972057,
+          "span_s": 0.700148736,
+          "recorded_imu_samples": 351,
+          "acceleration_mean_norm": 9.425419892203363,
+          "gravity_residual": 0.38118010779663614,
+          "acceleration_max_axis_std": 0.01941952007820367,
+          "gyro_mean_norm": 0.010285869665232332,
+          "gyro_max_axis_std": 0.004485103405571705
+        },
+        {
+          "start_bag_s": 8.083254538,
+          "end_bag_s": 10.38623787,
+          "start_stamp_s": 8.080162777,
+          "end_stamp_s": 10.382020057,
+          "span_s": 2.30185728,
+          "recorded_imu_samples": 1151,
+          "acceleration_mean_norm": 9.417940309694828,
+          "gravity_residual": 0.3886596903051718,
+          "acceleration_max_axis_std": 0.021668456895081702,
+          "gyro_mean_norm": 0.010255382732442241,
+          "gyro_max_axis_std": 0.004266583625297883
+        },
+        {
+          "start_bag_s": 10.488069523,
+          "end_bag_s": 10.584028412,
+          "start_stamp_s": 10.484154073,
+          "end_stamp_s": 10.580322009,
+          "span_s": 0.09616793600000051,
+          "recorded_imu_samples": 49,
+          "acceleration_mean_norm": 9.428880426297273,
+          "gravity_residual": 0.377719573702727,
+          "acceleration_max_axis_std": 0.0159062802675116,
+          "gyro_mean_norm": 0.010359311928388714,
+          "gyro_max_axis_std": 0.005113692039910628
+        },
+        {
+          "start_bag_s": 10.78613683,
+          "end_bag_s": 10.884055936,
+          "start_stamp_s": 10.782702553,
+          "end_stamp_s": 10.880919513,
+          "span_s": 0.09821696000000024,
+          "recorded_imu_samples": 50,
+          "acceleration_mean_norm": 9.42348886880807,
+          "gravity_residual": 0.38311113119192974,
+          "acceleration_max_axis_std": 0.02317872328920029,
+          "gyro_mean_norm": 0.011307978845194973,
+          "gyro_max_axis_std": 0.004459447149381863
+        },
+        {
+          "start_bag_s": 163.562768132,
+          "end_bag_s": 165.35407178300002,
+          "start_stamp_s": 163.558927321,
+          "end_stamp_s": 165.350995161,
+          "span_s": 1.7920678399999872,
+          "recorded_imu_samples": 896,
+          "acceleration_mean_norm": 9.410356791739831,
+          "gravity_residual": 0.39624320826016834,
+          "acceleration_max_axis_std": 0.03139154065492084,
+          "gyro_mean_norm": 0.010325863793265649,
+          "gyro_max_axis_std": 0.004298518394263934
+        }
+      ],
+      "longest_observed_collection_span_s": 2.30185728,
+      "imu_nonpositive_or_over_25ms_gaps": [],
+      "imu_interval_s": {
+        "n": 82402,
+        "minimum": 0.0006021119999957136,
+        "median": 0.0020011520000000615,
+        "p95": 0.0020042240000037737,
+        "maximum": 0.003396863999995503
+      },
+      "initial_navigation_speed_exceedances": [
+        {
+          "bag_s": 7.982674049,
+          "stamp_s": 7.915099097,
+          "speed": 0.310805405358
+        },
+        {
+          "bag_s": 10.38555425,
+          "stamp_s": 10.314168281,
+          "speed": 0.481975103091
+        },
+        {
+          "bag_s": 10.584898071,
+          "stamp_s": 10.516397785,
+          "speed": 0.327566787083
+        },
+        {
+          "bag_s": 10.684851761,
+          "stamp_s": 10.614541785,
+          "speed": 0.37762415177
+        },
+        {
+          "bag_s": 10.885772408,
+          "stamp_s": 10.814865881,
+          "speed": 0.405585995813
+        },
+        {
+          "bag_s": 11.284886077,
+          "stamp_s": 11.229353689,
+          "speed": 0.317017349683
+        }
+      ],
+      "raw_imu_window_summaries": {
+        "initial_first_10s": {
+          "full_windows": 3305,
+          "all_imu_pass": 3305,
+          "failing_windows": {
+            "gyro_bias_pass": 0,
+            "gyro_noise_pass": 0,
+            "accel_noise_pass": 0,
+            "gravity_pass": 0
+          },
+          "metrics": {
+            "acc_mean_norm": {
+              "n": 3305,
+              "minimum": 9.415515308098447,
+              "median": 9.418648340573572,
+              "p95": 9.422550100314627,
+              "maximum": 9.423083818728395
+            },
+            "gravity_residual": {
+              "n": 3305,
+              "minimum": 0.38351618127160414,
+              "median": 0.3879516594264274,
+              "p95": 0.3905385327706362,
+              "maximum": 0.39108469190155226
+            },
+            "acc_max_axis_std": {
+              "n": 3305,
+              "minimum": 0.016880074320158298,
+              "median": 0.021083663733855923,
+              "p95": 0.02244137303995328,
+              "maximum": 0.022739149392030526
+            },
+            "gyro_mean_norm": {
+              "n": 3305,
+              "minimum": 0.010228189372796117,
+              "median": 0.01036419162033767,
+              "p95": 0.010437253094918195,
+              "maximum": 0.010463566615385767
+            },
+            "gyro_max_axis_std": {
+              "n": 3305,
+              "minimum": 0.004209750301196766,
+              "median": 0.004306167797604244,
+              "p95": 0.004451435316116511,
+              "maximum": 0.0044969945563147
+            }
+          }
+        },
+        "initial_first_30s": {
+          "full_windows": 13295,
+          "all_imu_pass": 13295,
+          "failing_windows": {
+            "gyro_bias_pass": 0,
+            "gyro_noise_pass": 0,
+            "accel_noise_pass": 0,
+            "gravity_pass": 0
+          },
+          "metrics": {
+            "acc_mean_norm": {
+              "n": 13295,
+              "minimum": 9.415515308098447,
+              "median": 9.43372668839025,
+              "p95": 9.440872678409214,
+              "maximum": 9.441760222854752
+            },
+            "gravity_residual": {
+              "n": 13295,
+              "minimum": 0.3648397771452476,
+              "median": 0.3728733116097498,
+              "p95": 0.38998251379342913,
+              "maximum": 0.39108469190155226
+            },
+            "acc_max_axis_std": {
+              "n": 13295,
+              "minimum": 0.016880074320158298,
+              "median": 0.031198844433426656,
+              "p95": 0.06141318200399331,
+              "maximum": 0.06452013661801874
+            },
+            "gyro_mean_norm": {
+              "n": 13295,
+              "minimum": 0.010106833975272454,
+              "median": 0.010393691253241273,
+              "p95": 0.01063676823154964,
+              "maximum": 0.010730284315959756
+            },
+            "gyro_max_axis_std": {
+              "n": 13295,
+              "minimum": 0.004209750301196766,
+              "median": 0.00472545347978742,
+              "p95": 0.004918803781788208,
+              "maximum": 0.004985279665779371
+            }
+          }
+        },
+        "all_recording": {
+          "full_windows": 80904,
+          "all_imu_pass": 66608,
+          "failing_windows": {
+            "gyro_bias_pass": 0,
+            "gyro_noise_pass": 14296,
+            "accel_noise_pass": 13355,
+            "gravity_pass": 966
+          },
+          "metrics": {
+            "acc_mean_norm": {
+              "n": 80904,
+              "minimum": 9.052925468259355,
+              "median": 9.438230041142662,
+              "p95": 9.517558105028884,
+              "maximum": 9.788805030946886
+            },
+            "gravity_residual": {
+              "n": 80904,
+              "minimum": 0.01779496905311362,
+              "median": 0.3683699588573379,
+              "p95": 0.43470224351257863,
+              "maximum": 0.7536745317406446
+            },
+            "acc_max_axis_std": {
+              "n": 80904,
+              "minimum": 0.016880074320158298,
+              "median": 0.031137995514370777,
+              "p95": 0.8242237396994261,
+              "maximum": 1.1498553926142563
+            },
+            "gyro_mean_norm": {
+              "n": 80904,
+              "minimum": 0.004760277700678928,
+              "median": 0.010659173601883853,
+              "p95": 0.05009128006753931,
+              "maximum": 0.11091568079282149
+            },
+            "gyro_max_axis_std": {
+              "n": 80904,
+              "minimum": 0.004209750301196766,
+              "median": 0.004852995714393598,
+              "p95": 0.21811760476515688,
+              "maximum": 0.2680349837932606
+            }
+          }
+        }
+      },
+      "preconditions_bag_order_proxy_samples": 2496
+    }
+  ]
+}

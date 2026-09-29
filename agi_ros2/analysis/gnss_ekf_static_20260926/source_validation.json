@@ -1,0 +1,70 @@
+{
+  "bag": "/home/sia/agilicious_internal-main/bags/hardware_20260926_161859_702449",
+  "start_ns": 1790410741198646709,
+  "duration_s": 247.706965228,
+  "total_messages": 531593,
+  "sha256": {
+    "hardware_20260926_161859_702449_0.mcap": "7bf147ece84d8d1047ead6bf922c8dcf672fc02aab1c3fb3fe9b1755b20203a6"
+  },
+  "stored_crcs_checked": true,
+  "all_counts_match_metadata": true,
+  "cached_tables_verified": {
+    "/sensors/navigation": {
+      "rows": 2425,
+      "columns": 21,
+      "all_values_match": true
+    },
+    "/sensors/mavlink/status": {
+      "rows": 249,
+      "columns": 61,
+      "all_values_match": true
+    },
+    "/parameter_events": {
+      "rows": 15,
+      "columns": 22,
+      "all_values_match": true
+    },
+    "/sensors/imu": {
+      "rows": 123682,
+      "columns": 42,
+      "all_values_match": true
+    },
+    "/fused_state": {
+      "rows": 123672,
+      "columns": 54,
+      "all_values_match": true
+    },
+    "/rosout": {
+      "rows": 36,
+      "columns": 9,
+      "all_values_match": true
+    },
+    "/authority": {
+      "rows": 28460,
+      "columns": 13,
+      "all_values_match": true
+    },
+    "/health": {
+      "rows": 28459,
+      "columns": 16,
+      "all_values_match": true
+    },
+    "/navigation/status": {
+      "rows": 248,
+      "columns": 3,
+      "all_values_match": true
+    },
+    "/navigation/origin": {
+      "rows": 246,
+      "columns": 13,
+      "all_values_match": true
+    },
+    "/sensors/local_navigation": {
+      "rows": 2396,
+      "columns": 32,
+      "all_values_match": true
+    }
+  },
+  "stationary_interval": "User-confirmed log receipt time 0 <= bag_s < 100; no external position truth",
+  "runtime_identity_limit": "No full fusion parameter snapshot or running binary identity in the bag"
+}
