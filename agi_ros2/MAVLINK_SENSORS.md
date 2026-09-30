@@ -25,7 +25,8 @@ The launch reads `hardware.yaml` (no separate sensor parameter file). Edit its `
 ```sh
 ros2 launch agi_ros2 mavlink_sensors.launch.py \
   device:=/dev/serial/by-id/YOUR_MAVLINK_UART baud:=921600 \
-  mavlink_gps_mode:=gnss mavlink_imu_rate_hz:=500 mavlink_gps_rate_hz:=10 mavlink_attitude_rate_hz:=100
+  mavlink_gps_mode:=gnss mavlink_imu_rate_hz:=500 mavlink_gps_rate_hz:=10 \
+  mavlink_attitude_rate_hz:=100 mavlink_baro_rate_hz:=40
 ```
 
 For standalone sensor-only diagnostics, `gps_mode:=rtk` (or direct-node `-p gps_mode:=rtk`) requires a real `fix_type=6` before diagnostics report GPS ready;
@@ -43,7 +44,7 @@ For combined hardware diagnostics before the vehicle model is available:
 ```
 
 This starts sensor/fusion, read-only MSP and evidence nodes without an MPC/output node.
-Once the real model is configured, `mode:=hardware` starts the six-node GNSS pipeline;
+Once the real model is configured, `mode:=hardware` starts the six-node GNSS pipeline plus a barometer static TF publisher;
 `hardware.yaml` defaults to shadow computation. Explicit `shadow_only:=false` is the output-capable
 entrypoint and additionally requires the measured thrust table and all readiness evidence.
 See [README.md](README.md) and [SHADOW_EVALUATION.md](SHADOW_EVALUATION.md).
@@ -85,6 +86,13 @@ rate before this node starts (for example 250 Hz). Check the command ACK and the
 measured unique sample timestamps; an accepted request alone does not prove the
 requested rate or the physical sensor sampling frequency.
 
+The matching FC barometer firmware sends independent `SCALED_PRESSURE` (29) samples,
+targeting 40 Hz. It reports temperature-compensated absolute pressure from the driver,
+before any FC altitude zeroing or GPS/IMU fusion. The ROS driver requests message 29 in
+the same acknowledged rate sequence as IMU/GPS/attitude. Set `mavlink_baro_rate_hz:=0`
+to request interval `-1` (stop); 40 requests 25000 us. Sensor-only launch also accepts
+`baro_rate_hz:=20`. These requests do not change the physical barometer sampling rate.
+
 ## Topics and conversions
 
 Names below are relative to the node namespace (root by default).
@@ -96,6 +104,9 @@ Names below are relative to the node namespace (root by default).
 | `sensors/gps/velocity` | `geometry_msgs/TwistStamped` | `gps_enu`, East/North/Up m/s |
 | `sensors/fc_heading` | `agi_ros2/Heading` | FC estimated yaw, ENU radians, with field-valid flag |
 | `sensors/fc_attitude` | `geometry_msgs/QuaternionStamped` | FLU→ENU rotation; parent `gps_enu`, optional |
+| `sensors/baro/pressure` | `sensor_msgs/FluidPressure` | `baro_link`, absolute pressure in Pa; variance in Pa² |
+| `sensors/baro/temperature` | `sensor_msgs/Temperature` | Same acquisition stamp, chip temperature in °C; variance in °C² |
+| `sensors/baro/sample` | `agi_ros2/Barometer` | Atomic pressure, source session, clock alignment and validity for fusion |
 | `sensors/mavlink/status` | `diagnostic_msgs/DiagnosticArray` | reliable 1 Hz link, sync, fix grade and rate diagnostics |
 
 Sensor topics use SensorDataQoS (best effort, volatile). FRD→FLU negates Y/Z for
@@ -111,6 +122,23 @@ unreferenced without a reliable heading source; COG is not stationary heading.
 The FC must be configured with its actual board alignment so the reported frame
 really is vehicle `base_link`; antenna offsets/extrinsic transforms are the
 integrator's responsibility. The driver does not create an `odom` origin or TF.
+The hardware launch supplies a zero `base_link` → `baro_link` static transform.
+This is an **unmeasured co-location approximation**, not a surveyed installation offset.
+The scalar pressure measurement requires no FRD/FLU sign change. Fusion currently has
+no barometer lever-arm correction; changing TF alone does not add one.
+
+Pressure conversion is `press_abs * 100` (hPa → Pa); temperature conversion is
+`temperature * 0.01` (centidegrees → °C). Both outputs reuse one accepted acquisition
+stamp. `baro_pressure_variance_pa2` and `baro_temperature_variance_c2` default to 0,
+meaning unknown variance. The fusion node supplies a separate positive pressure-noise
+fallback; zero must not become a zero-noise EKF observation. Chip temperature is not
+the average atmospheric-column temperature and is not used as such by the height model.
+
+`sensors/baro/sample` uses reliable, volatile QoS with depth 100. Fusion subscribes to
+this atomic topic rather than joining `FluidPressure` with a 1 Hz diagnostic. Valid
+events carry the measurement timestamp and source session. Invalid events carry local
+detection time, `valid=false`, NaN pressure and a reason; that time is never interpreted
+as a fresh pressure sample. Pressure/temperature remain SensorDataQoS topics for inspection.
 
 GPS velocity is published only for a matching valid GPS_RAW_INT solution (same
 boot millisecond). The two MAVLink messages are paired in a bounded queue, so
@@ -131,7 +159,10 @@ diagnostics. MSL and ellipsoid height are never silently interchanged.
 
 IMU timestamps are captured after successful calibrated/filtered sensor updates,
 with the latest filtered gyro snapshot. GPS timestamps are FC complete-solution
-update times. Neither is a sensor hardware timestamp; GPS serial/module latency
+update times. Pressure timestamps are driver read/compensation completion times,
+mapped from the message's wrapped 32-bit `time_boot_ms` using TIMESYNC. They are not
+ADC conversion-start or conversion-midpoint times; sensor conversion delay remains.
+None is a sensor hardware timestamp; GPS serial/module latency
 and sensor filter delays remain. Frames are not a lossless IMU sample archive.
 The FC extends its microsecond counter to 64 bits; GPS millisecond message fields
 retain their standard 32-bit wrap behavior.
@@ -147,7 +178,8 @@ ROS/monotonic relationship clear the epoch, pairing queues and sample history.
 Missing sync for 2 s invalidates it; link timeout is 2 s. UART opens and reconnects
 use exclusive access, bounded RX/TX queues and partial-write handling. Reconnect
 repeats synchronization and rate requests. Duplicate/out-of-order samples and
-stale samples are discarded (IMU older than 50 ms; other streams older than 500 ms).
+stale samples are discarded (IMU older than 50 ms, pressure older than the independent
+`baro_max_age_s` default 250 ms; other streams older than 500 ms).
 Future stamps beyond 20 ms are discarded. These adapter limits do not relax the
 existing fusion/control freshness thresholds. Physical end-to-end latency must
 still fit those stricter thresholds before attempting closed-loop operation.
@@ -182,6 +214,15 @@ No physical flight controller is opened. Betaflight's separate SITL harness test
 500 Hz fresh-sample output and verifies that a 50 Hz source remains near 50 Hz.
 Physical H743/UART throughput, actual GNSS latency, PPS synchronization and flight
 behavior are not established by these tests.
+
+For barometer hardware validation, inspect `/sensors/baro/pressure`, temperature and
+sample together with `/sensors/mavlink/status` and `/fusion/baro/status`. Check unique
+acquisition frequency, units, source sessions, read age and pressure decreasing during
+a slow lift. Exercise stream stop/restart, invalid pressure, disconnect and FC restart.
+The default recorder uses `--all --include-hidden-topics`, which includes these topics
+and `/tf_static`. See [SHADOW_EVALUATION.md](SHADOW_EVALUATION.md#气压高度融合) for the
+fusion model, reference uncertainty and shadow comparison procedure. A passed ACK,
+software build or pseudo-UART test is not a physical rate or height-accuracy measurement.
 
 
 ## Heading from GLOBAL_POSITION_INT.hdg

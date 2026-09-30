@@ -8,7 +8,7 @@ foreach(dep diagnostic_msgs rclcpp sensor_msgs geometry_msgs nav_msgs std_msgs r
 endforeach()
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Rtk.msg" "msg/Authority.msg" "msg/Health.msg"
-  "msg/Navigation.msg" "msg/LocalNavigation.msg" "msg/NavigationOrigin.msg"
+  "msg/Navigation.msg" "msg/LocalNavigation.msg" "msg/NavigationOrigin.msg" "msg/Barometer.msg"
   "msg/ComputationStatus.msg" "msg/MspState.msg"
   "msg/Heading.msg" "msg/FusedState.msg" "msg/SafetyEvidence.msg"
   "msg/ControlCommand.msg" "msg/OutputStatus.msg" "msg/MspEvent.msg"
@@ -47,6 +47,7 @@ foreach(target state_fusion_node control_node command_output_node)
     LINK_FLAGS "-Wl,--disable-new-dtags")
   install(TARGETS ${target} DESTINATION lib/${PROJECT_NAME})
 endforeach()
+ament_target_dependencies(state_fusion_node diagnostic_msgs)
 set_target_properties(agilib acados_mpc PROPERTIES INSTALL_RPATH "$ORIGIN;${ACADOS_ROOT}/lib" LINK_FLAGS "-Wl,--disable-new-dtags")
 install(TARGETS agilib acados_mpc LIBRARY DESTINATION lib ARCHIVE DESTINATION lib)
 add_executable(betaflight_msp_node src/msp_node.cpp src/msp_telemetry.cpp

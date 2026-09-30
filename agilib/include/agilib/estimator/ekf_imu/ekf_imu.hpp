@@ -32,6 +32,17 @@ public:
 		uint64_t rejected_updates{0};
 		bool valid{false};
 	};
+	struct BarometerQuality {
+		// Last accepted barometer time; bias and variance describe the current posterior.
+		Scalar stamp{NAN};
+		Scalar innovation_squared{NAN};
+		Scalar innovation{NAN};
+		Scalar bias{NAN};
+		Scalar bias_variance{NAN};
+		uint64_t accepted_updates{0};
+		uint64_t rejected_updates{0};
+		bool valid{false};
+	};
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
   EkfImu(const std::shared_ptr<EkfImuParameters>& params =
            std::shared_ptr<EkfImuParameters>());
@@ -53,6 +64,15 @@ public:
 
 	// Posterior covariance and innovation at stamp; not a claim of convergence.
 	NavigationQuality navigationQuality();
+	// ENU height in metres, independent white measurement variance in m^2 and a one-dimensional NIS limit.
+	// Model: height = position.z + barometer bias + noise. GNSS may update at the same timestamp.
+	bool addBaro(Scalar time, Scalar height, Scalar variance, Scalar nis_limit);
+	// Reset an independently known bias; this does not align a pressure reference derived from this EKF's height.
+	bool resetBaroBias(Scalar variance);
+	// Anchor a relative pressure reference to the estimated height while preserving their correlation.
+	// independent_variance is pressure-reference/model uncertainty only, in m^2; height receives the anchor.
+	bool alignBarometerReference(Scalar time, Scalar independent_variance, Scalar* height);
+	BarometerQuality barometerQuality();
 
   bool addMotorSpeeds(const Vector<4>& speeds) override;
 
@@ -92,7 +112,8 @@ private:
     BACCY = 14,
     BACCZ = 15,
     NBACC = 3,
-    SIZE = 16,
+		BARO_BIAS = 16,
+		SIZE = 17,
   };
 
   using StateVector = Vector<IDX::SIZE>;
@@ -107,6 +128,7 @@ private:
   bool updatePose(const Pose& pose);
   bool propagatePrior(const Scalar time);
   bool propagatePriorAndCovariance(const Scalar time);
+	bool normalizeCorrection(StateVector* state, StateMatrix* covariance) const;
   bool vectorToState(const Scalar t, const StateVector& x,
                      QuadState* const state) const;
   bool stateToVector(const QuadState& state, Scalar* const t,
@@ -130,6 +152,9 @@ private:
 	Scalar _prediction_time{NAN};
 	StateVector _prediction = StateVector::Zero();
 	NavigationQuality _navigation_quality;
+	BarometerQuality _barometer_quality;
+	Scalar _last_rtk_time{NAN};
+	friend class EkfImuTestPeer;
   Vector<4> motor_speeds_{0, 0, 0, 0};
 
   // Thread Safety

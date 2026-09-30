@@ -103,6 +103,24 @@ bridge:
   hover_throttle: 0.5
   min_check: 1050
 fusion:
+  # Initial shadow-evaluation values, not noise or delay measured on this vehicle.
+  # GNSS still supplies the height datum and all navigation readiness evidence.
+  baro_enabled: true
+  observation_delay: 0.20
+  baro_max_age: 0.25
+  # Fallback when FluidPressure/Barometer reports unknown pressure variance (0).
+  baro_pressure_variance_pa2: 4.0
+  baro_min_pressure_pa: 30000.0
+  baro_max_pressure_pa: 120000.0
+  baro_model_variance: 0.25
+  baro_nis_threshold: 10.828
+  baro_reference_duration: 2.0
+  baro_reference_min_samples: 40
+  baro_reference_max_stddev_pa: 15.0
+  baro_reference_max_vertical_stddev: 0.3
+  # Continuous bias random-walk spectral density, m^2/s; initial bias variance, m^2.
+  baro_bias_random_walk: 0.01
+  baro_reference_variance: 4.0
   imu_acceleration_variance: 0.1
   imu_angular_velocity_variance: 0.0001
   ekf_process_position_variance: [1.0e-6, 1.0e-6, 1.0e-6]
@@ -157,6 +175,11 @@ mavlink:
   imu_rate_hz: 500
   gps_rate_hz: 10
   attitude_rate_hz: 0
+  baro_rate_hz: 40
+  baro_max_age_s: 0.25
+  # Zero means unknown; the fusion node uses its explicit positive fallback.
+  baro_pressure_variance_pa2: 0.0
+  baro_temperature_variance_c2: 0.0
 navigation:
   # M1025 GPS + IST8310 magnetometer (operator report, 2026-09-24).
   # The first bag was a handheld walk, not a stationary calibration.

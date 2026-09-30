@@ -90,6 +90,8 @@ bool EkfImu::init(const QuadState& state) {
 	P_ = Q_init_;
 	_prediction_time = NAN;
 	_navigation_quality = NavigationQuality{};
+	_barometer_quality = BarometerQuality{};
+	_last_rtk_time = NAN;
 	stateToVector(state, &t_posterior_, &posterior_);
 	t_prior_ = t_posterior_;
 	prior_ = posterior_;
@@ -150,12 +152,16 @@ bool EkfImu::addRtk(const Scalar t, const Vector<3>& position, const Vector<3>& 
 	    (heading_valid && (!std::isfinite(heading) || !std::isfinite(heading_variance) || heading_variance <= 0)))
 		return false;
 	std::lock_guard<std::mutex> lock(mutex_);
-	if (!std::isfinite(t_posterior_) || t <= t_posterior_ || imus_.empty() || t > imus_.back().t) return false;
+	if (!std::isfinite(t_posterior_) || t < t_posterior_ || (std::isfinite(_last_rtk_time) && t <= _last_rtk_time) || imus_.empty() ||
+	    t > imus_.back().t)
+		return false;
 	const StateMatrix saved_covariance = P_;
+	const StateVector saved_prior = prior_;
+	const Scalar saved_time = t_prior_;
 	const auto reject = [&]() {
 		P_ = saved_covariance;
-		t_prior_ = t_posterior_;
-		prior_ = posterior_;
+		t_prior_ = saved_time;
+		prior_ = saved_prior;
 		++_navigation_quality.rejected_updates;
 		return false;
 	};
@@ -194,23 +200,14 @@ bool EkfImu::addRtk(const Scalar t, const Vector<3>& position, const Vector<3>& 
 		return reject();
 	const Matrix<IDX::SIZE, 7> K = P_ * H.transpose() * factor.solve(Matrix<7, 7>::Identity());
 	StateVector corrected = prior_ - K * residual;
-	if (!corrected.allFinite() || corrected.segment<4>(ATT).norm() < 1e-8) {
-		return reject();
-	}
 	// Joseph form followed by the quaternion normalization Jacobian.
 	const StateMatrix A = StateMatrix::Identity() - K * H;
-	const StateMatrix covariance = A * P_ * A.transpose() + K * R * K.transpose();
-	if (!covariance.allFinite()) {
-		return reject();
-	}
-	const Vector<4> q = corrected.segment<4>(ATT).normalized();
-	StateMatrix J = StateMatrix::Identity();
-	J.block<4, 4>(ATT, ATT) = (Matrix<4, 4>::Identity() - q * q.transpose()) / corrected.segment<4>(ATT).norm();
-	P_ = J * covariance * J.transpose();
-	P_ = (0.5 * (P_ + P_.transpose())).eval();
-	corrected.segment<4>(ATT) = q;
+	StateMatrix covariance = A * P_ * A.transpose() + K * R * K.transpose();
+	if (!normalizeCorrection(&corrected, &covariance)) return reject();
+	P_ = covariance;
 	posterior_ = prior_ = corrected;
 	t_posterior_ = t_prior_ = t;
+	_last_rtk_time = t;
 	_prediction_time = NAN;
 	++_navigation_quality.accepted_updates;
 	while (imus_.size() > 1 && imus_[1].t <= t) imus_.pop_front();
@@ -233,6 +230,129 @@ EkfImu::NavigationQuality EkfImu::navigationQuality() {
 	result.valid = std::isfinite(result.stamp) && result.position_variance.allFinite() && result.velocity_variance.allFinite() &&
 	               (result.position_variance.array() >= 0).all() && (result.velocity_variance.array() >= 0).all() &&
 	               std::isfinite(result.heading_variance) && result.heading_variance >= 0;
+	return result;
+}
+
+bool EkfImu::normalizeCorrection(StateVector* state, StateMatrix* covariance) const {
+	if (!state->allFinite() || !covariance->allFinite()) return false;
+	const Scalar norm = state->segment<4>(ATT).norm();
+	if (!std::isfinite(norm) || norm < 1e-8) return false;
+	const Vector<4> q = state->segment<4>(ATT) / norm;
+	StateMatrix jacobian = StateMatrix::Identity();
+	jacobian.block<4, 4>(ATT, ATT) = (Matrix<4, 4>::Identity() - q * q.transpose()) / norm;
+	*covariance = (jacobian * *covariance * jacobian.transpose()).eval();
+	*covariance = (0.5 * (*covariance + covariance->transpose())).eval();
+	state->segment<4>(ATT) = q;
+	return covariance->allFinite();
+}
+
+bool EkfImu::addBaro(const Scalar time, const Scalar height, const Scalar variance, const Scalar nis_limit) {
+	if (!std::isfinite(time) || !std::isfinite(height) || !std::isfinite(variance) || variance <= 0 || !(nis_limit > 0)) return false;
+	std::lock_guard<std::mutex> lock(mutex_);
+	if (!std::isfinite(t_posterior_) || time < t_posterior_ ||
+	    (std::isfinite(_barometer_quality.stamp) && time <= _barometer_quality.stamp) || imus_.empty() || time > imus_.back().t)
+		return false;
+	const StateMatrix saved_covariance = P_;
+	const StateVector saved_prior = prior_;
+	const Scalar saved_time = t_prior_;
+	const auto reject = [&]() {
+		P_ = saved_covariance;
+		prior_ = saved_prior;
+		t_prior_ = saved_time;
+		++_barometer_quality.rejected_updates;
+		return false;
+	};
+	prior_ = posterior_;
+	t_prior_ = t_posterior_;
+	if (!propagatePriorAndCovariance(time)) return reject();
+	Matrix<1, IDX::SIZE> observation = Matrix<1, IDX::SIZE>::Zero();
+	observation(POSZ) = 1;
+	observation(BARO_BIAS) = 1;
+	const Scalar residual = prior_(POSZ) + prior_(BARO_BIAS) - height;
+	const Scalar innovation_variance = (observation * P_ * observation.transpose())(0, 0) + variance;
+	_barometer_quality.innovation = residual;
+	_barometer_quality.innovation_squared = NAN;
+	if (!std::isfinite(innovation_variance) || innovation_variance <= 0) return reject();
+	_barometer_quality.innovation_squared = residual * residual / innovation_variance;
+	if (!std::isfinite(_barometer_quality.innovation_squared) || _barometer_quality.innovation_squared < 0 ||
+	    _barometer_quality.innovation_squared > nis_limit)
+		return reject();
+	const StateVector gain = P_ * observation.transpose() / innovation_variance;
+	StateVector corrected = prior_ - gain * residual;
+	const StateMatrix correction = StateMatrix::Identity() - gain * observation;
+	StateMatrix covariance = correction * P_ * correction.transpose() + variance * gain * gain.transpose();
+	if (!normalizeCorrection(&corrected, &covariance)) return reject();
+	P_ = covariance;
+	posterior_ = prior_ = corrected;
+	t_posterior_ = t_prior_ = time;
+	_prediction_time = NAN;
+	_barometer_quality.stamp = time;
+	++_barometer_quality.accepted_updates;
+	while (imus_.size() > 1 && imus_[1].t <= time) imus_.pop_front();
+	return true;
+}
+
+bool EkfImu::resetBaroBias(const Scalar variance) {
+	if (!std::isfinite(variance) || variance <= 0) return false;
+	std::lock_guard<std::mutex> lock(mutex_);
+	if (!std::isfinite(t_posterior_)) return false;
+	posterior_(BARO_BIAS) = 0;
+	P_.row(BARO_BIAS).setZero();
+	P_.col(BARO_BIAS).setZero();
+	P_(BARO_BIAS, BARO_BIAS) = variance;
+	prior_ = posterior_;
+	t_prior_ = t_posterior_;
+	_prediction_time = NAN;
+	// Counters remain cumulative within this EKF session; the new reference has no accepted sample yet.
+	_barometer_quality.stamp = NAN;
+	_barometer_quality.innovation = NAN;
+	_barometer_quality.innovation_squared = NAN;
+	return true;
+}
+
+bool EkfImu::alignBarometerReference(const Scalar time, const Scalar independent_variance, Scalar* height) {
+	if (!std::isfinite(time) || !std::isfinite(independent_variance) || independent_variance <= 0 || height == nullptr) return false;
+	std::lock_guard<std::mutex> lock(mutex_);
+	if (!std::isfinite(t_posterior_) || time < t_posterior_ || imus_.empty() || time > imus_.back().t) return false;
+	const StateMatrix saved_covariance = P_;
+	const StateVector saved_prior = prior_;
+	const Scalar saved_time = t_prior_;
+	const auto reject = [&]() {
+		P_ = saved_covariance;
+		prior_ = saved_prior;
+		t_prior_ = saved_time;
+		return false;
+	};
+	prior_ = posterior_;
+	t_prior_ = t_posterior_;
+	if (!propagatePriorAndCovariance(time) || !prior_.allFinite() || !P_.allFinite() || P_(POSZ, POSZ) < 0) return reject();
+	// The shared navigation-height error belongs to the reference, not to every pressure sample's white noise.
+	// With b = reference_height - true_height, Cov(x, b) = -Cov(x, z).
+	const StateVector height_covariance = P_.col(POSZ);
+	const Scalar bias_variance = P_(POSZ, POSZ) + independent_variance;
+	if (!std::isfinite(bias_variance)) return reject();
+	P_.col(BARO_BIAS) = -height_covariance;
+	P_.row(BARO_BIAS) = -height_covariance.transpose();
+	P_(BARO_BIAS, BARO_BIAS) = bias_variance;
+	prior_(BARO_BIAS) = 0;
+	posterior_ = prior_;
+	t_posterior_ = t_prior_ = time;
+	_prediction_time = NAN;
+	_barometer_quality.stamp = NAN;
+	_barometer_quality.innovation = NAN;
+	_barometer_quality.innovation_squared = NAN;
+	*height = posterior_(POSZ);
+	while (imus_.size() > 1 && imus_[1].t <= time) imus_.pop_front();
+	return true;
+}
+
+EkfImu::BarometerQuality EkfImu::barometerQuality() {
+	std::lock_guard<std::mutex> lock(mutex_);
+	BarometerQuality result = _barometer_quality;
+	result.bias = posterior_(BARO_BIAS);
+	result.bias_variance = P_(BARO_BIAS, BARO_BIAS);
+	result.valid = std::isfinite(result.stamp) && std::isfinite(result.bias) && std::isfinite(result.bias_variance) &&
+	               result.bias_variance >= 0;
 	return result;
 }
 
@@ -560,6 +680,8 @@ bool EkfImu::propagatePriorAndCovariance(const Scalar t) {
       StateMatrix P = IdtF * P_ * IdtF.transpose();
       P.noalias() += dtG * R_imu_ * dtG.transpose();
       P.noalias() += (dt * dt) * Q_;
+			// This parameter is a continuous random walk variance rate, unlike the legacy dt^2 process terms.
+			P(BARO_BIAS, BARO_BIAS) += params_->baro_bias_random_walk * dt;
 
       P_ = 0.5 * (P + P.transpose());
 
@@ -580,24 +702,18 @@ bool EkfImu::updateParameters(const std::shared_ptr<EkfImuParameters>& params) {
   params_ = params;
 	_prediction_time = NAN;
 
-  Q_ = (StateVector() << params_->Q_pos, params_->Q_att, params_->Q_vel,
-        params_->Q_bome, params_->Q_bacc)
-         .finished()
-         .asDiagonal();
+	Q_ = (StateVector() << params_->Q_pos, params_->Q_att, params_->Q_vel, params_->Q_bome, params_->Q_bacc, 0.0)
+	             .finished()
+	             .asDiagonal();
+	Q_init_ = (StateVector() << params_->Q_init_pos, params_->Q_init_att, params_->Q_init_vel, params_->Q_init_bome,
+	           params_->Q_init_bacc, params_->Q_init_baro_bias)
+	                  .finished()
+	                  .asDiagonal();
 
-  Q_init_ = (StateVector() << params_->Q_init_pos, params_->Q_init_att,
-             params_->Q_init_vel, params_->Q_init_bome, params_->Q_init_bacc)
-              .finished()
-              .asDiagonal();
+	R_pose_ = (Vector<SRPOSE>() << params_->R_pos, params_->R_att).finished().asDiagonal();
+	R_imu_ = (Vector<SRIMU>() << params_->R_omega, params_->R_acc).finished().asDiagonal();
 
-  R_pose_ = (Vector<SRPOSE>() << params_->R_pos, params_->R_att)
-              .finished()
-              .asDiagonal();
-  R_imu_ = (Vector<SRIMU>() << params_->R_omega, params_->R_acc)
-             .finished()
-             .asDiagonal();
-
-  return true;
+	return true;
 }
 
 bool EkfImu::vectorToState(const Scalar t, const StateVector& x,
@@ -628,6 +744,7 @@ bool EkfImu::stateToVector(const QuadState& state, Scalar* const t,
   x->segment<IDX::NVEL>(IDX::VEL) = state.v;
   x->segment<IDX::NBOME>(IDX::BOME) = state.bw;
   x->segment<IDX::NBACC>(IDX::BACC) = state.ba;
+	(*x)(BARO_BIAS) = 0;
 
   return true;
 }

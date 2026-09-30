@@ -14,13 +14,14 @@ import unittest
 import uuid
 
 import rclpy
+import yaml
 from rclpy.qos import qos_profile_sensor_data
 from ament_index_python.packages import get_package_prefix
 from pymavlink.dialects.v20 import common as mav
-from sensor_msgs.msg import Imu, NavSatFix
+from sensor_msgs.msg import FluidPressure, Imu, NavSatFix, Temperature
 from geometry_msgs.msg import TwistStamped, QuaternionStamped
 from diagnostic_msgs.msg import DiagnosticArray
-from agi_ros2.msg import Heading, Navigation
+from agi_ros2.msg import Barometer, Heading, Navigation
 
 
 class Harness:
@@ -35,6 +36,7 @@ class Harness:
         self.sync_delay = 0
         self.pending_sync = []
         self.streaming = True
+        self.streaming_baro = True
         self.fix_type = 3
         self.heading = 0
         self.unknown = False
@@ -42,8 +44,10 @@ class Harness:
         self.freeze_gps = False
         self.gps_time = 0
         self.commands = []
-        self.next_imu = self.next_gps = self.next_attitude = 0
-        self.values = {k: [] for k in ('imu', 'fix', 'velocity', 'attitude', 'heading', 'navigation', 'status')}
+        self.ack_result_by_id = {}
+        self.next_imu = self.next_gps = self.next_attitude = self.next_baro = 0
+        self.values = {k: [] for k in ('imu', 'fix', 'velocity', 'attitude', 'heading', 'navigation',
+                                     'pressure', 'temperature', 'barometer', 'status')}
         self.node = rclpy.create_node('test_' + uuid.uuid4().hex)
         self.namespace = '/mavtest_' + uuid.uuid4().hex
         topics = [('imu', Imu, 'sensors/imu'), ('fix', NavSatFix, 'sensors/gps/fix'),
@@ -51,11 +55,16 @@ class Harness:
                   ('attitude', QuaternionStamped, 'sensors/fc_attitude'),
                   ('heading', Heading, 'sensors/fc_heading'),
                   ('navigation', Navigation, 'sensors/navigation'),
+                  ('pressure', FluidPressure, 'sensors/baro/pressure'),
+                  ('temperature', Temperature, 'sensors/baro/temperature'),
+                  ('barometer', Barometer, 'sensors/baro/sample'),
                   ('status', DiagnosticArray, 'sensors/mavlink/status')]
         self.subs = [self.node.create_subscription(typ, self.namespace + '/' + topic,
                      lambda m, k=key: self.values[k].append(m),
-                     10 if key == 'status' else qos_profile_sensor_data) for key, typ, topic in topics]
-        binary = Path(get_package_prefix('agi_ros2')) / 'lib/agi_ros2/mavlink_sensor_node'
+                     100 if key == 'barometer' else 10 if key == 'status' else qos_profile_sensor_data)
+                     for key, typ, topic in topics]
+        binary = os.environ.get('AGI_MAVLINK_SENSOR_BINARY',
+                                str(Path(get_package_prefix('agi_ros2')) / 'lib/agi_ros2/mavlink_sensor_node'))
         args = [str(binary), '--ros-args', '-r', '__ns:=' + self.namespace,
                 '-p', 'device:=' + str(self.device), '-p', 'attitude_rate_hz:=100']
         for key, value in params.items(): args.extend(['-p', key + ':=' + str(value)])
@@ -89,6 +98,11 @@ class Harness:
         self.peer.global_position_int_send((t // 1000) & 0xffffffff, 310000000,
              1210000000, 20000, 0, 32767 if self.invalid_velocity else 100, 200, -300, self.heading)
 
+    def baro(self, stamp_ms=None, pressure_hpa=1013.25, temperature_cdeg=2500):
+        if stamp_ms is None:
+            stamp_ms = self.remote() // 1000
+        self.peer.scaled_pressure_send(stamp_ms & 0xffffffff, pressure_hpa, 0., temperature_cdeg)
+
     def drive(self, duration):
         end = time.monotonic() + duration
         while time.monotonic() < end:
@@ -102,7 +116,8 @@ class Harness:
                     self.pending_sync.append((time.monotonic()+self.sync_delay, self.remote()*1000, m.ts1))
                 elif m.get_type() == 'COMMAND_LONG':
                     self.commands.append((m.command, m.param1, m.param2))
-                    self.peer.command_ack_send(m.command, mav.MAV_RESULT_ACCEPTED, target_system=245, target_component=191)
+                    result = self.ack_result_by_id.get(int(m.param1), mav.MAV_RESULT_ACCEPTED)
+                    self.peer.command_ack_send(m.command, result, target_system=245, target_component=191)
             t = time.monotonic()
             while self.pending_sync and self.pending_sync[0][0] <= t:
                 _, remote, token = self.pending_sync.pop(0)
@@ -115,6 +130,9 @@ class Harness:
                 if t >= self.next_attitude:
                     self.peer.attitude_send((self.remote() // 1000) & 0xffffffff, 0, 0, 0, 0, 0, 0)
                     self.next_attitude = t + .01
+                if self.streaming_baro and t >= self.next_baro:
+                    self.baro()
+                    self.next_baro = t + .025
             rclpy.spin_once(self.node, timeout_sec=.0005)
 
     def status(self):
@@ -156,7 +174,7 @@ class SensorTests(unittest.TestCase):
         q = h.values['attitude'][-1].quaternion
         self.assertAlmostEqual(q.w, math.sqrt(.5), places=6)
         self.assertAlmostEqual(q.z, math.sqrt(.5), places=6)
-        self.assertEqual({int(c[1]) for c in h.commands}, {24, 30, 33, 105})
+        self.assertEqual({int(c[1]) for c in h.commands}, {24, 29, 30, 33, 105})
         self.assertTrue(all(c[0] == mav.MAV_CMD_SET_MESSAGE_INTERVAL for c in h.commands))
         h.streaming = False; h.drive(.1)
         count = len(h.values['imu'])
@@ -282,6 +300,129 @@ class SensorTests(unittest.TestCase):
         self.assertTrue(all(a<b for a,b in zip(stamps, stamps[1:])))
         self.assertEqual(h.status()['synchronized'], 'true')
 
+    def test_barometer_units_stamps_variance_and_rate_ack(self):
+        self.h.close()
+        self.h = Harness(baro_pressure_variance_pa2=16.0, baro_temperature_variance_c2=.09)
+        h = self.h
+        h.drive(1.8)
+        self.assertGreater(len(h.values['pressure']), 25)
+        self.assertIn((mav.MAV_CMD_SET_MESSAGE_INTERVAL, 29., 25000.), h.commands)
+        self.assertEqual(h.status()['rate_commands_ok'], 'true')
+        pressure = h.values['pressure'][-2]
+        temperature = next(v for v in h.values['temperature'] if v.header.stamp == pressure.header.stamp)
+        sample = next(v for v in h.values['barometer'] if v.valid and v.header.stamp == pressure.header.stamp)
+        self.assertEqual(pressure.header.frame_id, 'baro_link')
+        self.assertEqual(pressure.fluid_pressure, 101325.)
+        self.assertEqual(pressure.variance, 16.)
+        self.assertEqual(temperature.temperature, 25.)
+        self.assertEqual(temperature.variance, .09)
+        self.assertEqual(sample.pressure_pa, pressure.fluid_pressure)
+        self.assertEqual(sample.pressure_variance, pressure.variance)
+        self.assertTrue(sample.clock_aligned)
+        self.assertEqual(sample.source_session, h.values['navigation'][-1].source_session)
+        stamp = pressure.header.stamp.sec + pressure.header.stamp.nanosec * 1e-9
+        self.assertLess(abs(time.time() - stamp), .2)
+
+    def test_barometer_disabled_and_rejected_rate_ack(self):
+        self.h.close()
+        self.h = Harness(baro_rate_hz=0)
+        h = self.h
+        h.ack_result_by_id[29] = mav.MAV_RESULT_UNSUPPORTED
+        h.drive(1.8)
+        self.assertIn((mav.MAV_CMD_SET_MESSAGE_INTERVAL, 29., -1.), h.commands)
+        self.assertEqual(h.status()['rate_commands_ok'], 'false')
+        self.assertFalse(h.values['pressure'])
+        self.assertFalse(h.values['temperature'])
+        self.assertFalse(any(v.valid for v in h.values['barometer']))
+        self.assertGreater(len(h.values['imu']), 100)
+
+    def test_barometer_dedup_age_and_timeout(self):
+        h = self.h
+        h.drive(1.6)
+        h.streaming_baro = False
+        h.drive(.04)
+        before = len(h.values['pressure'])
+        stamp = h.remote() // 1000
+        h.baro(stamp)
+        h.baro(stamp)
+        h.drive(.04)
+        self.assertEqual(len(h.values['pressure']), before + 1)
+        # This age passes the existing 0.5 s GPS gate, but must fail the 0.25 s barometer gate.
+        h.baro(h.remote() // 1000 - 300)
+        h.drive(.35)
+        self.assertEqual(len(h.values['pressure']), before + 1)
+        failures = [v for v in h.values['barometer'] if v.reason == 'Pressure sample timeout']
+        self.assertEqual(len(failures), 1)
+        self.assertFalse(failures[0].valid)
+        self.assertTrue(failures[0].clock_aligned)
+        self.assertTrue(math.isnan(failures[0].pressure_pa))
+        count = len(h.values['barometer'])
+        h.drive(1.1)
+        self.assertEqual(len(h.values['barometer']), count)
+        self.assertEqual(h.status()['baro_valid'], 'false')
+        self.assertGreater(int(h.status()['baro_stale']), 0)
+        self.assertGreater(int(h.status()['baro_duplicates']), 0)
+        h.baro()
+        h.drive(.04)
+        self.assertTrue(h.values['barometer'][-1].valid)
+
+    def test_barometer_invalid_pressure_recovers(self):
+        h = self.h
+        h.drive(1.6)
+        h.streaming_baro = False
+        h.drive(.04)
+        before = len(h.values['pressure'])
+        for value in (float('nan'), float('inf'), 0., -1.):
+            h.baro(pressure_hpa=value)
+            h.drive(.02)
+        self.assertEqual(len(h.values['pressure']), before)
+        self.assertFalse(h.values['barometer'][-1].valid)
+        self.assertEqual(h.values['barometer'][-1].reason, 'Invalid absolute pressure')
+        h.baro(pressure_hpa=1012.25)
+        h.drive(.04)
+        self.assertTrue(h.values['barometer'][-1].valid)
+        self.assertEqual(h.values['pressure'][-1].fluid_pressure, 101225.)
+
+    def test_barometer_millisecond_wrap_and_epoch_revocation(self):
+        h = self.h
+        h.epoch = time.monotonic() - (2**32 / 1000 - 1.)
+        h.drive(2.)
+        stamps = [v.header.stamp.sec + v.header.stamp.nanosec * 1e-9 for v in h.values['pressure']]
+        self.assertGreater(len(stamps), 30)
+        self.assertTrue(all(a < b for a, b in zip(stamps, stamps[1:])))
+        self.assertLess(max(b - a for a, b in zip(stamps, stamps[1:])), .1)
+        session = h.values['barometer'][-1].source_session
+        before = len(h.values['barometer'])
+        h.epoch = time.monotonic() - 1.
+        h.drive(1.5)
+        samples = h.values['barometer'][before:]
+        reset = next(v for v in samples if not v.valid and v.reason == 'Flight controller restarted')
+        self.assertFalse(reset.clock_aligned)
+        self.assertNotEqual(reset.source_session, session)
+        self.assertTrue(h.values['barometer'][-1].valid)
+        self.assertEqual(h.values['barometer'][-1].source_session, reset.source_session)
+        h.sync = False
+        h.drive(2.3)
+        self.assertFalse(h.values['barometer'][-1].valid)
+        self.assertFalse(h.values['barometer'][-1].clock_aligned)
+        self.assertEqual(h.values['barometer'][-1].reason, 'Time synchronization expired')
+
+    def test_barometer_publisher_collision_revokes_source(self):
+        h = self.h
+        h.drive(1.6)
+        collision = h.node.create_publisher(FluidPressure, h.namespace + '/sensors/baro/pressure', qos_profile_sensor_data)
+        try:
+            h.drive(1.2)
+            self.assertEqual(h.status()['baro_publisher_conflict'], 'true')
+            self.assertEqual(h.values['barometer'][-1].reason, 'Sensor publisher conflict')
+            count = len(h.values['pressure'])
+            h.drive(.15)
+            self.assertEqual(len(h.values['pressure']), count)
+        finally:
+            h.node.destroy_publisher(collision)
+        h.drive(1.2)
+        self.assertTrue(h.values['barometer'][-1].valid)
+
 
 
 class LaunchTests(unittest.TestCase):
@@ -297,9 +438,15 @@ class LaunchTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'hardware'):
             module.nodes(context)
         context.launch_configurations.update({'mode': 'hardware', 'mavlink_device': ''})
-        with self.assertRaisesRegex(ValueError, 'specified'):
-            module.nodes(context)
         with tempfile.TemporaryDirectory() as directory:
+            # An empty override keeps the profile value; make the profile device absent explicitly.
+            _, profile = module._runtime.load_profile('hardware')
+            profile['mavlink']['device'] = ''
+            runtime_config = Path(directory) / 'hardware.yaml'
+            runtime_config.write_text(yaml.safe_dump(profile))
+            context.launch_configurations['runtime_config'] = str(runtime_config)
+            with self.assertRaisesRegex(ValueError, 'specified'):
+                module.nodes(context)
             original = Path(directory) / 'uart'
             alias = Path(directory) / 'alias'
             original.touch(); alias.symlink_to(original)

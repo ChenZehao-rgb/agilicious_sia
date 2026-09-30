@@ -2,17 +2,21 @@
 #define AGI_ROS2_STATE_FUSION_NODE_H_
 
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <string>
 
+#include "agi_ros2/barometer_reference.h"
 #include "agi_ros2/imu_initialization.h"
 #include "agi_ros2/msg/authority.hpp"
+#include "agi_ros2/msg/barometer.hpp"
 #include "agi_ros2/msg/fused_state.hpp"
 #include "agi_ros2/msg/local_navigation.hpp"
 #include "agi_ros2/msg/rtk.hpp"
 #include "agilib/estimator/ekf_imu/ekf_imu.hpp"
 #include "agilib/types/quad_state.hpp"
 #include "companion_ahrs.hpp"
+#include "diagnostic_msgs/msg/diagnostic_array.hpp"
 #include "nav_msgs/msg/odometry.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/imu.hpp"
@@ -25,9 +29,27 @@ public:
 	StateFusionNode();
 
 private:
+	struct Observation {
+		double time = NAN;
+		bool barometer = false;
+		msg::Rtk navigation;
+		agi::Vector<3> position_variance = agi::Vector<3>::Zero();
+		agi::Vector<3> velocity_variance = agi::Vector<3>::Zero();
+		double heading_variance = NAN;
+		double pressure = NAN;
+		double pressure_variance = NAN;
+	};
+
 	void onNavigation(msg::LocalNavigation::ConstSharedPtr message);
 	void onRtk(msg::Rtk::ConstSharedPtr message);
+	void onBarometer(msg::Barometer::ConstSharedPtr message);
 	void onImu(sensor_msgs::msg::Imu::ConstSharedPtr message);
+	void enqueueObservation(const Observation& observation);
+	void enqueueNavigation(const msg::Rtk& navigation);
+	void processObservations(double time, double received);
+	void processBarometer(const Observation& observation, double received);
+	void resetBarometer(const std::string& reason);
+	void publishBarometerStatus();
 	void reset();
 	bool navigationFresh(double time, double received) const;
 	bool covarianceReady(const agi::EkfImu::NavigationQuality& quality) const;
@@ -56,6 +78,36 @@ private:
 	double _last_imu_receive_time = NAN;
 	double _last_navigation_attempt = NAN;
 	std::string _readiness_reason = "Waiting for navigation and IMU";
+	bool _baro_enabled = false;
+	double _observation_delay = 0.0;
+	double _observation_watermark = NAN;
+	std::deque<Observation> _observations;
+	std::deque<agi::ImuSample> _reference_imus;
+	double _reference_gravity_tolerance = 0.5;
+	double _reference_max_angular_speed = 0.15;
+	uint64_t _late_navigation = 0;
+	uint64_t _late_barometer = 0;
+	uint64_t _observation_overflows = 0;
+	double _observation_processing_seconds = 0.0;
+	double _baro_max_age = 0.25;
+	double _baro_pressure_variance = 4.0;
+	double _baro_min_pressure = 30000.0;
+	double _baro_max_pressure = 120000.0;
+	double _baro_model_variance = 0.25;
+	double _baro_nis_threshold = 10.828;
+	double _baro_last_time = NAN;
+	double _baro_receive_time = NAN;
+	double _baro_last_height = NAN;
+	double _baro_last_height_variance = NAN;
+	double _baro_reference_bias_variance = NAN;
+	std::string _baro_session;
+	std::string _baro_reason = "Barometer disabled";
+	uint64_t _baro_reference_resets = 0;
+	uint64_t _baro_invalid_samples = 0;
+	std::unique_ptr<BarometerReference> _baro_reference;
+	rclcpp::Subscription<msg::Barometer>::SharedPtr _baro_sub;
+	rclcpp::Publisher<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr _baro_status_pub;
+	rclcpp::TimerBase::SharedPtr _baro_status_timer;
 	msg::Authority _authority;
 	double _authority_receive_time = NAN;
 	rclcpp::Subscription<msg::Authority>::SharedPtr _authority_sub;

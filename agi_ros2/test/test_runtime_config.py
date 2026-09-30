@@ -8,6 +8,8 @@ import unittest
 
 import yaml
 from launch import LaunchContext
+from launch.actions import ExecuteProcess
+from launch.utilities import perform_substitutions
 from launch_ros.actions import Node
 from launch_ros.utilities import evaluate_parameters
 
@@ -145,7 +147,7 @@ class RuntimeProfiles(unittest.TestCase):
             path = Path(directory) / 'hardware.yaml'
             path.write_text(yaml.safe_dump(profile))
             nodes = self.actions(**values, runtime_config=str(path))
-            self.assertEqual(len(nodes), 6)
+            self.assertEqual(len(nodes), 7)
             self.assertTrue(nodes['command_output_node']['shadow_only'])
             with self.assertRaisesRegex(ValueError, 'measured flight.thrust_table'):
                 self.actions(**values, runtime_config=str(path), shadow_only='false')
@@ -179,7 +181,7 @@ class RuntimeProfiles(unittest.TestCase):
             self.actions(**values)
         nodes = self.actions(**values, diagnostic_only='true')
         self.assertEqual(set(nodes), {'state_fusion_node', 'mavlink_sensor_node', 'gnss_adapter.py',
-                                    'betaflight_msp_node', 'msp_evidence.py'})
+                                    'betaflight_msp_node', 'msp_evidence.py', 'static_transform_publisher'})
         self.assertEqual(nodes['betaflight_msp_node']['mode'], 'monitor')
         self.assertTrue(nodes['betaflight_msp_node']['msp.read_configuration'])
         self.assertEqual(nodes['state_fusion_node']['navigation_source'], 'gnss')
@@ -196,7 +198,7 @@ class RuntimeProfiles(unittest.TestCase):
             path = Path(directory) / 'hardware.yaml'
             path.write_text(yaml.safe_dump(profile))
             nodes = self.actions(mode='hardware', runtime_config=str(path), device='/dev/null', mavlink_device='/dev/zero')
-            self.assertEqual(len(nodes), 6)
+            self.assertEqual(len(nodes), 7)
             for name in ('state_fusion_node', 'control_node', 'command_output_node'):
                 self.assertEqual(nodes[name]['navigation_source'], 'gnss')
                 self.assertFalse(nodes[name]['use_sim_time'])
@@ -323,14 +325,55 @@ class RuntimeProfiles(unittest.TestCase):
             runtime.assemble(context, forced_shadow=True)
 
     def test_sensor_entrypoint_uses_same_hardware_profile_without_model(self):
-        context = self.context(mode='hardware', device='/dev/null', baud='115200', gps_mode='rtk', imu_rate_hz='250')
+        context = self.context(mode='hardware', device='/dev/null', baud='115200', gps_mode='rtk',
+                               imu_rate_hz='250', baro_rate_hz='20')
         nodes = [node for node in runtime.assemble(context, sensor_only=True) if isinstance(node, Node)]
-        self.assertEqual([node.node_executable for node in nodes], ['mavlink_sensor_node'])
+        self.assertEqual([node.node_executable for node in nodes], ['mavlink_sensor_node', 'static_transform_publisher'])
         parameters = evaluate_parameters(context, nodes[0]._Node__parameters)[0]
         self.assertEqual(parameters['device'], '/dev/null')
         self.assertEqual(parameters['baud'], 115200)
         self.assertEqual(parameters['gps_mode'], 'rtk')
         self.assertEqual(parameters['imu_rate_hz'], 250)
+        self.assertEqual(parameters['baro_rate_hz'], 20)
+
+    def test_hardware_baro_fusion_and_receiver_parameters_reach_nodes(self):
+        nodes = self.actions(mode='hardware', device='/dev/null', mavlink_device='/dev/zero', diagnostic_only='true')
+        self.assertTrue(nodes['state_fusion_node']['baro_enabled'])
+        self.assertEqual(nodes['state_fusion_node']['observation_delay'], 0.20)
+        self.assertEqual(nodes['state_fusion_node']['baro_max_age'], 0.25)
+        self.assertEqual(nodes['state_fusion_node']['baro_pressure_variance_pa2'], 4.0)
+        self.assertEqual(nodes['mavlink_sensor_node']['baro_rate_hz'], 40)
+        self.assertEqual(nodes['mavlink_sensor_node']['baro_max_age_s'], 0.25)
+        self.assertEqual(nodes['mavlink_sensor_node']['baro_pressure_variance_pa2'], 0.0)
+        self.assertFalse(nodes['static_transform_publisher']['use_sim_time'])
+        nodes = self.actions(mode='hardware', device='/dev/null', mavlink_device='/dev/zero',
+                             diagnostic_only='true', mavlink_baro_rate_hz='0')
+        self.assertEqual(nodes['mavlink_sensor_node']['baro_rate_hz'], 0)
+
+    def test_baro_transform_connects_sensor_frame_without_affecting_msp_only(self):
+        context = self.context(mode='hardware', device='/dev/null')
+        nodes = [node for node in runtime.assemble(context, sensor_only=True) if isinstance(node, Node)]
+        transform = next(node for node in nodes if node.node_executable == 'static_transform_publisher')
+        command = transform._Node__arguments
+        self.assertEqual(command[command.index('--frame-id') + 1], 'base_link')
+        self.assertEqual(command[command.index('--child-frame-id') + 1], 'baro_link')
+        for axis in ('--x', '--y', '--z', '--roll', '--pitch', '--yaw'):
+            self.assertEqual(command[command.index(axis) + 1], '0')
+        nodes = [node for node in runtime.assemble(context, msp_only=True) if isinstance(node, Node)]
+        self.assertNotIn('static_transform_publisher', [node.node_executable for node in nodes])
+
+    def test_recording_includes_new_baro_topics_and_static_transform(self):
+        with tempfile.TemporaryDirectory() as directory:
+            context = self.context(mode='hardware', device='/dev/null', mavlink_device='/dev/zero',
+                                   diagnostic_only='true', record_bag='true', bag_output=directory + '/bag')
+            recorders = [action for action in runtime.assemble(context)
+                         if isinstance(action, ExecuteProcess) and not isinstance(action, Node)]
+            self.assertEqual(len(recorders), 1)
+            command = [perform_substitutions(context, part) for part in recorders[0].cmd]
+            # All-topic recording also discovers baro diagnostics and transient-local /tf_static.
+            self.assertEqual(command[:3], ['ros2', 'bag', 'record'])
+            self.assertIn('--all', command)
+            self.assertIn('--include-hidden-topics', command)
 
 
 if __name__ == '__main__':

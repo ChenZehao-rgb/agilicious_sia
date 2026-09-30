@@ -3,12 +3,13 @@
 标准入口只维护两份完整配置：[simulation.yaml](config/simulation.yaml) 和
 [hardware.yaml](config/hardware.yaml)。仿真保留已经使用的分层部署方式：开发机运行
 Gazebo、Betaflight SITL 和传感器适配器，CM5、Jetson 或开发机运行融合、控制、输出三节点。
-实机使用两条独立 UART：MAVLink 接收 IMU/GPS，MSP 查询实体授权、配置和电池并发送 AETR Override。
+实机使用两条独立 UART：MAVLink 接收 IMU/GPS/绝对气压，MSP 查询实体授权、配置和电池并发送 AETR Override。
 
 ```text
 仿真：Gazebo → gazebo_sensors → IMU / RTK ────────────────────┐
 实机：FC MAVLink → mavlink_sensor_node → IMU ─────────────────┤
                                     → GPS → gnss_adapter.py ┤
+                                    → 气压（含源会话）─────┤
                                                            ↓
                                                   state_fusion_node
                                                            ↓ /fused_state
@@ -68,7 +69,7 @@ ARM64 默认不构建 Gazebo 适配器，核心三节点和 MAVLink/MSP 节点�
 | `flight` | 轨迹、推力模型及参数、shadow/diagnostic 开关、SITL 延迟实验、录包；launch 和输出节点读取 |
 | `pilot` | 内嵌 `quadrotor` 和 `pipeline.controller.parameter_sets`；按 type 选 MPC/GEO 参数，输出端采用相同模型校验 |
 | `bridge` | ACTUAL rates/deadband/min_check；输出端映射、MSP 配置回读和 SITL EEPROM 共用 |
-| `fusion` | IMU 噪声、初始化及导航质量门限；launch 传给融合节点 |
+| `fusion` | IMU 噪声、初始化、导航质量门限及独立气压融合；launch 传给融合节点 |
 | `output` | MSP UART 和查询周期；控制输出/只读 MSP 节点 |
 | `mavlink`、`navigation` | 传感器 UART/消息频率、高度/航向声明、原点和精度门限 |
 | `evidence` | 实体 AUX/RX map、PID/rate profile、围栏和电池时效 |
@@ -270,7 +271,7 @@ hardware 模式拒绝启用此开关。旧独立控制器仍可用 `run.py --no-
    # ros2 launch agi_ros2 shadow.launch.py
    ```
 
-   hardware 默认 shadow。核心三节点与 MAVLink/GNSS/evidence 合共六个节点；输出节点只查询 MSP。
+   hardware 默认 shadow。核心三节点与 MAVLink/GNSS/evidence 合共六个节点，另有气压静态 TF；输出节点只查询 MSP。
    `shadow.launch.py` 即使接到 `shadow_only:=false` 也拒绝，运行中不能切换只读参数。
    table 模式推力表可暂缺；quadratic 模式仍检查其参数。真实机体模型不可缺；
    详见 [SHADOW_EVALUATION.md](SHADOW_EVALUATION.md)。
@@ -475,6 +476,13 @@ GNSS 融合在新鲜、未 ARM 的实体授权下采集静止 IMU，默认至少
 检查陀螺偏置/方差、加速度方差和重力模长。初始化只确定初始倾角、gyro bias 与导航状态；
 不会声称完成六面加速度标定。随后 `EkfImu` 传播 p/v/q/bias，用原始测量时间进行 GPS/航向更新，
 检验导航创新、连续接受更新数和后验协方差。IMU 实时预测缓存与后验历史分开，查询不反复重放全部历史。
+
+硬件默认同时请求 40 Hz 绝对气压并启用 `fusion.baro_enabled`。气压在静止窗口与本地高度
+对齐后，通过独立一维创新门限和偏置状态融合；GNSS 仍提供长期高度基准与导航就绪证据。
+GNSS/气压按采样时间进入有界排序缓冲，默认等待 0.20 s 后更新，IMU 继续预测当前状态。
+无气压或参考不可用时退回 IMU/GNSS；`/fusion/baro/status` 记录原因。
+配置单位、参考不确定度、会话重置和 shadow 验证见
+[气压高度融合](SHADOW_EVALUATION.md#气压高度融合)。初始参数与零杆臂近似尚未经过实机标定。
 
 EKF 运行参数也只在 `fusion` 段：`ekf_process_*_variance` 对应位置、四元数姿态、速度、
 陀螺与加速度偏置过程噪声；`ekf_initial_*_variance` 对应初始姿态及两类偏置协方差。

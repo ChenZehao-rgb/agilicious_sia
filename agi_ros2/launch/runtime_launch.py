@@ -17,10 +17,10 @@ DEFAULTS = dict(mode='sitl', runtime_config='', controller='', trajectory='', th
                 shadow_only='', diagnostic_only='', sitl_delay_test='', record_bag='', bag_output='',
                 device='', baud='', mavlink_device='', mavlink_baud='', mavlink_enabled='',
                 mavlink_gps_mode='', mavlink_altitude_source='', mavlink_imu_rate_hz='',
-                mavlink_gps_rate_hz='', mavlink_attitude_rate_hz='', altitude_source='',
+                mavlink_gps_rate_hz='', mavlink_attitude_rate_hz='', mavlink_baro_rate_hz='', altitude_source='',
                 heading_confirmed='', heading_correction_rad='', fc_declination_applied='',
                 aux_low='', aux_high='', params_dir='', pilot_config='', bridge_config='',
-                gps_mode='', imu_rate_hz='', gps_rate_hz='', attitude_rate_hz='')
+                gps_mode='', imu_rate_hz='', gps_rate_hz='', attitude_rate_hz='', baro_rate_hz='')
 
 
 def boolean(value):
@@ -208,10 +208,10 @@ def assemble(context, forced_shadow=False, sensor_only=False, msp_only=False):
             mavlink[name] = int(arg('mavlink_' + name)) if name == 'baud' else arg('mavlink_' + name)
     if sensor_only:
         # Keep the standalone sensor entrypoint's existing device/baud arguments.
-        for name in ('device', 'baud', 'gps_mode', 'imu_rate_hz', 'gps_rate_hz', 'attitude_rate_hz'):
+        for name in ('device', 'baud', 'gps_mode', 'imu_rate_hz', 'gps_rate_hz', 'attitude_rate_hz', 'baro_rate_hz'):
             if arg(name):
                 mavlink[name] = int(arg(name)) if name == 'baud' or name.endswith('_hz') else arg(name)
-    for name in ('gps_mode', 'altitude_source', 'imu_rate_hz', 'gps_rate_hz', 'attitude_rate_hz'):
+    for name in ('gps_mode', 'altitude_source', 'imu_rate_hz', 'gps_rate_hz', 'attitude_rate_hz', 'baro_rate_hz'):
         if arg('mavlink_' + name):
             mavlink[name] = int(arg('mavlink_' + name)) if name.endswith('_hz') else arg('mavlink_' + name)
     if arg('altitude_source'):
@@ -246,6 +246,12 @@ def assemble(context, forced_shadow=False, sensor_only=False, msp_only=False):
     if mode == 'hardware':
         if not msp_only:
             processes.append(node('mavlink_sensor_node', {**mavlink, 'use_sim_time': False}))
+            # Co-location is an unmeasured approximation; fusion has no barometer lever-arm model.
+            processes.append(Node(package='tf2_ros', executable='static_transform_publisher',
+                                  name='baro_static_transform', output='screen', parameters=[{'use_sim_time': False}],
+                                  arguments=['--x', '0', '--y', '0', '--z', '0',
+                                             '--roll', '0', '--pitch', '0', '--yaw', '0',
+                                             '--frame-id', 'base_link', '--child-frame-id', 'baro_link']))
         if not (sensor_only or msp_only):
             processes.append(node('gnss_adapter.py', {**navigation, 'use_sim_time': False}))
         if diagnostic or msp_only:

@@ -41,6 +41,8 @@ bool EkfImuParameters::load(const Yaml& node) {
   node["Q_init_vel"] >> Q_init_vel;
   node["Q_init_bome"] >> Q_init_bome;
   node["Q_init_bacc"] >> Q_init_bacc;
+	if (node["baro_bias_random_walk"].isDefined()) baro_bias_random_walk = node["baro_bias_random_walk"].as<Scalar>();
+	if (node["Q_init_baro_bias"].isDefined()) Q_init_baro_bias = node["Q_init_baro_bias"].as<Scalar>();
 
   return valid();
 }
@@ -64,6 +66,8 @@ bool EkfImuParameters::valid() const {
   check &= Q_init_vel.allFinite();
   check &= Q_init_bome.allFinite();
   check &= Q_init_bacc.allFinite();
+	check &= std::isfinite(baro_bias_random_walk) && baro_bias_random_walk >= 0;
+	check &= std::isfinite(Q_init_baro_bias) && Q_init_baro_bias > 0;
 
   return check;
 }
@@ -85,6 +89,8 @@ std::ostream& operator<<(std::ostream& os, const EkfImuParameters& params) {
   os << "Q_init_vel:  " << params.Q_init_vel.transpose() << '\n';
   os << "Q_init_bome: " << params.Q_init_bome.transpose() << '\n';
   os << "Q_init_bacc: " << params.Q_init_bacc.transpose() << '\n';
+	os << "baro_bias_random_walk: " << params.baro_bias_random_walk << '\n';
+	os << "Q_init_baro_bias:      " << params.Q_init_baro_bias << '\n';
 
   os << "update_on_get:       " << params.update_on_get << '\n';
   os << "jump_pos_threshold:  " << params.jump_pos_threshold << '\n';

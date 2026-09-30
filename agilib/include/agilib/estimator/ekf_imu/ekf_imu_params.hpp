@@ -28,12 +28,16 @@ struct EkfImuParameters : public ParameterBase {
   Vector<3> Q_vel;
   Vector<3> Q_bome;
   Vector<3> Q_bacc;
+	// Continuous barometer bias random walk variance rate, m^2/s (discretized with dt).
+	Scalar baro_bias_random_walk = 0.01;
 
   Vector<3> Q_init_pos;
   Vector<4> Q_init_att;
   Vector<3> Q_init_vel;
   Vector<3> Q_init_bome;
   Vector<3> Q_init_bacc;
+	// Initial pressure reference/bias uncertainty, m^2.
+	Scalar Q_init_baro_bias = 25.0;
 
   bool update_on_get;
 

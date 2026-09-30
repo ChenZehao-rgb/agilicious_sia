@@ -1,5 +1,35 @@
 # Split-node validation (2026-09-10)
 
+## 2026-09-30 IMU/GNSS/barometer height fusion
+
+Validated on local x86-64 / ROS 2 Humble, with synthetic inputs and PTYs only:
+
+- `./agi_ros2/scripts/build.sh`: passed, including the Barometer message, receiver, fusion and dependent nodes.
+- `agilib/build/tests --gtest_filter='EkfImuRtk.*:EkfImuBaro.*'`: 24/24 passed. Covers same-time updates,
+  delayed sorted input, NIS rejection and rollback, bias random walk, GNSS-constrained drift, covariance PSD,
+  and reference alignment that preserves navigation covariance instead of inventing absolute-height information.
+- `test_barometer_reference.cpp`: 3/3 passed with `g++ -std=c++17 -Wall -Wextra -Werror`, covering
+  nonzero local height, pressure direction/variance, stationarity, duplicate samples and reference reset.
+- `test_mavlink_sensor.py`: 15 serial tests plus 1 launch test passed, including message 29 interval commands,
+  pressure/temperature units, timestamp deduplication, stale samples, 32-bit millisecond wrap, source restart and collision.
+- `test_baro_fusion.py`: 4/4 passed on the final installed build (12.595 s): reference height, pressure outlier,
+  loss/recovery, source invalidation, pressure-first same-time navigation, and observations beyond the reorder window.
+- `test_baro_hardware_pipeline.py`: 1/1 passed (2.917 s). Six real nodes with two PTYs fuse MAVLink pressure
+  while GNSS flight limits are unconfigured. Readiness remains false, shadow computation runs, ARM/AUTO preserves
+  the established reference, and the captured MSP stream contains no code 200.
+- Existing delayed RTK without heading, fusion/control/sensor-loss, and simulated clock rewind tests: 3/3 passed.
+  Existing GNSS session/unknown accuracy and innovation/readiness tests: 2/2 passed in the final focused run.
+  Existing MPC and GEO hardware shadow regressions: 2/2 passed.
+- Relevant launch/config checks: 7/7 passed. The full config suite has 21/24 passing; three pre-existing tests
+  still assume zero hardware mass/rate/thrust placeholders. Those failures were reproduced before these changes.
+- New C++ files and changed C++ ranges passed formatting with clang-format 23.1.1, Tab/140-column checks,
+  Python syntax compilation and `git diff --check`.
+
+An earlier concurrent run had two pressure-reference initialization timeouts and one GNSS initialization timeout;
+their cause was not established. Focused reruns and the final runs above passed without relaxing production gates.
+Reference diagnostics now identify the individual blocking condition. These tests do not establish CM5 timing,
+physical UART throughput, sensor installation/airflow behavior or real flight accuracy. Hardware remains in shadow mode.
+
 ## 2026-09-30 quadratic thrust mapping
 
 Validated the optional manufacturer-estimated quadratic mapping on local x86-64 / ROS 2 Humble.

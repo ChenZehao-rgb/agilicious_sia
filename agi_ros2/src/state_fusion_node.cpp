@@ -93,6 +93,8 @@ StateFusionNode::StateFusionNode()
 	initialization.max_gyro_stddev = positive("imu_max_gyro_stddev", 0.02);
 	initialization.max_acceleration_stddev = positive("imu_max_acceleration_stddev", 0.2);
 	initialization.gravity_tolerance = positive("imu_gravity_tolerance", 0.5);
+	_reference_gravity_tolerance = initialization.gravity_tolerance;
+	_reference_max_angular_speed = initialization.max_gyro_bias;
 	_imu_initialization = std::make_unique<ImuInitialization>(initialization);
 	_initialization_max_speed = positive("imu_initialization_max_speed", 0.3);
 	_navigation_ready_updates = configured("navigation_ready_updates", 30);
@@ -107,23 +109,53 @@ StateFusionNode::StateFusionNode()
 	_max_vertical_position_stddev = limit("max_vertical_position_stddev");
 	_max_velocity_stddev = limit("max_velocity_stddev");
 	_max_heading_stddev = limit("max_heading_stddev");
+	_baro_enabled = configured("baro_enabled", false);
+	_observation_delay = configured("observation_delay", _baro_enabled ? 0.20 : 0.0);
+	if (!std::isfinite(_observation_delay) || _observation_delay < 0 || _observation_delay > 0.25)
+		throw std::invalid_argument("observation_delay must be between 0 and 0.25 seconds");
+	_baro_max_age = positive("baro_max_age", 0.25);
+	_baro_pressure_variance = positive("baro_pressure_variance_pa2", 4.0);
+	_baro_min_pressure = positive("baro_min_pressure_pa", 30000.0);
+	_baro_max_pressure = positive("baro_max_pressure_pa", 120000.0);
+	_baro_model_variance = positive("baro_model_variance", 0.25);
+	_baro_nis_threshold = positive("baro_nis_threshold", 10.828);
+	if (_baro_max_pressure <= _baro_min_pressure || _baro_max_age > 1.0)
+		throw std::invalid_argument("Invalid barometer pressure range or maximum age");
+	_ekf_parameters->baro_bias_random_walk = positive("baro_bias_random_walk", 0.01);
+	BarometerReference::Params baro_reference;
+	baro_reference.duration = positive("baro_reference_duration", 2.0);
+	const int reference_samples = configured("baro_reference_min_samples", 40);
+	if (reference_samples < 2 || reference_samples > 10000 || baro_reference.duration > 30)
+		throw std::invalid_argument("Invalid barometer reference sample count or duration");
+	baro_reference.minimum_samples = static_cast<size_t>(reference_samples);
+	baro_reference.maximum_gap = _baro_max_age;
+	baro_reference.maximum_pressure_stddev = positive("baro_reference_max_stddev_pa", 15.0);
+	baro_reference.maximum_height_stddev = positive("baro_reference_max_vertical_stddev", 0.3);
+	baro_reference.alignment_variance = positive("baro_reference_variance", 4.0);
+	_baro_reference = std::make_unique<BarometerReference>(baro_reference);
 	reset();
 	_fused_pub = create_publisher<msg::FusedState>("fused_state", 1);
 	_state_pub = create_publisher<nav_msgs::msg::Odometry>("state", 1);
+	_authority_sub = create_subscription<msg::Authority>("authority", 1, [this](msg::Authority::ConstSharedPtr message) {
+		_authority = *message;
+		_authority_receive_time = monotonicSeconds();
+	});
 	if (_navigation_source == "rtk") {
 		_rtk_sub =
 		        create_subscription<msg::Rtk>("sensors/rtk", 10, std::bind(&StateFusionNode::onRtk, this, std::placeholders::_1));
 	} else {
-		_authority_sub = create_subscription<msg::Authority>("authority", 1, [this](msg::Authority::ConstSharedPtr message) {
-			_authority = *message;
-			_authority_receive_time = monotonicSeconds();
-		});
 		_navigation_sub =
 		        create_subscription<msg::LocalNavigation>("sensors/local_navigation", rclcpp::SensorDataQoS(),
 			                                          std::bind(&StateFusionNode::onNavigation, this, std::placeholders::_1));
 	}
 	_imu_sub = create_subscription<sensor_msgs::msg::Imu>("sensors/imu", rclcpp::SensorDataQoS().keep_last(256),
 	                                                      std::bind(&StateFusionNode::onImu, this, std::placeholders::_1));
+	_baro_status_pub = create_publisher<diagnostic_msgs::msg::DiagnosticArray>("fusion/baro/status", 10);
+	_baro_status_timer = create_wall_timer(std::chrono::milliseconds(200), [this] { publishBarometerStatus(); });
+	if (_baro_enabled) {
+		_baro_sub = create_subscription<msg::Barometer>("sensors/baro/sample", rclcpp::QoS(100).reliable(),
+		                                                std::bind(&StateFusionNode::onBarometer, this, std::placeholders::_1));
+	}
 }
 
 void StateFusionNode::reset() {
@@ -137,6 +169,10 @@ void StateFusionNode::reset() {
 	_last_rtk_time = kUnknownTime;
 	_last_navigation_attempt = kUnknownTime;
 	_last_imu_time = kUnknownTime;
+	_observations.clear();
+	_reference_imus.clear();
+	_observation_watermark = kUnknownTime;
+	resetBarometer("EKF reset; waiting for stationary pressure reference");
 	_imu_ready = false;
 	_accepted_navigation_updates = 0;
 	_imu_initialization->reset();
@@ -145,22 +181,28 @@ void StateFusionNode::reset() {
 }
 
 void StateFusionNode::onRtk(msg::Rtk::ConstSharedPtr message) {
-	_rtk = *message;
-	_rtk_receive_time = monotonicSeconds();
+	if (stampSeconds(message->header.stamp) >= stampSeconds(_rtk.header.stamp)) {
+		_rtk = *message;
+		_rtk_receive_time = monotonicSeconds();
+	}
+	enqueueNavigation(*message);
 }
 
 void StateFusionNode::onNavigation(msg::LocalNavigation::ConstSharedPtr message) {
 	if (message->header.frame_id != "odom" || message->session_id.empty() || message->source_session.empty()) return;
 	const bool changed = _navigation.session_id != message->session_id || _navigation.source_session != message->source_session;
-	if (!changed && stampSeconds(message->header.stamp) <= stampSeconds(_navigation.header.stamp)) return;
+	const bool newest = changed || stampSeconds(message->header.stamp) > stampSeconds(_navigation.header.stamp);
 	if (!message->observation_valid || !message->clock_aligned || message->fix_type < 3 || message->fix_type > 6 ||
 	    !message->heading_valid || !std::isfinite(message->heading)) {
+		if (!newest) return;
 		const double previous_imu_time = _state.t;
 		if (changed) {
 			reset();
 			_state.t = previous_imu_time;
 		}
 		_navigation = *message;
+		_observations.clear();
+		resetBarometer("Navigation revoked; waiting for stationary pressure reference");
 		_rtk.heading_valid = false;
 		_rtk.accuracy_ok = false;
 		_rtk_receive_time = kUnknownTime;
@@ -181,26 +223,272 @@ void StateFusionNode::onNavigation(msg::LocalNavigation::ConstSharedPtr message)
 	    !message->heading_valid || !std::isfinite(message->heading))
 		return;
 	const bool initialize_parameters = !_navigation.observation_valid && !_ekf->healthy();
-	_navigation = *message;
-	for (int i = 0; i < 3; ++i) {
-		_rtk_position_variance(i) = message->position_variance[i];
-		_rtk_velocity_variance(i) = message->velocity_variance[i];
+	if (newest) {
+		_navigation = *message;
+		for (int i = 0; i < 3; ++i) {
+			_rtk_position_variance(i) = message->position_variance[i];
+			_rtk_velocity_variance(i) = message->velocity_variance[i];
+		}
+		_rtk_heading_variance = message->heading_variance;
 	}
-	_rtk_heading_variance = message->heading_variance;
 	if (changed || initialize_parameters) {
 		_rtk = msg::Rtk();
 		reset();
 	}
 	// Internal observation storage only: never manufacture fixed/PPS evidence.
-	_rtk.header = message->header;
-	_rtk.position = message->position;
-	_rtk.velocity = message->velocity;
-	_rtk.heading = message->heading;
-	_rtk.heading_valid = message->heading_valid;
-	_rtk.accuracy_ok = message->accuracy_known && message->accuracy_ok && std::isfinite(message->horizontal_accuracy) &&
-	                   message->horizontal_accuracy > 0 && std::isfinite(message->vertical_accuracy) &&
-	                   message->vertical_accuracy > 0 && std::isfinite(message->velocity_accuracy) && message->velocity_accuracy > 0;
-	_rtk_receive_time = monotonicSeconds();
+	msg::Rtk navigation;
+	navigation.header = message->header;
+	navigation.position = message->position;
+	navigation.velocity = message->velocity;
+	navigation.heading = message->heading;
+	navigation.heading_valid = message->heading_valid;
+	navigation.accuracy_ok = message->accuracy_known && message->accuracy_ok && std::isfinite(message->horizontal_accuracy) &&
+	                         message->horizontal_accuracy > 0 && std::isfinite(message->vertical_accuracy) &&
+	                         message->vertical_accuracy > 0 && std::isfinite(message->velocity_accuracy) &&
+	                         message->velocity_accuracy > 0;
+	if (newest) {
+		_rtk = navigation;
+		_rtk_receive_time = monotonicSeconds();
+	}
+	Observation observation;
+	observation.time = stampSeconds(message->header.stamp);
+	observation.navigation = navigation;
+	for (int i = 0; i < 3; ++i) {
+		observation.position_variance(i) = message->position_variance[i];
+		observation.velocity_variance(i) = message->velocity_variance[i];
+	}
+	observation.heading_variance = message->heading_variance;
+	enqueueObservation(observation);
+}
+
+void StateFusionNode::enqueueNavigation(const msg::Rtk& navigation) {
+	if (navigation.header.frame_id != "odom" || !navigation.fixed || !navigation.accuracy_ok) return;
+	Observation observation;
+	observation.time = stampSeconds(navigation.header.stamp);
+	observation.navigation = navigation;
+	observation.position_variance = _rtk_position_variance;
+	observation.velocity_variance = _rtk_velocity_variance;
+	observation.heading_variance = _rtk_heading_variance;
+	enqueueObservation(observation);
+}
+
+void StateFusionNode::enqueueObservation(const Observation& observation) {
+	const double age = now().seconds() - observation.time;
+	if (!std::isfinite(observation.time) || (_timing_checks && (age < -0.010 || age > (observation.barometer ? _baro_max_age : 0.3))) ||
+	    (std::isfinite(_observation_watermark) && observation.time <= _observation_watermark)) {
+		if (observation.barometer)
+			++_late_barometer;
+		else
+			++_late_navigation;
+		return;
+	}
+	// At a shared timestamp GNSS runs first, then the scalar pressure update.
+	const auto less = [](const Observation& left, const Observation& right) {
+		return left.time < right.time || (left.time == right.time && left.barometer < right.barometer);
+	};
+	const auto position = std::lower_bound(_observations.begin(), _observations.end(), observation, less);
+	if (position != _observations.end() && position->time == observation.time && position->barometer == observation.barometer) return;
+	if (_observations.size() >= 1024) {
+		++_observation_overflows;
+		return;
+	}
+	_observations.insert(position, observation);
+}
+
+void StateFusionNode::resetBarometer(const std::string& reason) {
+	_observations.erase(std::remove_if(_observations.begin(), _observations.end(),
+	                                   [](const Observation& observation) { return observation.barometer; }),
+	                    _observations.end());
+	_baro_reference->reset();
+	_baro_last_time = _baro_receive_time = kUnknownTime;
+	_baro_last_height = _baro_last_height_variance = kUnknownTime;
+	_baro_reference_bias_variance = kUnknownTime;
+	_baro_reason = _baro_enabled ? reason : "Barometer disabled";
+	++_baro_reference_resets;
+}
+
+void StateFusionNode::onBarometer(msg::Barometer::ConstSharedPtr message) {
+	if (!_baro_enabled || message->source_session.empty()) return;
+	if (_baro_session != message->source_session) {
+		resetBarometer("Pressure source session changed; waiting for stationary reference");
+		_baro_session = message->source_session;
+	}
+	if (!message->valid || !message->clock_aligned) {
+		resetBarometer(message->reason.empty() ? "Pressure source invalid or clock unaligned" : message->reason);
+		return;
+	}
+	if (_navigation_source == "gnss" && _baro_session != _navigation.source_session) {
+		resetBarometer("Pressure and navigation source sessions differ");
+		return;
+	}
+	const double time = stampSeconds(message->header.stamp);
+	const double age = now().seconds() - time;
+	if (message->header.frame_id != "baro_link" || !std::isfinite(message->pressure_pa) || message->pressure_pa < _baro_min_pressure ||
+	    message->pressure_pa > _baro_max_pressure || !std::isfinite(message->pressure_variance) || message->pressure_variance < 0 ||
+	    (_timing_checks && (age < -0.010 || age > _baro_max_age))) {
+		++_baro_invalid_samples;
+		return;
+	}
+	Observation observation;
+	observation.time = time;
+	observation.barometer = true;
+	observation.pressure = message->pressure_pa;
+	observation.pressure_variance = message->pressure_variance > 0 ? message->pressure_variance : _baro_pressure_variance;
+	enqueueObservation(observation);
+	// Duplicate or out-of-order arrivals never renew stream freshness.
+	if (!std::isfinite(_baro_last_time) || time > _baro_last_time) {
+		_baro_last_time = time;
+		_baro_receive_time = monotonicSeconds();
+	}
+}
+
+void StateFusionNode::processBarometer(const Observation& observation, double received) {
+	if (!_baro_reference->ready()) {
+		agi::QuadState aligned;
+		const auto quality = _ekf->navigationQuality();
+		const bool disarmed = SafetyGate::fresh(received, _authority_receive_time, 0.1) &&
+		                      SafetyGate::fresh(now().seconds(), stampSeconds(_authority.header.stamp), 0.1) &&
+		                      _authority.rc_link && !_authority.armed;
+		const auto reference_imu = std::lower_bound(_reference_imus.begin(), _reference_imus.end(), observation.time,
+		                                            [](const agi::ImuSample& imu, double time) { return imu.t < time; });
+		const bool imu_covered = reference_imu != _reference_imus.end() && reference_imu->t - observation.time <= 0.025;
+		std::string reference_blocker;
+		if (!_ekf->getAt(observation.time, &aligned) || !aligned.valid() || !quality.valid)
+			reference_blocker = "Reference requires a valid predicted state and covariance";
+		else if (!disarmed)
+			reference_blocker = "Reference requires fresh disarmed authority";
+		else if (!_imu_ready || !_rtk.heading_valid || !SafetyGate::fresh(observation.time, _last_rtk_time, 0.3, _timing_checks))
+			reference_blocker = "Reference requires initialized IMU and fresh navigation with heading";
+		else if (!imu_covered)
+			reference_blocker = "Reference has no IMU coverage at the pressure sampling time";
+		else if (aligned.v.norm() > _initialization_max_speed)
+			reference_blocker = "Reference velocity exceeds imu_initialization_max_speed";
+		else if ((reference_imu->omega - aligned.bw).norm() > _reference_max_angular_speed)
+			reference_blocker = "Reference angular speed exceeds imu_max_gyro_bias";
+		else if ((agi::GVEC + aligned.R() * (reference_imu->acc - aligned.ba)).norm() > _reference_gravity_tolerance)
+			reference_blocker = "Reference gravity residual exceeds imu_gravity_tolerance";
+		const bool stationary = reference_blocker.empty();
+		if (_baro_reference->addSample(observation.time, observation.pressure, observation.pressure_variance,
+		                               stationary ? aligned.p.z() : NAN, stationary)) {
+			double reference_height = NAN;
+			if (!_ekf->alignBarometerReference(observation.time, _baro_reference->independentVariance(), &reference_height)) {
+				resetBarometer("Pressure bias initialization failed");
+				return;
+			}
+			_baro_reference->alignHeight(reference_height);
+			_baro_reference_bias_variance = _ekf->barometerQuality().bias_variance;
+			_baro_reason = "Pressure reference aligned; waiting for a new observation";
+		} else {
+			_baro_reason = stationary ? "Collecting stable pressure and local height reference" : reference_blocker;
+		}
+		return;
+	}
+	if (!_baro_reference->heightObservation(observation.pressure, observation.pressure_variance, _baro_model_variance,
+	                                        &_baro_last_height, &_baro_last_height_variance))
+		return;
+	if (_ekf->addBaro(observation.time, _baro_last_height, _baro_last_height_variance, _baro_nis_threshold))
+		_baro_reason = "Fusing IMU, navigation and barometer";
+	else
+		_baro_reason = "Barometer update rejected by innovation, timing or numerical checks";
+}
+
+void StateFusionNode::processObservations(double time, double received) {
+	const double started = monotonicSeconds();
+	const bool pressure_time_fresh = SafetyGate::fresh(time, _baro_last_time, _baro_max_age, _timing_checks) ||
+	                                 (std::isfinite(_baro_last_time) && _baro_last_time > time && _baro_last_time - time <= 0.010);
+	if (_baro_enabled && std::isfinite(_baro_receive_time) &&
+	    (!SafetyGate::fresh(received, _baro_receive_time, _baro_max_age) || !pressure_time_fresh)) {
+		resetBarometer("Pressure stream stale; using IMU and navigation");
+	}
+	const double cutoff = time - _observation_delay;
+	while (!_observations.empty() && _observations.front().time <= cutoff) {
+		const Observation observation = _observations.front();
+		_observations.pop_front();
+		if (observation.barometer) {
+			processBarometer(observation, received);
+			continue;
+		}
+		const auto& navigation = observation.navigation;
+		_last_navigation_attempt = observation.time;
+		const agi::Vector<3> position(navigation.position.x, navigation.position.y, navigation.position.z);
+		const agi::Vector<3> velocity(navigation.velocity.x, navigation.velocity.y, navigation.velocity.z);
+		const double innovation_limit =
+		        _navigation_source == "gnss" ? _navigation_nis_threshold : std::numeric_limits<double>::infinity();
+		if (_ekf->addRtk(observation.time, position, velocity, navigation.heading, navigation.heading_valid,
+		                 observation.position_variance, observation.velocity_variance, observation.heading_variance,
+		                 innovation_limit)) {
+			_last_rtk_time = observation.time;
+			if (navigation.accuracy_ok)
+				_accepted_navigation_updates = std::min(_accepted_navigation_updates + 1, _navigation_ready_updates);
+			else
+				_accepted_navigation_updates = 0;
+			_readiness_reason = "Waiting for consecutive accepted navigation updates and covariance limits";
+		} else {
+			_accepted_navigation_updates = 0;
+			_readiness_reason = "Navigation update rejected by EKF timing, innovation or numerical checks";
+		}
+	}
+	// Without barometer or an explicit reorder delay, preserve the original
+	// delayed-navigation contract: only a committed posterior closes history.
+	const double committed = _baro_enabled || _observation_delay > 0 ? cutoff : _ekf->navigationQuality().stamp;
+	if (!std::isfinite(_observation_watermark) || committed > _observation_watermark) _observation_watermark = committed;
+	_observation_processing_seconds = monotonicSeconds() - started;
+}
+
+void StateFusionNode::publishBarometerStatus() {
+	const auto quality = _ekf->barometerQuality();
+	diagnostic_msgs::msg::DiagnosticArray out;
+	out.header.stamp = now();
+	diagnostic_msgs::msg::DiagnosticStatus status;
+	status.name = "height_fusion";
+	status.hardware_id = _baro_session;
+	const double age = now().seconds() - _baro_last_time;
+	const double accepted_age = now().seconds() - quality.stamp;
+	const bool healthy = _baro_enabled && _baro_reference->ready() && quality.valid &&
+	                     SafetyGate::fresh(monotonicSeconds(), _baro_receive_time, _baro_max_age) && age >= -0.010 &&
+	                     age <= _baro_max_age && accepted_age >= 0 && accepted_age <= _baro_max_age + _observation_delay;
+	status.level = !_baro_enabled || healthy ? status.OK : status.WARN;
+	status.message = _baro_reason;
+	if (_baro_enabled && !healthy && _baro_reference->ready())
+		status.message = "No recent accepted barometer update; using IMU and navigation: " + _baro_reason;
+	const auto add = [&status](const std::string& key, const auto& value) {
+		diagnostic_msgs::msg::KeyValue item;
+		item.key = key;
+		item.value = std::to_string(value);
+		status.values.push_back(item);
+	};
+	add("enabled", _baro_enabled);
+	add("healthy", healthy);
+	add("reference_valid", _baro_reference->ready());
+	add("reference_samples", _baro_reference->sampleCount());
+	add("reference_pressure_pa", _baro_reference->pressure());
+	add("reference_height_m", _baro_reference->height());
+	add("reference_bias_variance_m2", _baro_reference_bias_variance);
+	add("reference_independent_variance_m2", _baro_reference->independentVariance());
+	add("sample_age_s", age);
+	add("last_accepted_stamp", quality.stamp);
+	add("height_m", _baro_last_height);
+	add("height_variance_m2", _baro_last_height_variance);
+	add("bias_m", quality.bias);
+	add("bias_variance_m2", quality.bias_variance);
+	add("innovation_m", quality.innovation);
+	add("nis", quality.innovation_squared);
+	add("accepted_updates", quality.accepted_updates);
+	add("rejected_updates", quality.rejected_updates);
+	add("late_navigation", _late_navigation);
+	add("late_barometer", _late_barometer);
+	add("queue_size", _observations.size());
+	add("queue_overflows", _observation_overflows);
+	add("queue_capacity", 1024);
+	add("queue_payload_bytes", _observations.size() * sizeof(Observation));
+	add("last_processing_seconds", _observation_processing_seconds);
+	add("reference_resets", _baro_reference_resets);
+	add("invalid_samples", _baro_invalid_samples);
+	add("observation_delay_s", _observation_delay);
+	const auto navigation = _ekf->navigationQuality();
+	add("prediction_span_s", _state.t - navigation.stamp);
+	out.status.push_back(status);
+	_baro_status_pub->publish(out);
 }
 
 bool StateFusionNode::navigationFresh(double time, double received) const {
@@ -241,6 +529,12 @@ void StateFusionNode::onImu(sensor_msgs::msg::Imu::ConstSharedPtr message) {
 	}
 	_last_imu_time = time;
 	_last_imu_receive_time = received;
+	if (_baro_enabled) {
+		_reference_imus.push_back(imu);
+		while (_reference_imus.size() > 1 &&
+		       (_reference_imus.front().t < time - _observation_delay - _baro_max_age - 0.025 || _reference_imus.size() > 1024))
+			_reference_imus.pop_front();
+	}
 	const double fix_time = stampSeconds(_rtk.header.stamp);
 	const bool navigation_fresh = navigationFresh(time, received);
 	const bool valid_fix =
@@ -296,6 +590,8 @@ void StateFusionNode::onImu(sensor_msgs::msg::Imu::ConstSharedPtr message) {
 		_imu_ready = true;
 		_last_rtk_time = fix_time;
 		_last_navigation_attempt = fix_time;
+		_observation_watermark = time;
+		while (!_observations.empty() && _observations.front().time <= time) _observations.pop_front();
 	} else {
 		if (!_ekf->addImu(imu)) {
 			reset();
@@ -304,22 +600,7 @@ void StateFusionNode::onImu(sensor_msgs::msg::Imu::ConstSharedPtr message) {
 			publishState(received);
 			return;
 		}
-		if (valid_fix) {
-			_last_navigation_attempt = fix_time;
-			const double innovation_limit =
-			        _navigation_source == "gnss" ? _navigation_nis_threshold : std::numeric_limits<double>::infinity();
-			if (_ekf->addRtk(fix_time, position, velocity, _rtk.heading, heading_valid, _rtk_position_variance,
-			                 _rtk_velocity_variance, _rtk_heading_variance, innovation_limit)) {
-				_last_rtk_time = fix_time;
-				if (_rtk.accuracy_ok)
-					_accepted_navigation_updates =
-					        std::min(_accepted_navigation_updates + 1, _navigation_ready_updates);
-				_readiness_reason = "Waiting for consecutive accepted navigation updates and covariance limits";
-			} else {
-				_accepted_navigation_updates = 0;
-				_readiness_reason = "Navigation update rejected by EKF timing, innovation or numerical checks";
-			}
-		}
+		processObservations(time, received);
 	}
 	if (!_ekf->getAt(time, &_state) || !_state.valid()) {
 		reset();

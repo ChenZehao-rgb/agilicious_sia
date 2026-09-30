@@ -17,12 +17,16 @@
 #include <limits>
 #include <map>
 #include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/msg/fluid_pressure.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/nav_sat_fix.hpp>
+#include <sensor_msgs/msg/temperature.hpp>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "agi_ros2/msg/barometer.hpp"
 #include "agi_ros2/msg/heading.hpp"
 #include "agi_ros2/msg/navigation.hpp"
 
@@ -58,6 +62,21 @@ public:
 		_imu_hz = rate("imu_rate_hz", 500, 500);
 		_gps_hz = rate("gps_rate_hz", 10, 50);
 		_attitude_hz = rate("attitude_rate_hz", 0, 100);
+		_baro_hz = rate("baro_rate_hz", 40, 500);
+		_rate_requests = {{{MAVLINK_MSG_ID_HIGHRES_IMU, _imu_hz},
+		                   {MAVLINK_MSG_ID_GPS_RAW_INT, _gps_hz},
+		                   {MAVLINK_MSG_ID_GLOBAL_POSITION_INT, _gps_hz},
+		                   {MAVLINK_MSG_ID_ATTITUDE, _attitude_hz},
+		                   {MAVLINK_MSG_ID_SCALED_PRESSURE, _baro_hz}}};
+		_baro_max_age_s = declare_parameter<double>("baro_max_age_s", .25, desc);
+		_baro_pressure_variance_pa2 = declare_parameter<double>("baro_pressure_variance_pa2", 0., desc);
+		_baro_temperature_variance_c2 = declare_parameter<double>("baro_temperature_variance_c2", 0., desc);
+		if (!std::isfinite(_baro_max_age_s) || _baro_max_age_s <= 0.)
+			throw std::invalid_argument("baro_max_age_s must be finite and positive");
+		for (double variance : {_baro_pressure_variance_pa2, _baro_temperature_variance_c2}) {
+			if (!std::isfinite(variance) || variance < 0.)
+				throw std::invalid_argument("Barometer variance must be finite and nonnegative (zero means unknown)");
+		}
 		_acc_variance = declare_parameter<std::vector<double>>("acceleration_variance", {0., 0., 0.}, desc);
 		_gyro_variance = declare_parameter<std::vector<double>>("angular_velocity_variance", {0., 0., 0.}, desc);
 		for (const auto &v : {_acc_variance, _gyro_variance}) {
@@ -71,6 +90,9 @@ public:
 		_attitude_pub = create_publisher<geometry_msgs::msg::QuaternionStamped>("sensors/fc_attitude", qos);
 		_navigation_pub = create_publisher<agi_ros2::msg::Navigation>("sensors/navigation", qos);
 		_heading_pub = create_publisher<agi_ros2::msg::Heading>("sensors/fc_heading", qos);
+		_pressure_pub = create_publisher<sensor_msgs::msg::FluidPressure>("sensors/baro/pressure", qos);
+		_temperature_pub = create_publisher<sensor_msgs::msg::Temperature>("sensors/baro/temperature", qos);
+		_baro_pub = create_publisher<agi_ros2::msg::Barometer>("sensors/baro/sample", rclcpp::QoS(100).reliable());
 		_status_pub = create_publisher<diagnostic_msgs::msg::DiagnosticArray>("sensors/mavlink/status", rclcpp::QoS(10).reliable());
 		_timer = create_wall_timer(std::chrono::milliseconds(1), [this] { tick(); });
 		_diagnostic_timer = create_wall_timer(std::chrono::seconds(1), [this] { diagnose(); });
@@ -108,7 +130,23 @@ private:
 		out.clock_aligned = clock_aligned;
 		_navigation_pub->publish(out);
 	}
-	void resetEpoch() {
+	void invalidateBarometer(const std::string& reason, bool clock_aligned = false, bool force = false) {
+		if (!_baro_pub || (!force && !_baro_valid)) return;
+		_baro_valid = false;
+		_baro_reason = _baro_hz ? reason : "Barometer telemetry disabled";
+		agi_ros2::msg::Barometer out;
+		// Failure events carry detection time, never a new timestamp for old pressure.
+		out.header.stamp = now();
+		out.header.frame_id = "baro_link";
+		out.source_session = _source_session;
+		out.clock_aligned = clock_aligned;
+		out.valid = false;
+		out.pressure_pa = nan;
+		out.pressure_variance = _baro_pressure_variance_pa2;
+		out.reason = _baro_reason;
+		_baro_pub->publish(out);
+	}
+	void resetEpoch(const std::string& reason) {
 		_source_session = std::to_string(steady());
 		_sync_count = 0;
 		_offset = nan;
@@ -127,6 +165,9 @@ private:
 		_command_waiting = false;
 		_commands_failed = false;
 		_next_sync = 0;
+		_last_baro_receive = 0;
+		_baro_arrival_age_s = nan;
+		invalidateBarometer(reason, false, true);
 		invalidateNavigation();
 	}
 	void disconnect() {
@@ -136,7 +177,7 @@ private:
 		}
 		_fd = -1;
 		_tx.clear();
-		resetEpoch();
+		resetEpoch(_reason);
 	}
 	void connectPort(double t) {
 		_next_connect = t + 1;
@@ -171,7 +212,7 @@ private:
 		_fd = fd;
 		_parser = {};
 		_parser_status = {};
-		resetEpoch();
+		resetEpoch("Waiting for clock synchronization");
 		_last_receive = t;
 		_reason = "Waiting for clock synchronization";
 	}
@@ -207,7 +248,7 @@ private:
 		double t = steady();
 		double ros_offset = now().seconds() - t;
 		if (std::isfinite(_ros_offset) && std::abs(ros_offset - _ros_offset) > .05) {
-			resetEpoch();
+			resetEpoch("ROS clock jumped; resynchronizing");
 			_tx.clear();
 			_reason = "ROS clock jumped; resynchronizing";
 		}
@@ -252,9 +293,11 @@ private:
 			return;
 		}
 		if (_sync_count && t - _last_sync > 2) {
-			resetEpoch();
+			resetEpoch("Time synchronization expired");
 			_reason = "Time synchronization expired";
 		}
+		if (_baro_valid && _baro_arrival_age_s + t - _last_baro_receive > _baro_max_age_s)
+			invalidateBarometer("Pressure sample timeout", _sync_count >= 5);
 		if (t >= _next_sync && _tx.empty()) {
 			_next_sync = t + .1;
 			int64_t token = static_cast<int64_t>(t * 1e9);
@@ -269,7 +312,7 @@ private:
 		pairGps();
 	}
 	void configureRates(double t) {
-		if (_command_index == 4) return;
+		if (_command_index >= _rate_requests.size()) return;
 		if (_command_waiting && t - _command_sent < .5) return;
 		if (_command_attempts >= 3) {
 			_commands_failed = true;
@@ -278,12 +321,10 @@ private:
 			_command_waiting = false;
 			return;
 		}
-		const std::array<int, 4> ids{105, 24, 33, 30};
-		const std::array<int, 4> hz{_imu_hz, _gps_hz, _gps_hz, _attitude_hz};
+		const auto [id, hz] = _rate_requests[_command_index];
 		mavlink_message_t msg{};
-		float interval = hz[_command_index] ? 1e6f / hz[_command_index] : -1;
-		mavlink_msg_command_long_pack(245, 191, &msg, _sys, _comp, MAV_CMD_SET_MESSAGE_INTERVAL, 0, ids[_command_index], interval,
-		                              0, 0, 0, 0, 0);
+		float interval = hz ? 1e6f / hz : -1;
+		mavlink_msg_command_long_pack(245, 191, &msg, _sys, _comp, MAV_CMD_SET_MESSAGE_INTERVAL, 0, id, interval, 0, 0, 0, 0, 0);
 		if (enqueue(msg)) {
 			_command_sent = t;
 			_command_waiting = true;
@@ -305,7 +346,7 @@ private:
 			return;
 		}
 		if (_last_remote_ns && ts.tc1 < _last_remote_ns) {
-			resetEpoch();
+			resetEpoch("Flight controller restarted");
 			_tx.clear();
 			_reason = "Flight controller restarted";
 			return;
@@ -313,7 +354,7 @@ private:
 		_last_remote_ns = ts.tc1;
 		double candidate = (sent + received) * .5 - ts.tc1 * 1e-9;
 		if (std::isfinite(_offset) && std::abs(candidate - _offset) > .05) {
-			resetEpoch();
+			resetEpoch("Device clock discontinuity");
 			_reason = "Device clock discontinuity";
 			return;
 		}
@@ -321,18 +362,22 @@ private:
 		_rtt_ms = rtt * 1000;
 		_last_sync = received;
 		++_sync_count;
+		if (_sync_count == 5 && _baro_hz && !_baro_valid) _baro_reason = "Waiting for pressure";
 	}
 	bool stamp(uint32_t id, double remote, builtin_interfaces::msg::Time &out) {
 		if (_sync_count < 5 || !std::isfinite(remote)) return false;
 		double mapped = remote + _offset + _ros_offset;
 		double age = now().seconds() - mapped;
-		if (age < -.02 || age > (id == 105 ? .05 : .5)) {
+		const double max_age = id == MAVLINK_MSG_ID_SCALED_PRESSURE ? _baro_max_age_s : id == 105 ? .05 : .5;
+		if (age < -.02 || age > max_age) {
 			++_stale;
+			if (id == MAVLINK_MSG_ID_SCALED_PRESSURE) ++_baro_stale;
 			return false;
 		}
 		auto it = _last_stamp.find(id);
 		if (it != _last_stamp.end() && remote <= it->second) {
 			++_duplicates;
+			if (id == MAVLINK_MSG_ID_SCALED_PRESSURE) ++_baro_duplicates;
 			return false;
 		}
 		_last_stamp[id] = remote;
@@ -365,7 +410,41 @@ private:
 			return;
 		}
 		if (_sync_count < 5 || _publisher_conflict) return;
-		if (m.msgid == MAVLINK_MSG_ID_HIGHRES_IMU && _imu_hz) {
+		if (m.msgid == MAVLINK_MSG_ID_SCALED_PRESSURE && _baro_hz) {
+			mavlink_scaled_pressure_t value{};
+			mavlink_msg_scaled_pressure_decode(&m, &value);
+			const double pressure_pa = static_cast<double>(value.press_abs) * 100.;
+			if (!std::isfinite(pressure_pa) || pressure_pa <= 0.) {
+				++_baro_invalid;
+				invalidateBarometer("Invalid absolute pressure", true);
+				return;
+			}
+			sensor_msgs::msg::FluidPressure pressure;
+			if (!stamp(MAVLINK_MSG_ID_SCALED_PRESSURE, bootMs(value.time_boot_ms), pressure.header.stamp)) return;
+			pressure.header.frame_id = "baro_link";
+			pressure.fluid_pressure = pressure_pa;
+			pressure.variance = _baro_pressure_variance_pa2;
+			_pressure_pub->publish(pressure);
+			sensor_msgs::msg::Temperature temperature;
+			temperature.header = pressure.header;
+			temperature.temperature = value.temperature * .01;
+			temperature.variance = _baro_temperature_variance_c2;
+			_temperature_pub->publish(temperature);
+			agi_ros2::msg::Barometer sample;
+			sample.header = pressure.header;
+			sample.source_session = _source_session;
+			sample.clock_aligned = true;
+			sample.valid = true;
+			sample.pressure_pa = pressure_pa;
+			sample.pressure_variance = pressure.variance;
+			sample.reason = "Pressure sample valid";
+			_baro_pub->publish(sample);
+			_baro_valid = true;
+			_baro_reason = sample.reason;
+			_last_baro_receive = steady();
+			_baro_arrival_age_s = now().seconds() - rclcpp::Time(pressure.header.stamp).seconds();
+			++_counts[5];
+		} else if (m.msgid == MAVLINK_MSG_ID_HIGHRES_IMU && _imu_hz) {
 			mavlink_highres_imu_t v{};
 			mavlink_msg_highres_imu_decode(&m, &v);
 			if ((v.fields_updated & 63) != 63) return;
@@ -508,8 +587,18 @@ private:
 		}
 	}
 	void diagnose() {
-		const bool publisher_conflict = count_publishers(_imu_pub->get_topic_name()) > 1;
-		if (publisher_conflict && !_publisher_conflict) invalidateNavigation();
+		const bool imu_publisher_conflict = count_publishers(_imu_pub->get_topic_name()) > 1;
+		_baro_publisher_conflict = count_publishers(_pressure_pub->get_topic_name()) > 1 ||
+		                           count_publishers(_temperature_pub->get_topic_name()) > 1 ||
+		                           count_publishers(_baro_pub->get_topic_name()) > 1;
+		const bool publisher_conflict =
+		        imu_publisher_conflict || _baro_publisher_conflict || count_publishers(_fix_pub->get_topic_name()) > 1 ||
+		        count_publishers(_velocity_pub->get_topic_name()) > 1 || count_publishers(_attitude_pub->get_topic_name()) > 1 ||
+		        count_publishers(_navigation_pub->get_topic_name()) > 1 || count_publishers(_heading_pub->get_topic_name()) > 1;
+		if (publisher_conflict && !_publisher_conflict) {
+			invalidateNavigation();
+			invalidateBarometer("Sensor publisher conflict", false, true);
+		}
 		_publisher_conflict = publisher_conflict;
 		diagnostic_msgs::msg::DiagnosticArray out;
 		out.header.stamp = now();
@@ -517,9 +606,9 @@ private:
 		s.name = "mavlink_sensor";
 		s.hardware_id = _device;
 		bool synchronized = _sync_count >= 5 && steady() - _last_sync < 2;
-		s.level = _fd < 0 || _publisher_conflict                                                        ? s.ERROR
-		          : !synchronized || _commands_failed || (_imu_hz && steady() - _last_imu_receive > .1) ? s.WARN
-		                                                                                                : s.OK;
+		const bool degraded =
+		        !synchronized || _commands_failed || (_imu_hz && steady() - _last_imu_receive > .1) || (_baro_hz && !_baro_valid);
+		s.level = _fd < 0 || _publisher_conflict ? s.ERROR : degraded ? s.WARN : s.OK;
 		s.message = _fd >= 0 && synchronized ? "Receiving; timestamps are FC update times, not hardware PPS" : _reason;
 		auto add = [&](const std::string &key, const std::string &value) {
 			diagnostic_msgs::msg::KeyValue kv;
@@ -527,11 +616,24 @@ private:
 			kv.value = value;
 			s.values.push_back(kv);
 		};
-		add("imu_publisher_conflict", _publisher_conflict ? "true" : "false");
+		add("sensor_publisher_conflict", _publisher_conflict ? "true" : "false");
+		add("imu_publisher_conflict", imu_publisher_conflict ? "true" : "false");
+		add("baro_publisher_conflict", _baro_publisher_conflict ? "true" : "false");
 		add("imu_fresh", steady() - _last_imu_receive < .1 ? "true" : "false");
 		add("connected", _fd >= 0 ? "true" : "false");
 		add("synchronized", synchronized ? "true" : "false");
-		add("rate_commands_ok", _command_index == 4 && !_commands_failed ? "true" : "false");
+		add("rate_commands_ok", _command_index == _rate_requests.size() && !_commands_failed ? "true" : "false");
+		add("source_session", _source_session);
+		add("baro_enabled", _baro_hz ? "true" : "false");
+		add("baro_valid", _baro_valid ? "true" : "false");
+		add("baro_reason", _baro_reason);
+		add("baro_sample_age_s", std::to_string(_baro_arrival_age_s + steady() - _last_baro_receive));
+		add("baro_receive_age_s", std::to_string(_last_baro_receive > 0 ? steady() - _last_baro_receive : nan));
+		add("baro_max_age_s", std::to_string(_baro_max_age_s));
+		add("baro_pressure_variance_pa2", std::to_string(_baro_pressure_variance_pa2));
+		add("baro_stale", std::to_string(_baro_stale));
+		add("baro_duplicates", std::to_string(_baro_duplicates));
+		add("baro_invalid", std::to_string(_baro_invalid));
 		add("heading_source", "GLOBAL_POSITION_INT.hdg / FC attitude yaw");
 		add("heading_valid", _heading_valid && steady() - _last_heading_receive < .5 ? "true" : "false");
 		add("gps_mode", _gps_mode);
@@ -551,7 +653,7 @@ private:
 		add("tx_errors", std::to_string(_tx_errors));
 		double t = steady(), elapsed = t - _diagnostic_time;
 		_diagnostic_time = t;
-		const std::array<std::string, 5> names{"imu_hz", "gps_fix_hz", "gps_velocity_hz", "attitude_hz", "heading_hz"};
+		const std::array<std::string, 6> names{"imu_hz", "gps_fix_hz", "gps_velocity_hz", "attitude_hz", "heading_hz", "baro_hz"};
 		for (size_t i = 0; i < names.size(); ++i) {
 			add(names[i], std::to_string(_counts[i] / elapsed));
 			_counts[i] = 0;
@@ -563,8 +665,17 @@ private:
 	double _last_heading_receive{0};
 	rclcpp::Publisher<agi_ros2::msg::Heading>::SharedPtr _heading_pub;
 	rclcpp::Publisher<agi_ros2::msg::Navigation>::SharedPtr _navigation_pub;
+	rclcpp::Publisher<agi_ros2::msg::Barometer>::SharedPtr _baro_pub;
+	rclcpp::Publisher<sensor_msgs::msg::FluidPressure>::SharedPtr _pressure_pub;
+	rclcpp::Publisher<sensor_msgs::msg::Temperature>::SharedPtr _temperature_pub;
 	std::string _source_session;
-	int _fd{-1}, _baud, _sys, _comp, _imu_hz, _gps_hz, _attitude_hz;
+	int _fd{-1}, _baud, _sys, _comp, _imu_hz, _gps_hz, _attitude_hz, _baro_hz;
+	std::array<std::pair<uint32_t, int>, 5> _rate_requests{};
+	double _baro_max_age_s, _baro_pressure_variance_pa2, _baro_temperature_variance_c2;
+	double _last_baro_receive{0}, _baro_arrival_age_s{nan};
+	bool _baro_valid{false}, _baro_publisher_conflict{false};
+	std::string _baro_reason{"Waiting for pressure"};
+	uint64_t _baro_stale{0}, _baro_duplicates{0}, _baro_invalid{0};
 	std::string _device, _gps_mode, _altitude_source, _reason{"Disconnected"};
 	std::vector<double> _acc_variance, _gyro_variance;
 	mavlink_message_t _parser{};
@@ -583,7 +694,7 @@ private:
 	bool _command_waiting{false}, _commands_failed{false}, _velocity_valid{false}, _ellipsoid_valid{false}, _accuracy_valid{false};
 	unsigned _gps_fix_type{0};
 	uint64_t _bad_frames{0}, _wrong_source{0}, _duplicates{0}, _stale{0}, _rejected_sync{0}, _tx_errors{0};
-	std::array<unsigned, 5> _counts{};
+	std::array<unsigned, 6> _counts{};
 	rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr _imu_pub;
 	rclcpp::Publisher<sensor_msgs::msg::NavSatFix>::SharedPtr _fix_pub;
 	rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr _velocity_pub;

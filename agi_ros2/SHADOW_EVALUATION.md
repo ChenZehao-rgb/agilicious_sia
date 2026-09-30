@@ -1,7 +1,7 @@
 # 实机数据驱动的无输出评估
 
 `shadow.launch.py` 接入两条独立串口：MSP 查询接收机、模式、配置和电池；
-MAVLink 接入 IMU 和普通 GPS。它运行本地坐标转换、EKF、悬停/CSV 参考和 MPC，
+MAVLink 接入 IMU、普通 GPS 和独立绝对气压。它运行本地坐标转换、EKF、悬停/CSV 参考和 MPC，
 **不发送 MSP_SET_RAW_RC（code 200）**。不要同时在 MSP 串口启动 `msp.launch.py`。
 本入口不提供开启输出的参数；控制端和输出端的 `shadow_only=true` 都是只读参数。
 输出端收到伪造允许命令也会在映射/发送之前返回。普通 flight 的硬件分支现在同样使用 GNSS，
@@ -57,6 +57,7 @@ KILL、失联、状态失效、输出进程故障或导航会话变化撤销参�
 
 ```text
 MAVLink HIGHRES_IMU → /sensors/imu ───────────────────────┐
+MAVLink SCALED_PRESSURE → /sensors/baro/sample ───────────┤
 GPS_RAW_INT + GLOBAL_POSITION_INT（按设备时间配对）        │
   → /sensors/navigation                                │
   → gnss_adapter.py → /sensors/local_navigation ────────┤
@@ -96,6 +97,109 @@ GNSS 初始化还要求新鲜未 ARM 授权、至少 3 秒/1000 个静止 IMU �
 `FusedState` 增加导航来源、会话、fix 类型、时钟对齐与观测有效性；
 普通 GNSS 的 `rtk_fixed` 和 `synchronized` 保持 false，即使 GPS 报 fix_type=6，
 也不声称当前组合满足原双天线 RTK/PPS 契约。
+
+## 气压高度融合
+
+硬件配置默认启用 `fusion.baro_enabled`，使用 IMU 传播、GNSS 位置/速度/航向更新和
+独立的一维气压高度更新。单独启动融合节点和 SITL 默认关闭气压路径。
+`mavlink.baro_rate_hz: 40` 请求飞控的 `SCALED_PRESSURE`（29）；接收端输出
+`/sensors/baro/pressure`（Pa）、`/sensors/baro/temperature`（℃）和包含会话/有效性的
+`/sensors/baro/sample`。融合订阅带会话标识的原子样本，并按采样时间排队，不把压力装入 GPS 高度。
+现有 `altitude_source: msl` 继续决定 GNSS 的高度基准，气压只提供相对于参考时段的高度变化。
+协议和时间戳细节见 [MAVLINK_SENSORS.md](MAVLINK_SENSORS.md)。
+
+导航原点和 EKF 初始化完成后，在连续静止且压力稳定的窗口内求参考压力 `p0`，
+将窗口结束采样时刻的 EKF 本地高度作为 `z0`，再使用标准大气近似：
+
+```text
+z_baro = z0 + 44330 * (1 - (p / p0)^0.190295)
+z_baro = z_imu + b_baro + noise
+```
+
+压力下降对应高度上升。`z0` 不要求等于零，重建参考不能静默改变 `odom` 坐标原点。
+新增 `b_baro` 偏置状态由 GNSS 长期约束。参考高度来自同一个 EKF，初始化保留
+`P(x,b)=-P(x,z)`、`P(b,b)=P(z,z)+R_reference`，因此首次同高度气压不会凭空降低导航协方差。
+`R_reference` 包括配置的对齐方差和参考压力均值传播的方差，作为跨样本共同误差，
+不会在每个 40 Hz 样本中作为独立白噪声重复融合。偏置随机游走按 `q * dt` 注入，
+与原有 IMU 过程噪声的 `dt²` 离散方式分别处理。
+压力测量方差通过 `dh/dp` 传播到高度方差，再叠加快速模型干扰方差。
+芯片温度不作为空气柱平均温度，不对高度差分再构造一个伪独立的垂直速度观测。
+
+收集参考要求当前授权新鲜且未解锁、导航新鲜、速度不超过 `imu_initialization_max_speed`。
+静止判断使用压力采样时刻附近的历史 IMU，扣除估计偏置后，角速度和重力残差分别沿用
+`imu_max_gyro_bias`、`imu_gravity_tolerance` 门限，并检查整个窗口的压力和本地高度稳定性。
+建立参考不要求已配置飞行精度门限；未配置的 `accuracy_ok`/`estimator_ready` 仍保持 false。
+
+初始硬件参数如下，都是待实机录包验证的评估值，不能称为噪声标定或飞行验收门限：
+
+| 参数（`fusion` 段） | 值与含义 |
+|---|---|
+| `observation_delay` | 0.20 s，GNSS/气压观测排序等待窗口 |
+| `baro_max_age` | 0.25 s，进入气压融合的最大采样年龄 |
+| `baro_min_pressure_pa` / `baro_max_pressure_pa` | 30000 / 120000 Pa，输入范围 |
+| `baro_pressure_variance_pa2` | 4 Pa²，接收端报告未知方差时的正值回退 |
+| `baro_model_variance` | 0.25 m²，快速模型干扰方差 |
+| `baro_nis_threshold` | 10.828，一维创新门限；与 GNSS 门限独立 |
+| `baro_reference_duration` / `baro_reference_min_samples` | 至少 2 s / 40 个独立参考样本 |
+| `baro_reference_max_stddev_pa` | 15 Pa，参考压力标准差上限 |
+| `baro_reference_max_vertical_stddev` | 0.3 m，参考窗口高度稳定性上限 |
+| `baro_bias_random_walk` | 0.01 m²/s，连续偏置随机游走谱密度 |
+| `baro_reference_variance` | 4 m²，参考对齐的不确定度配置 |
+
+接收端 `mavlink.baro_max_age_s: 0.25` 是独立的输入时效限制；
+`mavlink.baro_pressure_variance_pa2: 0` 表示方差未知，由上表的融合回退值处理。
+提高消息请求频率不能提高物理 MS5611 的采样频率。静态 TF 默认把 `baro_link` 与
+`base_link` 重合，这只是未经测量的共点近似，当前观测模型没有杆臂修正。
+
+GNSS 和气压都进入有界观测缓冲。每次 IMU 到来，先加入 IMU 历史，再按采样时间处理
+不晚于最新 IMU 减去排序窗口的观测。同一采样时间先更新 GNSS，再更新气压。
+队列最多 1024 条；满时丢弃新观测。已关闭排序窗口内后来到达的观测会被丢弃并计数，
+即使上一条测量被 NIS 拒绝，也不重新打开旧窗口；不倒退后验或用接收时间替换采样时间。
+气压关闭且排序窗口为 0 时，沿用既有 GNSS 后验时间界限，保留原有延迟导航更新行为。
+这是有界排序，不是任意延迟的历史回放；已经提交的后验之前到达的旧 GNSS 无法补融合。
+输出仍从已校正后验沿 IMU 预测到当前，不能把 0.20 s 等同于输出状态落后 0.20 s；
+它增加了校正等待与预测跨度，需测量 CM5 的 CPU、周期耗时和 GNSS 实际延迟再选择窗口。
+0.20 s 加 10 Hz GNSS 周期已经接近既有 0.30 s 导航新鲜度门限，调度抖动可能暂时撤销
+`navigation_valid`；本次没有放宽该门限。诊断提供队列长度/容量/估算载荷字节、
+`last_processing_seconds` 和 `prediction_span_s`；队列字节不包含分配器和字符串额外开销。
+
+参考和偏置与源时钟及导航/EKF 会话绑定。断线、时钟 epoch 变化、导航会话变化或 EKF
+重初始化清除对应的旧队列/参考并报告原因；ARM/DISARM 不是高度归零命令。
+没有气压、参考尚未建立或气压失效时，继续使用既有 IMU/GNSS 路径并报告退化原因。
+气压更新有独立的接受/拒绝、创新和 NIS 诊断，不刷新 GNSS 更新时间、不增加 GNSS
+连续就绪次数，也不能取代导航初始化、姿态初始化或 `navigation_ready` 的证据。
+
+首次运行保持默认 shadow：
+
+```bash
+./agi_ros2/scripts/launch.sh mode:=hardware
+ros2 topic hz /sensors/baro/pressure
+ros2 topic echo /fusion/baro/status
+```
+
+默认全 topic 录包包含 `/sensors/baro/pressure`、`/sensors/baro/temperature`、
+`/sensors/baro/sample`、`/fusion/baro/status`、`/sensors/imu`、`/sensors/navigation`、
+`/sensors/local_navigation`、`/sensors/mavlink/status`、`/fused_state` 和 `/tf_static`。
+对同一段静止/缓慢升降数据，分别用 `fusion.baro_enabled: false/true` 的独立 profile
+运行基线与气压融合，比较高度/垂直速度变化、压力创新/NIS、拒绝数、超窗丢弃及参考重置。
+需要完整时钟/会话契约的离线重放；不能一边发布真实串口、一边向相同 topic 重放 bag。
+没有外部真值时只报告漂移、重复性和相对变化，不能声称绝对高度精度提高。
+板上气压频率、安装位置、温升、气流/桨流干扰、物理 UART 吞吐和实机效果仍需验证。
+气压计算的启用不改变输出授权或 `shadow_only` 隔离。
+
+无物理设备的回归验证：
+
+```bash
+source /opt/ros/humble/setup.bash
+source install/agi_ros2/local_setup.bash
+ROS_LOCALHOST_ONLY=1 /usr/bin/python3 agi_ros2/test/test_mavlink_sensor.py
+ROS_LOCALHOST_ONLY=1 /usr/bin/python3 agi_ros2/test/test_baro_fusion.py
+ROS_LOCALHOST_ONLY=1 /usr/bin/python3 agi_ros2/test/test_baro_hardware_pipeline.py
+agilib/build/tests --gtest_filter='EkfImuRtk.*:EkfImuBaro.*'
+g++ -std=c++17 -Iagi_ros2/include agi_ros2/test/test_barometer_reference.cpp \
+  -lgtest -lgtest_main -pthread -o /tmp/agi-baro-reference-test
+/tmp/agi-baro-reference-test
+```
 
 ## MSP 解码与证据
 
