@@ -131,6 +131,7 @@ private:
 		h.converged = t > 2;
 		h.config_verified = get_parameter("config_verified").as_bool();
 		h.thrust_calibrated = true;
+		h.thrust_mapping_ready = true;
 		h.geofence_ok = true;
 		h.transport_healthy = true;
 		h.battery_voltage = 16;

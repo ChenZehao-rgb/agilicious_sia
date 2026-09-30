@@ -1,5 +1,30 @@
 # Split-node validation (2026-09-10)
 
+## 2026-09-30 quadratic thrust mapping
+
+Validated the optional manufacturer-estimated quadratic mapping on local x86-64 / ROS 2 Humble.
+The profile remains in shadow mode; the manufacturer's full-input thrust is a model scale, not a controller limit.
+
+- `./agi_ros2/scripts/build.sh -DAGI_ROS2_GAZEBO=ON`: passed, including regenerated messages and the Gazebo adapter.
+- `test_runtime_config.py`: 21 tests passed, covering legacy table selection, quadratic parameters and selected-model validation.
+- `test_runtime_profile_nodes.py RuntimeProfileNodes.test_direct_hardware_profile_rejects_invalid_quadratic_before_uart`:
+  passed; 22 invalid configurations failed before UART opening, and table mode ignored an invalid unselected quadratic model.
+- New output-node tests passed: RC 1170 at the 734 g hover estimate, identical output at 12/16/24 V,
+  invalid battery and stale Health revocation, readiness independent of calibration, out-of-range thrust rejection,
+  shadow silence, and read-only model parameters.
+- `test_hardware_pipeline.py`: all 9 tests passed using PTY MSP and synthetic MAVLink/GNSS, including
+  quadratic readiness propagation, AUTO/KILL, battery-only telemetry loss, table-mode MPC/GEO and shadow behavior.
+- CTest `betaflight_hw_test`, `hardware_pilot_test`, `betaflight_rc_mapper_test`, `quadratic_thrust_model_test`:
+  4/4 passed after rebuilding. GTest `HardwareGeo.*`: 4/4 passed.
+- New C++ files passed full clang-format 18 checks; modified C++ ranges passed formatting, Tab/140-column checks.
+  Python syntax and `git diff --check` passed.
+
+The first complete `test_node_pipeline.py` run passed 11/14 tests. The delay-mode acceptance, legacy MSP
+pseudo-UART, and simulated clock/sensor-loss cases failed; reported RC timestamp ages in the latter two
+exceeded the existing freshness limits. All three passed when rerun as a focused group, along with the
+new parameter-immutability test. No production timing threshold was relaxed; a clean complete-suite run
+is not claimed. These checks did not open a physical UART, arm hardware, or validate real thrust accuracy.
+
 ## SITL timing correction
 
 The earlier wall-timer behavior described below is superseded for

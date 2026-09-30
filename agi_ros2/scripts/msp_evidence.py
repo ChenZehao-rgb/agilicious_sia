@@ -122,6 +122,7 @@ class EvidenceNode(Node):
                         fresh(now, seconds(self.output.header.stamp), .05) and
                         fresh(time.monotonic(), self.output.steady_time, .05))
         health.thrust_calibrated = bool(output_fresh and self.output.thrust_calibrated)
+        health.thrust_mapping_ready = bool(output_fresh and self.output.thrust_mapping_ready)
         health.transport_healthy = bool(health.transport_healthy and output_fresh and self.output.transport_healthy)
         configured = all(a < b for a, b in zip(self.minimum, self.maximum))
         fused_fresh = (self.fused is not None and self.fused.clock_id == self.clock_id and
@@ -144,8 +145,11 @@ class EvidenceNode(Node):
             reasons.append('IMU startup checks or FC calibration/sensor status not ready')
         if not health.estimator_ready or not health.navigation_ready:
             reasons.append(self.fused.readiness_reason if fused_fresh else 'Fused state unavailable/stale')
-        if not health.thrust_calibrated:
-            reasons.append('Thrust calibration unavailable')
+        if not health.thrust_mapping_ready:
+            reasons.append('Thrust mapping unavailable')
+        elif not health.thrust_calibrated:
+            reasons.append(f'Thrust mapping ready: {self.output.thrust_model} / '
+                           f'{self.output.thrust_model_source} (uncalibrated estimate)')
         if not health.geofence_ok:
             reasons.append('Geofence unconfigured, stale, or exceeded')
         if not math.isfinite(health.battery_voltage):

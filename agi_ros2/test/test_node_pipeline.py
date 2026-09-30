@@ -25,6 +25,8 @@ from std_msgs.msg import String
 from nav_msgs.msg import Odometry
 from rosgraph_msgs.msg import Clock
 from builtin_interfaces.msg import Time
+from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
+from rcl_interfaces.srv import SetParameters
 
 ROOT = Path(__file__).resolve().parents[2]
 INSTALL = ROOT / 'install/agi_ros2'
@@ -68,6 +70,10 @@ class Harness:
         self.command_age = 0.0
         self.command_clock = CLOCK_ID
         self.total_thrust = 10.0
+        self.battery_voltage = 16.0
+        self.health_enabled = True
+        self.thrust_calibrated = True
+        self.thrust_mapping_ready = True
         self.body_rates = (0.1, 0.2, -0.3)
         self.rtk_enabled = True
         self.rtk_delay = 0.0
@@ -86,7 +92,7 @@ class Harness:
         self.simulation = False
         self.sim_time_ns = 10_000_000_000
 
-    def start(self, executable, hardware=False):
+    def start(self, executable, hardware=False, parameters=None):
         args = [str(BIN / executable), '--ros-args', '-r', '__ns:=' + self.namespace,
                 '-p', 'params_dir:=' + str(PARAMS)]
         if self.simulation:
@@ -105,6 +111,8 @@ class Harness:
                 args += ['-p', 'navigation_source:=rtk',
                          '-p', 'device:=' + os.ttyname(self.slave),
                          '-p', 'thrust_table:=' + str(table)]
+        for key, value in (parameters or {}).items():
+            args += ['-p', key + ':=' + (str(value).lower() if isinstance(value, bool) else str(value))]
         log = open(self.path / (executable + '.log'), 'w+')
         proc = subprocess.Popen(args, stdout=log, stderr=subprocess.STDOUT)
         self.processes.append(proc)
@@ -137,13 +145,15 @@ class Harness:
             rc.manual_aetr = [1500, 1500, 1000, 1500]
             self.publisher('authority', Authority).publish(rc)
             self.last_rc = wall
-        if wall - self.last_health >= 0.01:
+        if self.health_enabled and wall - self.last_health >= 0.01:
             health = Health()
             health.header.stamp = self.stamp()
             for field in ('imu_calibrated', 'converged', 'config_verified',
-                          'thrust_calibrated', 'geofence_ok', 'transport_healthy'):
+                          'geofence_ok', 'transport_healthy'):
                 setattr(health, field, True)
-            health.battery_voltage = 16.0
+            health.thrust_calibrated = self.thrust_calibrated
+            health.thrust_mapping_ready = self.thrust_mapping_ready
+            health.battery_voltage = self.battery_voltage
             self.publisher('health', Health).publish(health)
             self.last_health = wall
         if sensors and self.rtk_enabled and wall - self.last_rtk >= 0.1:
@@ -184,9 +194,11 @@ class Harness:
             evidence.solve_seconds = self.solve_seconds
             for field in ('rtk_fixed', 'heading_valid', 'accuracy_ok', 'imu_calibrated',
                           'synchronized', 'converged', 'config_verified',
-                          'thrust_calibrated', 'geofence_ok', 'msp_healthy',
+                          'geofence_ok', 'msp_healthy',
                           'controller_warm', 'rc_link'):
                 setattr(evidence, field, True)
+            evidence.thrust_calibrated = self.thrust_calibrated
+            evidence.thrust_mapping_ready = self.thrust_mapping_ready
             evidence.command_valid = self.command_valid
             evidence.armed, evidence.auto_switch, evidence.kill = self.armed, self.auto, self.kill
             self.publisher('control_command', ControlCommand).publish(command)
@@ -277,6 +289,127 @@ class NodePipelineTest(unittest.TestCase):
     def setUp(self):
         self.h = Harness()
         self.addCleanup(self.h.close)
+
+    def start_quadratic_output(self, shadow=False):
+        h = self.h
+        h.thrust_calibrated = False
+        h.total_thrust = .734 * 9.80665
+        h.subscribe('output_status', OutputStatus)
+        h.start('command_output_node', hardware=True, parameters={
+            'thrust_model': 'quadratic', 'thrust_quadratic.thrust_factor': 898. / 2231.,
+            'thrust_quadratic.max_total_thrust_n': 87.5145446,
+            'thrust_table': '/unused/nonexistent.csv', 'shadow_only': shadow})
+        h.run(.8, commands=True)
+        status = h.received['output_status'][-1]
+        self.assertTrue(status.thrust_mapping_ready)
+        self.assertFalse(status.thrust_calibrated)
+        self.assertEqual(status.thrust_model, 'quadratic')
+        self.assertEqual(status.thrust_model_source, 'manufacturer_estimate')
+        return h
+
+    def rc_frames(self):
+        return [struct.unpack('<4H', frame[5:-1]) for frame in self.h.serial_frames if frame[4] == 200]
+
+    def test_quadratic_mapping_voltage_independence_and_battery_interlock(self):
+        h = self.start_quadratic_output()
+        h.auto = True
+        h.run(.15, commands=True)
+        self.assertTrue(h.received['output_status'][-1].override_active)
+        for voltage in (12., 16., 24.):
+            with self.subTest(voltage=voltage):
+                h.battery_voltage = voltage
+                h.clear()
+                h.run(.1, commands=True)
+                frames = self.rc_frames()
+                self.assertTrue(frames)
+                self.assertTrue(all(frame[2] == 1170 for frame in frames), frames)
+        for invalid in (float('nan'), float('inf'), 0., -1.):
+            with self.subTest(invalid_voltage=invalid):
+                h.battery_voltage = invalid
+                h.run(.08, commands=True)
+                self.assertFalse(h.received['output_status'][-1].override_active)
+                h.clear()
+                h.run(.05, commands=True)
+                self.assertFalse(self.rc_frames())
+                h.battery_voltage = 16.
+                h.run(.08, commands=True)
+                self.assertFalse(h.received['output_status'][-1].override_active)
+                h.auto = False
+                h.run(.1, commands=True)
+                h.auto = True
+                h.run(.1, commands=True)
+                self.assertTrue(h.received['output_status'][-1].override_active)
+        h.health_enabled = False
+        h.run(.25, commands=True)
+        self.assertFalse(h.received['output_status'][-1].override_active)
+
+    def test_quadratic_requires_mapping_evidence_and_rejects_out_of_range(self):
+        h = self.start_quadratic_output()
+        h.thrust_calibrated = True
+        h.thrust_mapping_ready = False
+        h.auto = True
+        h.run(.15, commands=True)
+        self.assertFalse(h.received['output_status'][-1].override_active)
+        self.assertFalse(self.rc_frames())
+        h.thrust_mapping_ready = True
+        h.thrust_calibrated = False
+        h.auto = False
+        h.run(.1, commands=True)
+        h.auto = True
+        h.run(.1, commands=True)
+        self.assertTrue(h.received['output_status'][-1].override_active)
+        h.total_thrust = 88.
+        h.run(.08, commands=True)
+        self.assertFalse(h.received['output_status'][-1].override_active)
+        self.assertGreater(h.received['output_status'][-1].fault_count, 0)
+        h.clear()
+        h.run(.05, commands=True)
+        self.assertFalse(self.rc_frames())
+
+    def test_quadratic_shadow_never_sends_override(self):
+        h = self.start_quadratic_output(shadow=True)
+        h.auto = True
+        h.run(.2, commands=True)
+        self.assertFalse(self.rc_frames())
+        self.assertFalse(h.received['output_status'][-1].override_active)
+
+    def test_quadratic_parameters_are_read_only(self):
+        h = self.start_quadratic_output()
+        client = h.node.create_client(SetParameters, 'command_output/set_parameters')
+        self.addCleanup(h.node.destroy_client, client)
+        self.assertTrue(client.wait_for_service(timeout_sec=2.))
+        parameters = [Parameter(name='thrust_model', value=ParameterValue(
+            type=ParameterType.PARAMETER_STRING, string_value='table'))]
+        for name, value in (('thrust_factor', .8), ('max_total_thrust_n', 100.)):
+            parameters.append(Parameter(name='thrust_quadratic.' + name, value=ParameterValue(
+                type=ParameterType.PARAMETER_DOUBLE, double_value=value)))
+        future = client.call_async(SetParameters.Request(parameters=parameters))
+        h.run(.1, commands=True)
+        self.assertTrue(future.done())
+        self.assertTrue(all(not result.successful for result in future.result().results))
+        h.auto = True
+        h.run(.1, commands=True)
+        self.assertEqual(self.rc_frames()[-1][2], 1170)
+
+    def test_direct_output_rejects_invalid_thrust_model(self):
+        base = [str(BIN / 'command_output_node'), '--ros-args', '-p', 'params_dir:=' + str(PARAMS),
+                '-p', 'mode:=hardware', '-p', 'bridge_config:=' + str(self.h.bridge),
+                '-p', 'device:=' + str(self.h.path / 'no-physical-device')]
+        cases = [({'thrust_model': 'unknown'}, 'thrust_model must'),
+                 ({'thrust_model': 'quadratic'}, 'quadratic'),
+                 ({'thrust_model': 'quadratic', 'thrust_quadratic.thrust_factor': 1.1,
+                   'thrust_quadratic.max_total_thrust_n': 87.5145446}, 'quadratic'),
+                 ({'thrust_model': 'quadratic', 'thrust_quadratic.thrust_factor': .4,
+                   'thrust_quadratic.max_total_thrust_n': 0.}, 'quadratic'),
+                 ({'thrust_model': 'quadratic', 'mode': 'sitl'}, 'requires hardware')]
+        for params, reason in cases:
+            with self.subTest(params=params):
+                args = base[:]
+                for key, value in params.items():
+                    args += ['-p', key + ':=' + str(value)]
+                result = subprocess.run(args, capture_output=True, text=True, timeout=10)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(reason, (result.stdout + result.stderr).lower())
 
     def test_fusion_control_output_and_sensor_loss(self):
         h = self.h

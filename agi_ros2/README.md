@@ -65,7 +65,7 @@ ARM64 默认不构建 Gazebo 适配器，核心三节点和 MAVLink/MSP 节点�
 
 | 段 | 内容及读取者 |
 |---|---|
-| `flight` | 轨迹、推力表、shadow/diagnostic 开关、SITL 延迟实验、录包；launch 读取 |
+| `flight` | 轨迹、推力模型及参数、shadow/diagnostic 开关、SITL 延迟实验、录包；launch 和输出节点读取 |
 | `pilot` | 内嵌 `quadrotor` 和 `pipeline.controller.parameter_sets`；按 type 选 MPC/GEO 参数，输出端采用相同模型校验 |
 | `bridge` | ACTUAL rates/deadband/min_check；输出端映射、MSP 配置回读和 SITL EEPROM 共用 |
 | `fusion` | IMU 噪声、初始化及导航质量门限；launch 传给融合节点 |
@@ -119,12 +119,13 @@ GEO 使用位置/速度反馈、参考加速度和 yaw，输出与 MPC 相同的
 
 当前 rates/thrust MPC 与 GEO 的机体最小数据均为 `mass`、`omega_max`、`thrust_min/max`。`omega_max` 为逐轴 rad/s；
 推力字段继续沿用单电机等效 N 的单位，两种控制器的总推力被限制在 `[4*thrust_min, 4*thrust_max]` N。
-实机请根据标定表和允许工作范围填写，而非直接把电机规格最大值当作测试范围；
-整个总推力范围应落在计划带载电压下的标定包络内，输出端仍拒绝表外值、不外推。
+实机请根据所选推力映射和允许工作范围填写，而非直接把电机规格最大值当作测试范围；
+table 模式的整个总推力范围应落在计划带载电压下的标定包络内，输出端拒绝表外值、不外推。
+quadratic 模式的满输入推力是曲线尺度，也不自动成为控制器允许的推力上限。
 惯量、力臂、kappa、电机转速/时间常数/推力多项式在这两种 ROS2 外环模型中均不加载，可以省略；
 内部将未使用项标记为未知。Gazebo 的物理机体和旧内置动力学估计器仍需要自己的完整模型。
 
-GEO 仍要求真实质量、RC 推力表、飞控 rates 回读、导航/融合质量、围栏及实体授权。
+GEO 仍要求真实质量、可用的 RC 推力映射、飞控 rates 回读、导航/融合质量、围栏及实体授权。
 配置里的 GEO 增益是调试起点，未通过本机体飞行验收；当前 rates 输出没有 jerk/角速度前馈和位置积分。
 零/向下推力方向、无效四元数和姿态计算奇点会拒绝本周期并撤权。
 MPC 参数保留在 `parameter_sets.MPC`，具体模型与权重见下一节。
@@ -271,9 +272,10 @@ hardware 模式拒绝启用此开关。旧独立控制器仍可用 `run.py --no-
 
    hardware 默认 shadow。核心三节点与 MAVLink/GNSS/evidence 合共六个节点；输出节点只查询 MSP。
    `shadow.launch.py` 即使接到 `shadow_only:=false` 也拒绝，运行中不能切换只读参数。
-   推力表可暂缺，真实模型不可缺；详见 [SHADOW_EVALUATION.md](SHADOW_EVALUATION.md)。
+   table 模式推力表可暂缺；quadratic 模式仍检查其参数。真实机体模型不可缺；
+   详见 [SHADOW_EVALUATION.md](SHADOW_EVALUATION.md)。
 
-3. **实测模型、推力表、质量门限和飞控回读全部就绪后，显式启用输出入口：**
+3. **机体模型、所选推力映射、质量门限和飞控回读全部就绪后，显式启用输出入口：**
 
    ```bash
    ./agi_ros2/scripts/launch.sh mode:=hardware shadow_only:=false
@@ -298,11 +300,14 @@ hardware 模式拒绝启用此开关。旧独立控制器仍可用 `run.py --no-
 | 位置 | 单位/来源 |
 |---|---|
 | `pilot.quadrotor.mass` | 含电池/负载的起飞总质量，kg |
-| `thrust_min/max` | **每电机等效**推力界限（N）；总推力范围为四倍，需受实际 RC 标定包络约束 |
+| `thrust_min/max` | **每电机等效**推力界限（N）；总推力范围为四倍，需落在所选映射范围和实际允许工作范围内 |
 | `omega_max` | MPC 约束/GEO 输出限幅的机体角速度上限，rad/s；不能超过实际 rate/profile/机体能力 |
 | `bridge.center_rate_deg_s/max_rate_deg_s/expo_percent` | FC ACTUAL rate 三轴参数，deg/s、deg/s、%；必须与当前回读 profile 一致 |
 | `bridge.deadband/yaw_deadband/min_check` | FC RC deadband/min_check 原始设置；readback 精确匹配 |
-| `flight.thrust_table` | 实测电压—PWM—**全机总推力 N** 表的路径，格式见下 |
+| `flight.thrust_model` | `table` 或 `quadratic`；旧配置省略时为 `table`，当前 hardware 配置选 `quadratic` |
+| `flight.thrust_table` | `table` 模式实测电压—RC 油门—**全机总推力 N** 表的路径，格式见下 |
+| `flight.thrust_quadratic.thrust_factor` | `quadratic` 模式的无量纲系数 k，有限且在 `[0,1]` |
+| `flight.thrust_quadratic.max_total_thrust_n` | `quadratic` 模式的满输入**全机总推力 N**，有限且大于零 |
 | `mavlink.altitude_source` | 确认后填 `msl` 或 `ellipsoid`；默认 `unknown` 不提供可用三维高度 |
 | `navigation.heading_confirmed/heading_correction_rad` | 确认绝对航向来源与安装方向后声明；修正量加在 ENU 航向上，rad |
 | `navigation.fc_declination_applied` | 记录 FC 是否已经处理磁偏角，避免重复修正；本身不授予导航健康 |
@@ -315,7 +320,57 @@ hardware 模式拒绝启用此开关。旧独立控制器仍可用 `run.py --no-
 | `evidence.aux_low/aux_high/rx_map` | 实体 ARM/AUTO/KILL 范围及接收机映射，与飞控回读一致 |
 
 硬件 `bridge.host/port/hover_throttle/motor_idle` 仅为既有映射类型的兼容字段；
-硬件油门始终查实测表，不用仿真的平方根/悬停油门模型。MPC 权重只是起始调参值，未经过真实机体飞行验收。
+硬件油门使用所选 table 或 quadratic 模型；SITL 继续使用原有平方根/悬停油门模型。
+MPC 权重只是起始调参值，未经过真实机体飞行验收。
+
+### 二次推力近似模式
+
+当前 `hardware.yaml` 使用以下估算，`shadow_only: true` 及尚未填写的控制上限保持不变：
+
+```yaml
+flight:
+  thrust_model: quadratic
+  thrust_table: ''
+  thrust_quadratic:
+    thrust_factor: 0.40251008516360376
+    max_total_thrust_n: 87.5145446
+```
+
+公式为 `T = Tmax * ((1-k)*u + k*u*u)`，T 是控制器期望的全机总推力 N，u 是 `[0,1]` 的归一化油门。
+令 `q=T/Tmax`，反解为 `u=2*q/((1-k)+sqrt((1-k)^2+4*k*q))`；零推力直接返回零，
+再用 `RC=round(min_check+(2000-min_check)*u)` 转为 RC 油门。
+负推力、非有限推力或超过 Tmax 时拒绝输出，不夹紧也不自动切换到另一模型。
+
+系数来自用户提供的厂家**单电机**数据 `50%→891 gf`、`100%→2231 gf`，厂家测试电压、
+桨和电调条件尚未独立核验。结合零输入零推力假设，单电机拟合为 `F=1333*u+898*u*u` gf；
+假设四套动力一致，得到 `k=898/2231`、`Tmax=4*2231*0.00980665=87.5145446 N`。
+暂将厂家电调归一化输入近似视为 Betaflight 归一化油门，未补偿怠速、油门曲线或限幅差异。
+`min_check=1050` 时，u 的 `0/0.5/1` 对应 RC `1050/1525/2000`；734 g 水平悬停估计
+`u≈0.126824`、RC≈1170，处于厂家两测点以下，依赖零点和低油门外推假设。
+Tmax 是模型尺度，不自动填入 `pilot.quadrotor.thrust_max`，也不构成实际飞行推力上限。
+
+quadratic **不做电压补偿**，不解析或读取残留 `thrust_table` 路径；输出仍要求电池电压有效、
+有限且为正。证据节点在电池缺失或过期时撤销电池有效性，新 health 心跳不会刷新旧电池数据。
+因此改变有效电压不会改变此模型的油门结果，电压数据失效仍会阻止输出。
+
+只有选中的模型参与参数校验。硬件模式下，两种模型的要求分别为：
+
+- `thrust_model: table`：真实输出（`shadow_only: false`）必须提供有效实测 CSV 表；
+  影子计算（`shadow_only: true`）可以不提供表。可用 `thrust_model:=table` 启动覆盖。
+- `thrust_model: quadratic`：真实输出和影子计算都不需要 CSV 表，只校验二次模型参数，
+  不读取 `thrust_table`。模型参数有效时映射可就绪，真实输出仍须满足其他控制与健康条件。
+
+quadratic 仅用于 hardware，SITL 显式选择它会拒绝启动。
+直接启动输出节点时的对应只读 ROS 参数是 `thrust_model`、`thrust_quadratic.thrust_factor`、
+`thrust_quadratic.max_total_thrust_n`；选择器和数值在启动后不能改变。
+
+授权使用 `thrust_mapping_ready`，经 OutputStatus → Health → 控制证据传递；
+`thrust_calibrated` 保留原 table/SITL 语义，quadratic 估算始终为 false。
+OutputStatus 的 `thrust_model/thrust_model_source` 分别报告 `quadratic/manufacturer_estimate`、
+`table/measured_table` 或 `sitl/simulation`，映射就绪不能解释为实测标定完成。
+这些消息字段更新后，所有相关 ROS 节点及消息包须统一重编译、重新 source 后使用。
+
+### 实测推力表模式
 
 推力 CSV 是纯数字矩形网格，不带字符串表头：
 

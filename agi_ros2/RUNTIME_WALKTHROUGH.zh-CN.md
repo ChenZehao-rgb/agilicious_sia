@@ -27,6 +27,33 @@
 [本次验证记录](HARDWARE_ADAPTATION_VALIDATION.zh-CN.md)；
 CM5 时间预算、真实 UART/GNSS 质量、飞控停流回退和悬停飞行仍需目标设备验证。
 
+**二次推力估算适配（2026-09-30，替代“硬件只能查表”的描述）。**
+
+硬件输出现由 `flight.thrust_model` 选择 `table` 或 `quadratic`，旧配置省略时仍为 `table`。
+当前 hardware 配置选择 `quadratic`，保持 shadow 和原有未配置控制上限；SITL 的推力映射保持原样。
+统一 launch 和直接输出节点都在启动时校验选中的模型，参数只读，失败不自动切换模型。
+quadratic 不读取残留 CSV；table 非 shadow 硬件输出仍必须提供有效实测表。
+
+[QuadraticThrustModel](/home/sia/agilicious_internal-main/agilib/include/agilib/bridge/betaflight/quadratic_thrust_model.h)
+直接接收全机总推力 N，使用 `T=Tmax*((1-k)*u+k*u*u)`；令 `q=T/Tmax`，
+反解 `u=2*q/((1-k)+sqrt((1-k)^2+4*k*q))`，零推力单独返回零，
+再计算 `RC=round(min_check+(2000-min_check)*u)`。负值、非有限值和超过 Tmax 的指令拒绝输出。
+三轴角速度到摇杆的 ACTUAL rates 反解和 MSP AETR 打包路径保持不变。
+
+当前 `k=898/2231`、`Tmax=87.5145446 N`，来自用户提供的厂家单电机 `50%→891 gf`、
+`100%→2231 gf` 两点，假设零点、四套相同动力，并将电调归一化输入近似视为归一化 RC 油门。
+厂家测量条件未经独立核验；734 g 的悬停估计 RC≈1170 属于两测点以下的低油门外推。
+模型 Tmax 只是满输入尺度，不修改每电机等效 `thrust_max` 控制上限。
+
+该模型不做电压补偿，但硬件输出仍独立要求有效、有限且正的电池电压；
+MSP 证据节点会将缺失/过期电池数据置为不可用，health 心跳不延长电池有效期。
+授权改用 `thrust_mapping_ready`，贯穿 OutputStatus、Health、ControlCommand 证据和安全门。
+`thrust_calibrated` 保留 table/SITL 的原语义，quadratic 下为 false；
+输出状态记录 `thrust_model=quadratic`、`thrust_model_source=manufacturer_estimate`。
+新消息需对所有相关 ROS 节点统一重编译；配置、测量假设及表模式详见
+[README 的推力模型说明](README.md#二次推力近似模式)。以下历史正文中的 `thrust_calibrated` 授权条件
+和硬件仅有推力表的叙述应按本段更新理解。
+
 **MPC/GEO 选择适配（2026-09-22）。**
 
 统一入口新增只读启动选项 `controller:=MPC|GEO`，缺省取同一 profile 的

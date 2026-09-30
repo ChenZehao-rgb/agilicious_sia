@@ -59,6 +59,7 @@ msg::SafetyEvidence encodeEvidence(const agi::hardware::Evidence& evidence) {
 	message.accuracy_known = evidence.accuracy_known;
 	message.config_verified = evidence.config_verified;
 	message.thrust_calibrated = evidence.thrust_calibrated;
+	message.thrust_mapping_ready = evidence.thrust_mapping_ready;
 	message.geofence_ok = evidence.geofence_ok;
 	message.msp_healthy = evidence.msp_healthy;
 	message.command_valid = evidence.command_valid;
@@ -91,6 +92,7 @@ agi::hardware::Evidence decodeEvidence(const msg::SafetyEvidence& message) {
 	evidence.accuracy_known = message.accuracy_known;
 	evidence.config_verified = message.config_verified;
 	evidence.thrust_calibrated = message.thrust_calibrated;
+	evidence.thrust_mapping_ready = message.thrust_mapping_ready;
 	evidence.geofence_ok = message.geofence_ok;
 	evidence.msp_healthy = message.msp_healthy;
 	evidence.command_valid = message.command_valid;

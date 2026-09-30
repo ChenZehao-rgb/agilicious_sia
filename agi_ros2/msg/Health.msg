@@ -6,6 +6,8 @@ bool imu_ready
 bool estimator_ready
 bool navigation_ready
 bool config_verified
+# Mapping readiness is independent of measured thrust calibration.
+bool thrust_mapping_ready
 bool thrust_calibrated
 bool geofence_ok
 bool transport_healthy

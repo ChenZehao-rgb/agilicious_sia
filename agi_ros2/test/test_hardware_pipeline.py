@@ -5,6 +5,7 @@ No physical devices, Gazebo or fabricated Authority/Health publishers are used.
 Source ROS and the built workspace first; pymavlink is required.
 """
 import os
+import math
 from pathlib import Path
 import pty
 import time
@@ -20,7 +21,7 @@ from test_runtime_profile_nodes import dump_profile
 
 
 class HardwareHarness(ShadowHarness):
-    def __init__(self, shadow=False, override_timeout='50', controller='MPC'):
+    def __init__(self, shadow=False, override_timeout='50', controller='MPC', thrust_model='table'):
         super().__init__()
         self.response_armed = False
         self.config_frames[119] = bytes((27, 50, 0, 1))  # Include ANGLE in the FC's stable BOXIDS list.
@@ -49,6 +50,7 @@ class HardwareHarness(ShadowHarness):
                                          ('mass', 'omega_max', 'thrust_min', 'thrust_max')}
         profile['bridge'] = yaml.safe_load(self.bridge.read_text())
         profile['flight']['shadow_only'] = shadow
+        profile['flight']['thrust_model'] = thrust_model
         profile['flight']['thrust_table'] = str(table)
         path = self.path / 'hardware.yaml'
         path.write_text(dump_profile(profile))
@@ -146,6 +148,44 @@ class HardwarePipelineTests(unittest.TestCase):
 
     def test_geo_gnss_hover_authorization_and_recovery(self):
         self.check_real_gnss_hover('GEO')
+
+    def test_quadratic_estimate_propagates_readiness_and_allows_override(self):
+        h = self.harness(controller='GEO', thrust_model='quadratic')
+        h.wait_ready()
+        health = h.received['health'][-1]
+        output = h.received['output_status'][-1]
+        self.assertTrue(health.thrust_mapping_ready)
+        self.assertTrue(output.thrust_mapping_ready)
+        self.assertFalse(health.thrust_calibrated)
+        self.assertFalse(output.thrust_calibrated)
+        self.assertEqual(output.thrust_model_source, 'manufacturer_estimate')
+        h.response_armed = True
+        h.run(.15)
+        h.response_auto = True
+        h.run(.3)
+        self.assertTrue(h.has_output(), h.snapshot())
+        h.response_kill = True
+        h.run(.15)
+        start = len(h.codes)
+        h.run(.1)
+        self.assertFalse(h.has_output(start))
+
+    def test_quadratic_battery_telemetry_loss_revokes_override(self):
+        h = self.harness(controller='GEO', thrust_model='quadratic')
+        h.wait_ready()
+        h.response_armed = True
+        h.run(.15)
+        h.response_auto = True
+        h.run(.3)
+        self.assertTrue(h.has_output(), h.snapshot())
+        # Keep RC/STATUS and sensor streams running while only battery replies stop.
+        h.drop_code = 130
+        h.run(1.8)
+        self.assertFalse(math.isfinite(h.received['health'][-1].battery_voltage))
+        self.assertFalse(h.received['output_status'][-1].override_active)
+        start = len(h.codes)
+        h.run(.1)
+        self.assertFalse(h.has_output(start))
 
     def check_real_gnss_hover(self, controller):
         h = self.harness(controller=controller)

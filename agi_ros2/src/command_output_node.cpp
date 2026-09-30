@@ -78,9 +78,23 @@ CommandOutputNode::CommandOutputNode()
 	        shadow_descriptor);
 	const int baud = declare_parameter<int>(
 	        "baud", profile && _mode == "hardware" ? profile->section("output")["baud"].as<int>() : 921600, shadow_descriptor);
-	const auto thrust_file = declare_parameter<std::string>(
-	        "thrust_table", profile ? profile->resolvePath(profile->section("flight")["thrust_table"].as<std::string>()) : "",
-	        shadow_descriptor);
+	_thrust_model = declare_parameter<std::string>("thrust_model",
+	                                               profile && profile->section("flight")["thrust_model"].isDefined()
+	                                                       ? profile->section("flight")["thrust_model"].as<std::string>()
+	                                                       : "table",
+	                                               shadow_descriptor);
+	if (_thrust_model != "table" && _thrust_model != "quadratic") {
+		throw std::invalid_argument("thrust_model must be table or quadratic");
+	}
+	if (_thrust_model == "quadratic" && _mode != "hardware") {
+		throw std::invalid_argument("quadratic thrust_model requires hardware mode");
+	}
+	const auto thrust_file =
+	        declare_parameter<std::string>("thrust_table",
+	                                       profile && _thrust_model == "table" && profile->section("flight")["thrust_table"].isDefined()
+	                                               ? profile->resolvePath(profile->section("flight")["thrust_table"].as<std::string>())
+	                                               : "",
+	                                       shadow_descriptor);
 	const bool mapping_loaded = profile ? _bridge_params.load(profile->section("bridge"))
 	                                    : _bridge_params.load(std::filesystem::path(params_dir) / bridge_file);
 	if (!mapping_loaded) throw std::invalid_argument("Invalid Betaflight channel mapping");
@@ -98,11 +112,33 @@ CommandOutputNode::CommandOutputNode()
 		throw std::invalid_argument("pilot.quadrotor.omega_max exceeds the configured Betaflight ACTUAL maximum rate");
 	}
 	_mapper = std::make_unique<agi::BetaflightRcMapper>(_bridge_params);
-	if (!thrust_file.empty()) {
+	if (_thrust_model == "quadratic") {
+		const auto model_parameter = [&](const std::string& name) {
+			double value = std::numeric_limits<double>::quiet_NaN();
+			if (profile && profile->section("flight")["thrust_quadratic"][name].isDefined()) {
+				const auto configured = profile->section("flight")["thrust_quadratic"][name];
+				value = configured.as<double>();
+				// The legacy YAML numeric parser accepts suffixes; reject them here
+				// so direct-node configuration agrees with launch validation.
+				const std::string text = configured.as<std::string>();
+				size_t parsed = 0;
+				std::stod(text, &parsed);
+				if (parsed != text.size()) throw std::invalid_argument("Invalid thrust_quadratic." + name);
+			}
+			return declare_parameter<double>("thrust_quadratic." + name, value, shadow_descriptor);
+		};
+		const double factor = model_parameter("thrust_factor");
+		const double maximum = model_parameter("max_total_thrust_n");
+		_quadratic_thrust = std::make_unique<agi::hardware::QuadraticThrustModel>(factor, maximum, _bridge_params.min_check);
+		RCLCPP_WARN(get_logger(),
+		            "Thrust model: quadratic (manufacturer_estimate), factor=%.12g, max_total_thrust_n=%.12g; "
+		            "linear RC approximation, no voltage compensation, not measured calibration",
+		            factor, maximum);
+	} else if (!thrust_file.empty()) {
 		loadThrustTable(thrust_file);
 	}
 	if (_mode == "hardware") {
-		if (!_thrust && !_shadow_only) {
+		if (!_thrust && !_quadratic_thrust && !_shadow_only) {
 			throw std::invalid_argument("Hardware output requires a thrust_table");
 		}
 		_msp = std::make_unique<agi::hardware::BetaflightMspBridge>(device, baud, policy);
@@ -134,8 +170,9 @@ CommandOutputNode::CommandOutputNode()
 		const bool navigation_ready = _navigation_policy == agi::hardware::NavigationPolicy::Gnss
 		                                      ? (_health.imu_ready && _health.estimator_ready && _health.navigation_ready)
 		                                      : (_health.imu_calibrated && _health.converged);
-		if (!navigation_ready || !_health.config_verified || !_health.thrust_calibrated || !_health.geofence_ok ||
-		    !_health.transport_healthy)
+		if (!navigation_ready || !_health.config_verified || !_health.thrust_mapping_ready || !_health.geofence_ok ||
+		    !_health.transport_healthy ||
+		    (_mode == "hardware" && (!std::isfinite(_health.battery_voltage) || _health.battery_voltage <= 0)))
 			processOutput();
 	});
 	if (_msp) {
@@ -227,7 +264,11 @@ std::array<uint16_t, 4> CommandOutputNode::mapCommand() const {
 	                                 _bridge_params.yaw_deadband);
 	const double acceleration = _command.total_thrust / _mass;
 	if (_msp) {
-		channels[2] = _thrust->collectiveThrustToRc(acceleration, _mass, _health.battery_voltage);
+		if (!std::isfinite(_health.battery_voltage) || _health.battery_voltage <= 0) {
+			throw std::out_of_range("Battery voltage unavailable/stale/nonpositive");
+		}
+		channels[2] = _quadratic_thrust ? _quadratic_thrust->totalThrustToRc(_command.total_thrust)
+		                                : _thrust->collectiveThrustToRc(acceleration, _mass, _health.battery_voltage);
 	} else {
 		const double motor = (_bridge_params.motor_idle + (1 - _bridge_params.motor_idle) * _bridge_params.hover_throttle) *
 		                     std::sqrt(acceleration / kGravity);
@@ -285,12 +326,17 @@ void CommandOutputNode::processOutput(bool new_command) {
 	evidence.kill = evidence.kill || _authority.kill;
 	evidence.armed = evidence.armed && _authority.armed;
 	evidence.auto_switch = _authority.auto_switch;
-	evidence.command_valid =
-	        evidence.command_valid && command_fresh && authority_matches && (!_authority.auto_switch || _command.permit_override);
+	// Battery freshness is encoded as NaN by the MSP evidence producer. The
+	// quadratic model ignores voltage for mapping, but retains this interlock.
+	const bool battery_valid = _mode != "hardware" || (std::isfinite(_health.battery_voltage) && _health.battery_voltage > 0);
+	evidence.command_valid = evidence.command_valid && command_fresh && authority_matches && battery_valid &&
+	                         (!_authority.auto_switch || _command.permit_override);
 	evidence.msp_healthy = evidence.msp_healthy && _transport_healthy && health_fresh && _health.transport_healthy;
 	evidence.config_verified = evidence.config_verified && health_fresh && _health.config_verified;
 	evidence.geofence_ok = evidence.geofence_ok && health_fresh && _health.geofence_ok;
 	evidence.thrust_calibrated = evidence.thrust_calibrated && health_fresh && _health.thrust_calibrated;
+	evidence.thrust_mapping_ready = evidence.thrust_mapping_ready && health_fresh && _health.thrust_mapping_ready &&
+	                                (_mode == "sitl" || _thrust || _quadratic_thrust);
 	evidence.imu_calibrated = evidence.imu_calibrated && health_fresh && _health.imu_calibrated;
 	evidence.converged = evidence.converged && health_fresh && _health.converged;
 	evidence.imu_ready = evidence.imu_ready && health_fresh && _health.imu_ready;
@@ -407,6 +453,12 @@ void CommandOutputNode::publishStatus() {
 	status.steady_time = monotonicSeconds();
 	status.transport_healthy = _transport_healthy;
 	status.thrust_calibrated = _mode == "sitl" || static_cast<bool>(_thrust);
+	status.thrust_mapping_ready = _mode == "sitl" || _thrust || _quadratic_thrust;
+	status.thrust_model = _mode == "sitl" ? "sitl" : _thrust_model;
+	status.thrust_model_source = _mode == "sitl"     ? "simulation"
+	                             : _quadratic_thrust ? "manufacturer_estimate"
+	                             : _thrust           ? "measured_table"
+	                                                 : "unavailable";
 	status.fault_count = _fault_count;
 	status.session_start = _session_start;
 	status.override_active = _override_active;

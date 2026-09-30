@@ -13,53 +13,96 @@ void require(bool condition) {
   if (!condition) throw std::runtime_error("hardware test assertion failed");
 }
 Evidence healthy(double now = 10) {
-  Evidence e;
-  e.now = e.imu_time = e.rtk_time = e.rc_time = e.command_time = now;
-  e.solve_seconds = 0.004;
-  e.rtk_fixed = e.heading_valid = e.accuracy_ok = e.imu_calibrated = true;
-  e.synchronized = e.converged = e.config_verified = e.thrust_calibrated = true;
-  e.geofence_ok = e.msp_healthy = e.command_valid = e.controller_warm = true;
-  e.armed = e.rc_link = true;
-  e.kill = false;
-  return e;
+	Evidence e;
+	e.now = e.imu_time = e.rtk_time = e.rc_time = e.command_time = now;
+	e.solve_seconds = 0.004;
+	e.rtk_fixed = e.heading_valid = e.accuracy_ok = e.imu_calibrated = true;
+	e.synchronized = e.converged = e.config_verified = e.thrust_calibrated = true;
+	e.thrust_mapping_ready = true;
+	e.geofence_ok = e.msp_healthy = e.command_valid = e.controller_warm = true;
+	e.armed = e.rc_link = true;
+	e.kill = false;
+	return e;
 }
 void safetyTests() {
-  SafetyGate gate;
-  auto e = healthy();
-  e.auto_switch = true;
-  require(!gate.update(e)); // reboot while switch high
-  e.auto_switch = false;
-  require(!gate.update(e));
-  e.auto_switch = true;
-  require(gate.update(e));
-  require(gate.update(e));
-  e.imu_time -= 0.011;
-  require(!gate.update(e));
-  e.imu_time = e.now;
-  require(!gate.update(e)); // no automatic recovery
-  e.auto_switch = false; require(!gate.update(e));
-  e.auto_switch = true; require(gate.update(e));
-  e.kill = true; require(!gate.update(e));
-  for (int failure = 0; failure < 10; ++failure) {
-    SafetyGate g;
-    e = healthy(); g.update(e);
-    e.auto_switch = true; require(g.update(e));
-    switch (failure) {
-      case 0: e.rtk_fixed = false; break;
-      case 1: e.rc_link = false; break;
-      case 2: e.command_time -= 0.030; break;
-      case 3: e.solve_seconds = 0.009; break;
-      case 4: e.rtk_time -= 0.301; break;
-      case 5: e.imu_time += 0.001; break;
-      case 6: e.now = NAN; break;
-      case 7: e.thrust_calibrated = false; break;
-      case 8: e.armed = false; break;
-      case 9: e.geofence_ok = false; break;
-    }
-    require(!g.update(e));
-    e = healthy(); e.auto_switch = true;
-    require(!g.update(e));
-  }
+	SafetyGate gate;
+	auto e = healthy();
+	e.auto_switch = true;
+	require(!gate.update(e));  // reboot while switch high
+	e.auto_switch = false;
+	require(!gate.update(e));
+	e.auto_switch = true;
+	require(gate.update(e));
+	require(gate.update(e));
+	e.imu_time -= 0.011;
+	require(!gate.update(e));
+	e.imu_time = e.now;
+	require(!gate.update(e));  // no automatic recovery
+	e.auto_switch = false;
+	require(!gate.update(e));
+	e.auto_switch = true;
+	require(gate.update(e));
+	e.kill = true;
+	require(!gate.update(e));
+	for (int failure = 0; failure < 10; ++failure) {
+		SafetyGate g;
+		e = healthy();
+		g.update(e);
+		e.auto_switch = true;
+		require(g.update(e));
+		switch (failure) {
+			case 0:
+				e.rtk_fixed = false;
+				break;
+			case 1:
+				e.rc_link = false;
+				break;
+			case 2:
+				e.command_time -= 0.030;
+				break;
+			case 3:
+				e.solve_seconds = 0.009;
+				break;
+			case 4:
+				e.rtk_time -= 0.301;
+				break;
+			case 5:
+				e.imu_time += 0.001;
+				break;
+			case 6:
+				e.now = NAN;
+				break;
+			case 7:
+				e.thrust_mapping_ready = false;
+				break;
+			case 8:
+				e.armed = false;
+				break;
+			case 9:
+				e.geofence_ok = false;
+				break;
+		}
+		require(!g.update(e));
+		e = healthy();
+		e.auto_switch = true;
+		require(!g.update(e));
+	}
+}
+void thrustMappingReadinessTests() {
+	Evidence e = healthy();
+	e.thrust_calibrated = false;
+	SafetyGate gate;
+	require(SafetyGate::inputsHealthy(e));
+	require(!gate.update(e));
+	e.auto_switch = true;
+	require(gate.update(e));
+	// A legacy calibration claim cannot substitute for mapping readiness.
+	e.thrust_calibrated = true;
+	e.thrust_mapping_ready = false;
+	require(!SafetyGate::inputsHealthy(e));
+	require(!gate.update(e));
+	require(gate.reason() == "thrust mapping unavailable");
+	require(gate.mode() == Mode::ManualFallback);
 }
 void parserTests() {
   MspDecoder decoder;
@@ -177,15 +220,17 @@ void transportTests() {
 }
 }
 int main() {
-  try {
-	  safetyTests();
-	  gnssPolicyTests();
-	  parserTests();
-	  thrustTests();
-	  transportTests();
-	  std::cout << "PASS: safety, MSP v1/v2, calibrated thrust, pseudo-terminal transport\n";
-	  return 0;
-  } catch (const std::exception& e) {
-    std::cerr << e.what() << '\n'; return 1;
-  }
+	try {
+		safetyTests();
+		thrustMappingReadinessTests();
+		gnssPolicyTests();
+		parserTests();
+		thrustTests();
+		transportTests();
+		std::cout << "PASS: safety, MSP v1/v2, calibrated thrust, pseudo-terminal transport\n";
+		return 0;
+	} catch (const std::exception& e) {
+		std::cerr << e.what() << '\n';
+		return 1;
+	}
 }

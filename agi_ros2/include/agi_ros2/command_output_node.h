@@ -16,6 +16,7 @@
 #include "agilib/bridge/betaflight/betaflight_msp_bridge.hpp"
 #include "agilib/bridge/betaflight/betaflight_rc_mapper.hpp"
 #include "agilib/bridge/betaflight/hardware_safety.hpp"
+#include "agilib/bridge/betaflight/quadratic_thrust_model.h"
 #include "agilib/bridge/betaflight/thrust_table.hpp"
 #include "agilib/bridge/betaflight_udp/betaflight_udp_bridge_params.hpp"
 #include "rclcpp/rclcpp.hpp"
@@ -41,6 +42,7 @@ private:
 	const std::string _clock_id;
 	const double _session_start;
 	std::string _mode;
+	std::string _thrust_model;
 	bool _shadow_only = false;
 	bool _simulation_time = false;
 	bool _timing_checks = true;
@@ -54,6 +56,7 @@ private:
 	std::unique_ptr<MspTelemetry> _telemetry;
 	rclcpp::TimerBase::SharedPtr _msp_timer;
 	std::unique_ptr<agi::hardware::ThrustTable> _thrust;
+	std::unique_ptr<agi::hardware::QuadraticThrustModel> _quadratic_thrust;
 	std::unique_ptr<agi::hardware::SafetyGate> _gate;
 	msg::ControlCommand _command;
 	msg::Authority _authority;

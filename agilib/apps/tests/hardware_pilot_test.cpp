@@ -27,14 +27,15 @@ PilotParams configuration() {
   return p;
 }
 Evidence health(double now, bool automatic = false) {
-  Evidence e;
-  e.now = e.imu_time = e.rtk_time = e.rc_time = now;
-  e.rtk_fixed = e.heading_valid = e.accuracy_ok = e.imu_calibrated = true;
-  e.synchronized = e.converged = e.config_verified = e.thrust_calibrated = true;
-  e.geofence_ok = e.msp_healthy = e.rc_link = e.armed = true;
-  e.kill = false;
-  e.auto_switch = automatic;
-  return e;
+	Evidence e;
+	e.now = e.imu_time = e.rtk_time = e.rc_time = now;
+	e.rtk_fixed = e.heading_valid = e.accuracy_ok = e.imu_calibrated = true;
+	e.synchronized = e.converged = e.config_verified = e.thrust_calibrated = true;
+	e.thrust_mapping_ready = true;
+	e.geofence_ok = e.msp_healthy = e.rc_link = e.armed = true;
+	e.kill = false;
+	e.auto_switch = automatic;
+	return e;
 }
 void referenceAndWatchdogTests() {
 	QuadState state;

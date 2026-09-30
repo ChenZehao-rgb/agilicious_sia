@@ -61,6 +61,54 @@ class RuntimeProfileNodes(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn('requires parameter_sets, parameters or file', result.stdout + result.stderr)
 
+    def test_direct_hardware_profile_rejects_invalid_quadratic_before_uart(self):
+        document = yaml.safe_load((ROOT / 'agi_ros2/config/hardware.yaml').read_text())
+        simulation = yaml.safe_load((ROOT / 'agi_ros2/config/simulation.yaml').read_text())
+        document['pilot']['quadrotor'] = simulation['pilot']['quadrotor']
+        document['bridge'] = simulation['bridge']
+        valid = {'thrust_factor': 898 / 2231, 'max_total_thrust_n': 87.5145446}
+        cases = [('missing_model', None), ('empty_model', {})]
+        for key in valid:
+            missing = dict(valid)
+            del missing[key]
+            cases.append(('missing_' + key, missing))
+            for value in (True, False, '0.4', '.4junk', '87.5junk', float('nan'), float('inf')):
+                cases.append((key + '=' + repr(value), {**valid, key: value}))
+        cases.extend((name, {**valid, key: value}) for name, key, value in (
+            ('negative_factor', 'thrust_factor', -0.1), ('large_factor', 'thrust_factor', 1.1),
+            ('zero_maximum', 'max_total_thrust_n', 0.0), ('negative_maximum', 'max_total_thrust_n', -1.0)))
+        with tempfile.TemporaryDirectory(prefix='agi_quadratic_profile_') as directory:
+            profile = Path(directory) / 'hardware.yaml'
+            missing_device = Path(directory) / 'no_physical_uart'
+            self.assertFalse(missing_device.exists())
+            for name, parameters in cases:
+                with self.subTest(case=name):
+                    if parameters is None:
+                        document['flight'].pop('thrust_quadratic', None)
+                    else:
+                        document['flight']['thrust_quadratic'] = parameters
+                    profile.write_text(dump_profile(document))
+                    result = subprocess.run([
+                        str(BIN / 'command_output_node'), '--ros-args', '-p', 'mode:=hardware',
+                        '-p', 'runtime_config:=' + str(profile), '-p', 'device:=' + str(missing_device)],
+                        capture_output=True, text=True, timeout=10)
+                    output = result.stdout + result.stderr
+                    self.assertNotEqual(result.returncode, 0, output)
+                    self.assertRegex(output, 'quadratic thrust model|thrust_quadratic', output)
+                    self.assertNotIn('open ' + str(missing_device), output,
+                                     'Invalid model was accepted and reached the UART constructor')
+
+            # A selected table in shadow may be absent; unselected estimates must not be parsed.
+            document['flight'].update(thrust_model='table', thrust_table='', shadow_only=True,
+                                      thrust_quadratic={'thrust_factor': '.4junk', 'max_total_thrust_n': True})
+            profile.write_text(dump_profile(document))
+            result = subprocess.run([
+                str(BIN / 'command_output_node'), '--ros-args', '-p', 'mode:=hardware',
+                '-p', 'runtime_config:=' + str(profile), '-p', 'device:=' + str(missing_device)],
+                capture_output=True, text=True, timeout=10)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('open ' + str(missing_device), result.stdout + result.stderr)
+
     def check_hover(self, controller):
         harness = Harness()
         self.addCleanup(harness.close)

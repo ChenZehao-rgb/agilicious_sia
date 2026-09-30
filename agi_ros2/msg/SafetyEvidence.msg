@@ -20,6 +20,8 @@ bool navigation_ready
 bool clock_aligned
 bool accuracy_known
 bool config_verified
+# Mapping readiness is independent of measured thrust calibration.
+bool thrust_mapping_ready
 bool thrust_calibrated
 bool geofence_ok
 bool msp_healthy

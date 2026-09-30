@@ -141,6 +141,7 @@ class RuntimeProfiles(unittest.TestCase):
             _, profile = runtime.load_profile('hardware')
             profile['pilot']['quadrotor'] = {
                 'mass': 1.0, 'omega_max': [1.0, 1.0, 1.0], 'thrust_min': 0.0, 'thrust_max': 5.0}
+            del profile['flight']['thrust_model']
             path = Path(directory) / 'hardware.yaml'
             path.write_text(yaml.safe_dump(profile))
             nodes = self.actions(**values, runtime_config=str(path))
@@ -190,6 +191,7 @@ class RuntimeProfiles(unittest.TestCase):
             _, simulation = runtime.load_profile('sitl')
             profile['pilot']['quadrotor'] = simulation['pilot']['quadrotor']
             profile['bridge'] = simulation['bridge']
+            profile['flight']['thrust_model'] = 'table'
             profile['flight']['thrust_table'] = 'measured.csv'
             path = Path(directory) / 'hardware.yaml'
             path.write_text(yaml.safe_dump(profile))
@@ -200,7 +202,100 @@ class RuntimeProfiles(unittest.TestCase):
                 self.assertFalse(nodes[name]['use_sim_time'])
                 self.assertEqual(nodes[name]['runtime_config'], str(path))
             self.assertEqual(nodes['command_output_node']['thrust_table'], str(Path(directory) / 'measured.csv'))
+            self.assertEqual(nodes['command_output_node']['thrust_model'], 'table')
             self.assertEqual(nodes['msp_evidence.py']['runtime_config'], str(path))
+
+    def test_hardware_defaults_to_estimate_without_changing_controller_limits_or_shadow(self):
+        _, profile = runtime.load_profile('hardware')
+        self.assertEqual(profile['flight']['thrust_model'], 'quadratic')
+        self.assertTrue(profile['flight']['shadow_only'])
+        self.assertEqual(profile['pilot']['quadrotor']['thrust_max'], 0.0)
+        self.assertEqual(profile['pilot']['quadrotor']['omega_max'], [0.0, 0.0, 0.0])
+
+    def test_quadratic_launch_passes_parameters_and_ignores_csv(self):
+        with tempfile.TemporaryDirectory() as directory:
+            _, profile = runtime.load_profile('hardware')
+            profile['pilot']['quadrotor'] = {
+                'mass': 0.734, 'omega_max': [1.0, 1.0, 1.0], 'thrust_min': 0.0, 'thrust_max': 5.0}
+            # This would fail path resolution if an unselected table were inspected.
+            profile['flight']['thrust_table'] = {'not': 'a path'}
+            path = Path(directory) / 'hardware.yaml'
+            path.write_text(yaml.safe_dump(profile))
+            for shadow in ('true', 'false'):
+                with self.subTest(shadow=shadow):
+                    nodes = self.actions(mode='hardware', runtime_config=str(path), device='/dev/null',
+                                         mavlink_device='/dev/zero', shadow_only=shadow)
+                    output = nodes['command_output_node']
+                    self.assertEqual(output['thrust_model'], 'quadratic')
+                    self.assertEqual(output['thrust_table'], '')
+                    self.assertEqual(output['thrust_quadratic.thrust_factor'], 898 / 2231)
+                    self.assertEqual(output['thrust_quadratic.max_total_thrust_n'], 87.5145446)
+
+    def test_thrust_model_launch_override_selects_only_requested_model(self):
+        with tempfile.TemporaryDirectory() as directory:
+            _, profile = runtime.load_profile('hardware')
+            profile['pilot']['quadrotor'] = {
+                'mass': 0.734, 'omega_max': [1.0, 1.0, 1.0], 'thrust_min': 0.0, 'thrust_max': 5.0}
+            profile['flight']['thrust_quadratic'] = None
+            profile['flight']['thrust_table'] = 'measured.csv'
+            path = Path(directory) / 'hardware.yaml'
+            path.write_text(yaml.safe_dump(profile))
+            nodes = self.actions(mode='hardware', runtime_config=str(path), device='/dev/null',
+                                 mavlink_device='/dev/zero', thrust_model='table', shadow_only='false')
+            output = nodes['command_output_node']
+            self.assertEqual(output['thrust_model'], 'table')
+            self.assertEqual(output['thrust_table'], str(Path(directory) / 'measured.csv'))
+            self.assertNotIn('thrust_quadratic.thrust_factor', output)
+
+    def test_quadratic_parameters_are_required_and_validated_without_fallback(self):
+        path, profile = runtime.load_profile('hardware')
+        flight = profile['flight']
+        flight['thrust_table'] = 'measured.csv'
+        for key in ('thrust_factor', 'max_total_thrust_n'):
+            valid = flight['thrust_quadratic'][key]
+            for invalid in (None, True, '0.5', float('nan'), float('inf'), float('-inf')):
+                with self.subTest(key=key, value=invalid):
+                    flight['thrust_quadratic'][key] = invalid
+                    with self.assertRaisesRegex(ValueError, key):
+                        runtime.checked_thrust_mapping(flight, 'hardware', path, True)
+            del flight['thrust_quadratic'][key]
+            with self.assertRaisesRegex(ValueError, key):
+                runtime.checked_thrust_mapping(flight, 'hardware', path, True)
+            flight['thrust_quadratic'][key] = valid
+        for key, invalid in (('thrust_factor', -0.01), ('thrust_factor', 1.01),
+                             ('max_total_thrust_n', 0), ('max_total_thrust_n', -1)):
+            valid = flight['thrust_quadratic'][key]
+            flight['thrust_quadratic'][key] = invalid
+            with self.subTest(key=key, value=invalid), self.assertRaisesRegex(ValueError, key):
+                runtime.checked_thrust_mapping(flight, 'hardware', path, True)
+            flight['thrust_quadratic'][key] = valid
+        for invalid in (None, [], 'model'):
+            flight['thrust_quadratic'] = invalid
+            with self.subTest(value=invalid), self.assertRaisesRegex(ValueError, 'flight.thrust_quadratic'):
+                runtime.checked_thrust_mapping(flight, 'hardware', path, True)
+        del flight['thrust_quadratic']
+        with self.assertRaisesRegex(ValueError, 'flight.thrust_quadratic'):
+            runtime.checked_thrust_mapping(flight, 'hardware', path, True)
+
+    def test_thrust_model_selection_and_quadratic_coefficient_endpoints(self):
+        path, profile = runtime.load_profile('hardware')
+        flight = profile['flight']
+        for coefficient in (0, 1):
+            flight['thrust_quadratic']['thrust_factor'] = coefficient
+            parameters = runtime.checked_thrust_mapping(flight, 'hardware', path, True)
+            self.assertEqual(parameters['thrust_quadratic.thrust_factor'], coefficient)
+            self.assertIsInstance(parameters['thrust_quadratic.thrust_factor'], float)
+        with self.assertRaisesRegex(ValueError, 'requires mode=hardware'):
+            runtime.checked_thrust_mapping(flight, 'sitl', path, False)
+        for invalid in ('', 'unknown', None):
+            flight['thrust_model'] = invalid
+            with self.subTest(value=invalid), self.assertRaisesRegex(ValueError, 'table or quadratic'):
+                runtime.checked_thrust_mapping(flight, 'hardware', path, True)
+        del flight['thrust_model']
+        parameters = runtime.checked_thrust_mapping(flight, 'hardware', path, True)
+        self.assertEqual(parameters, {'thrust_model': 'table', 'thrust_table': ''})
+        with self.assertRaisesRegex(ValueError, 'measured flight.thrust_table'):
+            runtime.checked_thrust_mapping(flight, 'hardware', path, False)
 
     def test_conflicting_modes_or_legacy_configuration_rejected(self):
         for values in ({'shadow_only': 'true'}, {'diagnostic_only': 'true'}, {'mavlink_enabled': 'true'},

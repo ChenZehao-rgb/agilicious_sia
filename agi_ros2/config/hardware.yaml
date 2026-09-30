@@ -2,12 +2,19 @@
 # Recorded evidence and remaining steps: ../analysis/hardware_diagnostic_20260924/README.md.
 # Zero readiness thresholds never authorize override. Heading/declination confirmed by the operator below.
 # Use diagnostic_only:=true to inspect sensors/MSP before the vehicle model is available.
-# Dedicated MSP and MAVLink UARTs are mandatory. thrust_table is measured CSV relative to this file.
-# bridge host/port/hover_throttle/motor_idle are compatibility fields; hardware uses the thrust table.
+# Dedicated MSP and MAVLink UARTs are mandatory. A table CSV path is relative to this file.
+# bridge host/port/hover_throttle/motor_idle are compatibility fields; hardware uses the selected thrust model.
 mode: hardware
 flight:
   trajectory: ''
+  thrust_model: quadratic
   thrust_table: ''
+  thrust_quadratic:
+    # Manufacturer points reported by the operator: single motor 50% = 891 gf, 100% = 2231 gf.
+    # Assumes four identical motors, zero thrust at zero input, and ESC input ~= normalized RC throttle.
+    # No voltage compensation; these estimates are not measured calibration or controller thrust limits.
+    thrust_factor: 0.40251008516360376
+    max_total_thrust_n: 87.5145446
   sitl_delay_test: false
   shadow_only: true
   diagnostic_only: false
@@ -60,9 +67,9 @@ pilot:
   quadrotor:
     # Operator-reported takeoff mass including battery/payload, 2026-09-24: 734 g.
     mass: 0.734
-    omega_max: [0.0, 0.0, 0.0]
+    omega_max: [5.0, 5.0, 3.0]
     thrust_min: 0.0
-    thrust_max: 0.0
+    thrust_max: 3.599
   dt_min: 0.01
   outerloop_divisor: 1
   dt_telemetry: 0.1

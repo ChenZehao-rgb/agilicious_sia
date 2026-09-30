@@ -181,6 +181,7 @@ void ControlNode::tick() {
 	if (_navigation_policy == agi::hardware::NavigationPolicy::Gnss) evidence.accuracy_ok = _state.navigation_accuracy_ok;
 	evidence.config_verified = health_fresh && _health.config_verified;
 	evidence.thrust_calibrated = health_fresh && _health.thrust_calibrated && output_fresh && _output.thrust_calibrated;
+	evidence.thrust_mapping_ready = health_fresh && _health.thrust_mapping_ready && output_fresh && _output.thrust_mapping_ready;
 	evidence.geofence_ok = health_fresh && _health.geofence_ok;
 	evidence.msp_healthy = health_fresh && _health.transport_healthy && output_fresh && _output.transport_healthy;
 	const bool navigation_valid = _state.navigation_source == "gnss" && _state.navigation_valid && _state.clock_aligned &&

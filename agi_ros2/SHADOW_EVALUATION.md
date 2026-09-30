@@ -38,7 +38,11 @@ ros2 launch agi_ros2 shadow.launch.py
   磁偏角。`fc_declination_applied` 记录 FC 是否已处理磁偏角，不自动修改修正量。
   若 FC 已正确输出真北航向，应使用 0；避免两次修正。此声明本身不构成健康证据。
 
-不要求推力表。提供 `thrust_table` 时仍验证其格式并报告可用性，但不会映射成 RC。
+`flight.thrust_model=table` 时不要求提供推力表；提供 `thrust_table` 时仍验证其格式并报告可用性。
+当前 hardware 配置选择 `quadratic`，按用户提供的厂家两点估算，启动时校验系数与最大总推力，
+不读取残留 CSV 路径。两种模式在 shadow 下都不会映射成 RC 或发送控制帧。
+quadratic 不使用电压补偿，电池缺失、非正或过期仍阻止输出授权；模型与限制见
+[README](README.md#二次推力近似模式)。
 默认空 `trajectory` 使用悬停参考；需要时显式传入绝对 CSV 路径。CSV 在有效实体
 ARM 和 AUTO low→high、50 个连续有效计算周期后开始，起点对齐当前机体位置和航向。
 KILL、失联、状态失效、输出进程故障或导航会话变化撤销参考执行，重新观察 low→high。
@@ -130,7 +134,11 @@ RC/STATUS 分别检查 100 ms 有效期，组合取较早时间，重发不刷�
 - ARM 同时要求实体 AUX 请求与 FC 实际 armed；AUTO 必须与 FC 模式位一致。
 - KILL、RC/STATUS 陈旧、模式矛盾或配置未知，产生撤销状态。
 - 电压来自电池回传；传输健康还结合输出进程状态。
-- 推力表来自输出节点检查；默认没有推力表时 false。
+- `thrust_mapping_ready` 来自输出节点对所选模型的检查，并传递到健康和控制证据供授权使用；
+  table 缺表时为 false，quadratic 参数有效时可为 true。
+- `thrust_calibrated` 保留旧 table/SITL 语义，quadratic 始终为 false；输出状态同时记录
+  `thrust_model=quadratic`、`thrust_model_source=manufacturer_estimate`，不能把厂家估算当实测标定。
+  消息新增字段后，相关 ROS 节点和消息包必须一起重编译。
 - 可通过 `geofence_min/geofence_max` 配置本地包围盒，默认未配置为 false。
 - 旧 `imu_calibrated/converged` 仍为 false，保留其原有含义。新 `imu_ready` 合并 FC 状态和
   静止统计检查；`estimator_ready/navigation_ready` 来自融合质量、创新、连续更新及精度门限。

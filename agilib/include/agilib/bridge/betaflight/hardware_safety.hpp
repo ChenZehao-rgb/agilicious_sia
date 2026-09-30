@@ -17,6 +17,7 @@ struct Evidence {
 	bool imu_ready{false}, estimator_ready{false}, navigation_ready{false};
 	bool clock_aligned{false}, accuracy_known{false};
 	bool config_verified{false}, thrust_calibrated{false}, geofence_ok{false};
+	bool thrust_mapping_ready{false};  // A usable mapping may still be an uncalibrated estimate.
 	bool msp_healthy{false}, command_valid{false}, controller_warm{false};
 	bool armed{false}, auto_switch{false}, kill{true}, rc_link{false};
 };
@@ -41,7 +42,7 @@ public:
 			if (!e.imu_calibrated || !e.converged) return "IMU calibration/estimator convergence unavailable";
 		}
 		if (!e.config_verified) return "flight-controller configuration rejected";
-		if (!e.thrust_calibrated) return "thrust calibration unavailable";
+		if (!e.thrust_mapping_ready) return "thrust mapping unavailable";
 		if (!e.geofence_ok) return "geofence rejected";
 		if (!e.msp_healthy) return "output transport unavailable";
 		return nullptr;

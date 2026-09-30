@@ -13,7 +13,7 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
-DEFAULTS = dict(mode='sitl', runtime_config='', controller='', trajectory='', thrust_table='',
+DEFAULTS = dict(mode='sitl', runtime_config='', controller='', trajectory='', thrust_model='', thrust_table='',
                 shadow_only='', diagnostic_only='', sitl_delay_test='', record_bag='', bag_output='',
                 device='', baud='', mavlink_device='', mavlink_baud='', mavlink_enabled='',
                 mavlink_gps_mode='', mavlink_altitude_source='', mavlink_imu_rate_hz='',
@@ -132,6 +132,35 @@ def checked_model(profile, controller=''):
                          '; use diagnostic_only:=true before configuring the model')
 
 
+def checked_thrust_mapping(flight, mode, path, shadow):
+    model = flight.get('thrust_model', 'table')
+    if model not in ('table', 'quadratic'):
+        raise ValueError('flight.thrust_model must be table or quadratic')
+    if model == 'table':
+        table = resolve_data_path(path, flight.get('thrust_table', ''))
+        if mode == 'hardware' and not shadow and not table:
+            raise ValueError('Hardware output requires a measured flight.thrust_table; '
+                             'use diagnostic_only:=true for sensor checks')
+        return {'thrust_model': model, 'thrust_table': table}
+    if mode != 'hardware':
+        raise ValueError('flight.thrust_model=quadratic requires mode=hardware')
+    quadratic = flight.get('thrust_quadratic')
+    if not isinstance(quadratic, dict):
+        raise ValueError('flight.thrust_quadratic must contain thrust_factor and max_total_thrust_n')
+    values = {}
+    for key in ('thrust_factor', 'max_total_thrust_n'):
+        value = quadratic.get(key)
+        if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value):
+            raise ValueError('flight.thrust_quadratic.' + key + ' must be finite')
+        values[key] = float(value)
+    if not 0 <= values['thrust_factor'] <= 1:
+        raise ValueError('flight.thrust_quadratic.thrust_factor must be in [0, 1]')
+    if values['max_total_thrust_n'] <= 0:
+        raise ValueError('flight.thrust_quadratic.max_total_thrust_n must be positive')
+    return {'thrust_model': model, 'thrust_table': '',
+            **{'thrust_quadratic.' + key: value for key, value in values.items()}}
+
+
 def assemble(context, forced_shadow=False, sensor_only=False, msp_only=False):
     def arg(name):
         return LaunchConfiguration(name).perform(context)
@@ -145,7 +174,7 @@ def assemble(context, forced_shadow=False, sensor_only=False, msp_only=False):
     path, profile = load_profile(mode, arg('runtime_config'))
     controller, controller_parameters = selected_controller(profile, arg('controller'))
     flight = dict(profile['flight'])
-    for key in ('trajectory', 'thrust_table', 'bag_output'):
+    for key in ('trajectory', 'thrust_model', 'thrust_table', 'bag_output'):
         if arg(key):
             flight[key] = arg(key)
     for key in ('shadow_only', 'diagnostic_only', 'sitl_delay_test', 'record_bag'):
@@ -165,7 +194,6 @@ def assemble(context, forced_shadow=False, sensor_only=False, msp_only=False):
     if mode == 'hardware' and arg('mavlink_enabled') and not boolean(arg('mavlink_enabled')):
         raise ValueError('The hardware profile requires MAVLink sensors')
     trajectory = resolve_data_path(path, flight.get('trajectory', ''))
-    thrust_table = resolve_data_path(path, flight.get('thrust_table', ''))
     navigation_source = 'rtk' if mode == 'sitl' else 'gnss'
     common = dict(mode=mode, use_sim_time=mode == 'sitl', runtime_config=str(path),
                   controller=controller, navigation_source=navigation_source, sitl_delay_test=delay_test)
@@ -203,8 +231,7 @@ def assemble(context, forced_shadow=False, sensor_only=False, msp_only=False):
             raise ValueError('The hardware profile requires gps_mode=gnss')
     if not (diagnostic or sensor_only or msp_only):
         checked_model(profile, controller)
-        if mode == 'hardware' and not shadow and not thrust_table:
-            raise ValueError('Hardware output requires a measured flight.thrust_table; use diagnostic_only:=true for sensor checks')
+        thrust_mapping = checked_thrust_mapping(flight, mode, path, shadow)
 
     def node(executable, parameters):
         return Node(package='agi_ros2', executable=executable, output='screen', parameters=[parameters])
@@ -215,7 +242,7 @@ def assemble(context, forced_shadow=False, sensor_only=False, msp_only=False):
         if not diagnostic:
             processes.append(node('control_node', {**common, 'shadow_only': shadow, 'trajectory': trajectory}))
             processes.append(node('command_output_node', {
-                **output, **common, 'shadow_only': shadow, 'thrust_table': thrust_table}))
+                **output, **common, **thrust_mapping, 'shadow_only': shadow}))
     if mode == 'hardware':
         if not msp_only:
             processes.append(node('mavlink_sensor_node', {**mavlink, 'use_sim_time': False}))
