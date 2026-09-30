@@ -108,8 +108,10 @@ fusion:
   ekf_process_position_variance: [1.0e-6, 1.0e-6, 1.0e-6]
   ekf_process_attitude_variance: [1.0e-6, 1.0e-6, 1.0e-6, 1.0e-6]
   ekf_process_velocity_variance: [0.001, 0.001, 0.001]
-  ekf_process_gyro_bias_variance: [1.0e-9, 1.0e-9, 1.0e-9]
-  ekf_process_acceleration_bias_variance: [1.0e-9, 1.0e-9, 1.0e-9]
+  # Tuned with stationary bag hardware_20260930_112052_319876.
+  # Values require the current dt^2 noise injection and 0.1 ms integration substeps.
+  ekf_process_gyro_bias_variance: [0.0001, 0.0001, 0.0001]
+  ekf_process_acceleration_bias_variance: [0.1, 0.1, 0.1]
   ekf_initial_attitude_variance: [0.01, 0.01, 0.01, 0.01]
   ekf_initial_gyro_bias_variance: [0.001, 0.001, 0.001]
   ekf_initial_acceleration_bias_variance: [0.01, 0.01, 0.01]
@@ -171,7 +173,7 @@ navigation:
   fc_declination_applied: true
   horizontal_stddev: 1.0
   vertical_stddev: 2.0
-  velocity_stddev: 0.3
+  velocity_stddev: 0.1
   heading_stddev: 0.17453292519943295
   max_horizontal_accuracy: 0.0
   max_vertical_accuracy: 0.0

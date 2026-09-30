@@ -45,3 +45,6 @@ __pycache__/
 
 bags/
 log/
+
+# Local analysis scripts, datasets, and results
+/agi_ros2/analysis/
