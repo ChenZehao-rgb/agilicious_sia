@@ -145,10 +145,11 @@ bool EkfImu::addImu(const ImuSample& imu) {
 
 bool EkfImu::addRtk(const Scalar t, const Vector<3>& position, const Vector<3>& velocity, const Scalar heading, const bool heading_valid,
                     const Vector<3>& position_variance, const Vector<3>& velocity_variance, const Scalar heading_variance,
-                    const Scalar max_innovation_squared) {
+                    const Scalar max_innovation_squared, const NavigationMeasurementMode mode) {
 	if (!std::isfinite(t) || !position.allFinite() || !velocity.allFinite() || !position_variance.allFinite() ||
 	    !velocity_variance.allFinite() || (position_variance.array() <= 0).any() || (velocity_variance.array() <= 0).any() ||
 	    !(max_innovation_squared > 0) ||
+	    (mode != NavigationMeasurementMode::kFull3d && mode != NavigationMeasurementMode::kHorizontal) ||
 	    (heading_valid && (!std::isfinite(heading) || !std::isfinite(heading_variance) || heading_variance <= 0)))
 		return false;
 	std::lock_guard<std::mutex> lock(mutex_);
@@ -176,6 +177,12 @@ bool EkfImu::addRtk(const Scalar t, const Vector<3>& position, const Vector<3>& 
 	residual.segment<3>(3) = prior_.segment<3>(IDX::VEL) - velocity;
 	H.block<3, 3>(0, IDX::POS).setIdentity();
 	H.block<3, 3>(3, IDX::VEL).setIdentity();
+	if (mode == NavigationMeasurementMode::kHorizontal) {
+		// Zero rows with independent unit noise are algebraically absent from both NIS and the correction.
+		residual(2) = residual(5) = 0;
+		H.row(2).setZero();
+		H.row(5).setZero();
+	}
 	if (heading_valid) {
 		const Scalar w = prior_(ATTW), x = prior_(ATTX), y = prior_(ATTY), z = prior_(ATTZ);
 		const Scalar a = 2 * (w * z + x * y), b = 1 - 2 * (y * y + z * z);
@@ -190,11 +197,13 @@ bool EkfImu::addRtk(const Scalar t, const Vector<3>& position, const Vector<3>& 
 	}
 	Vector<7> variances;
 	variances << position_variance, velocity_variance, heading_valid ? heading_variance : 1.0;
+	if (mode == NavigationMeasurementMode::kHorizontal) variances(2) = variances(5) = 1.0;
 	const Matrix<7, 7> R = variances.asDiagonal();
 	const Matrix<7, 7> S = H * P_ * H.transpose() + R;
 	const auto factor = S.ldlt();
 	if (factor.info() != Eigen::Success || !factor.vectorD().allFinite() || (factor.vectorD().array() <= 0).any()) return reject();
 	_navigation_quality.innovation_squared = residual.dot(factor.solve(residual));
+	_navigation_quality.observation_dimensions = (mode == NavigationMeasurementMode::kHorizontal ? 4 : 6) + heading_valid;
 	if (!std::isfinite(_navigation_quality.innovation_squared) || _navigation_quality.innovation_squared < 0 ||
 	    _navigation_quality.innovation_squared > max_innovation_squared)
 		return reject();

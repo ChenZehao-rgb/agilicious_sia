@@ -339,6 +339,9 @@ class RuntimeProfiles(unittest.TestCase):
     def test_hardware_baro_fusion_and_receiver_parameters_reach_nodes(self):
         nodes = self.actions(mode='hardware', device='/dev/null', mavlink_device='/dev/zero', diagnostic_only='true')
         self.assertTrue(nodes['state_fusion_node']['baro_enabled'])
+        self.assertTrue(nodes['state_fusion_node']['gnss_use_baro_height'])
+        self.assertEqual(nodes['state_fusion_node']['baro_bias_random_walk'], 0.0)
+        self.assertEqual(nodes['state_fusion_node']['navigation_horizontal_nis_threshold'], 20.515)
         self.assertEqual(nodes['state_fusion_node']['observation_delay'], 0.20)
         self.assertEqual(nodes['state_fusion_node']['baro_max_age'], 0.25)
         self.assertEqual(nodes['state_fusion_node']['baro_pressure_variance_pa2'], 4.0)

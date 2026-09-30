@@ -22,6 +22,8 @@ namespace agi {
 /// EKF filter for pose measurements.
 class EkfImu : public EstimatorBase {
 public:
+	enum class NavigationMeasurementMode { kFull3d, kHorizontal };
+
 	struct NavigationQuality {
 		Scalar stamp{NAN};
 		Vector<3> position_variance = Vector<3>::Constant(NAN);
@@ -30,6 +32,7 @@ public:
 		Scalar innovation_squared{NAN};
 		uint64_t accepted_updates{0};
 		uint64_t rejected_updates{0};
+		uint32_t observation_dimensions{0};
 		bool valid{false};
 	};
 	struct BarometerQuality {
@@ -57,10 +60,12 @@ public:
   bool addImu(const ImuSample& imu) override;
   // ENU position/velocity and yaw CCW from East. Variances are in SI units.
   // Requires initialized state and IMU coverage through t; false means rejected.
-	// NIS has seven observations with heading, six without; infinity preserves the legacy policy.
+	// Full 3D NIS has seven observations with heading, six without; horizontal mode has five or four.
+	// Horizontal mode omits both vertical position and velocity. The caller must choose a matching NIS limit.
 	bool addRtk(Scalar t, const Vector<3>& position, const Vector<3>& velocity, Scalar heading, bool heading_valid,
 	            const Vector<3>& position_variance, const Vector<3>& velocity_variance, Scalar heading_variance,
-	            Scalar max_innovation_squared = std::numeric_limits<Scalar>::infinity());
+	            Scalar max_innovation_squared = std::numeric_limits<Scalar>::infinity(),
+	            NavigationMeasurementMode mode = NavigationMeasurementMode::kFull3d);
 
 	// Posterior covariance and innovation at stamp; not a claim of convergence.
 	NavigationQuality navigationQuality();

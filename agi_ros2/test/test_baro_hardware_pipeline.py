@@ -29,7 +29,7 @@ class BarometerHardwareHarness(HardwareHarness):
             params.update(max_horizontal_accuracy=0.0, max_vertical_accuracy=0.0, max_velocity_accuracy=0.0)
         elif executable == 'state_fusion_node':
             params.update(baro_enabled=True, observation_delay=0.2, baro_reference_duration=0.3,
-                          baro_reference_min_samples=5)
+                          baro_reference_min_samples=5, gnss_use_baro_height=True, baro_bias_random_walk=0.0)
         elif executable == 'mavlink_sensor_node':
             params.update(baro_rate_hz=40, baro_pressure_variance_pa2=0.0)
         return super().start_node(executable, **params)
@@ -65,10 +65,14 @@ class BarometerHardwarePipelineTests(unittest.TestCase):
         while time.monotonic() < deadline:
             h.run(0.1)
             if (h.barometer_status().get('accepted_updates', 0) > 10 and
+                    h.barometer_status().get('gnss_baro_height_active') == 1 and
+                    h.barometer_status().get('navigation_nis_dimensions') == 5 and
                     any(message.controller_success for message in h.received['computation_status'])):
                 break
         self.assertGreater(h.barometer_status().get('accepted_updates', 0), 10, h.snapshot())
         self.assertEqual(h.barometer_status()['reference_valid'], 1)
+        self.assertEqual(h.barometer_status()['gnss_baro_height_active'], 1)
+        self.assertEqual(h.barometer_status()['navigation_nis_dimensions'], 5)
         pressure = h.received['sensors/baro/pressure']
         samples = [message for message in h.received['sensors/baro/sample'] if message.valid]
         navigation = [message for message in h.received['sensors/local_navigation'] if message.observation_valid]

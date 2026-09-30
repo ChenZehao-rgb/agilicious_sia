@@ -570,3 +570,101 @@ TEST(EkfImuBaro, ReferenceAlignmentRequiresCoverageAndRollsBackNumericalFailure)
 	ASSERT_TRUE(failed.getAt(1.2, &state_after));
 	EXPECT_TRUE(state_after.x.isApprox(state_before.x, 1e-14));
 }
+
+TEST(EkfImuRtk, HorizontalModeOmitsVerticalInnovationAndPreservesHorizontalUpdates) {
+	EkfImu reference, corrupted, full;
+	for (EkfImu* ekf : {&reference, &corrupted, &full}) {
+		ASSERT_TRUE(ekf->initialize(initial()));
+		samples(*ekf, false);
+	}
+	const Vector<3> position(0.01, -0.02, 0.0);
+	const Vector<3> velocity(0.1, -0.1, 0.0);
+	const auto horizontal = EkfImu::NavigationMeasurementMode::kHorizontal;
+	ASSERT_TRUE(reference.addRtk(1.1, position, velocity, 0.01, true, Vector<3>::Ones(), Vector<3>::Ones(), 0.1, 20.515, horizontal));
+	ASSERT_TRUE(corrupted.addRtk(1.1, position + Vector<3>(0, 0, 1000), velocity + Vector<3>(0, 0, 100), 0.01, true, Vector<3>::Ones(),
+	                             Vector<3>::Ones(), 0.1, 20.515, horizontal));
+	QuadState expected = initial(), actual = initial();
+	ASSERT_TRUE(reference.getAt(1.2, &expected));
+	ASSERT_TRUE(corrupted.getAt(1.2, &actual));
+	EXPECT_TRUE(expected.x.isApprox(actual.x, 1e-12));
+	EXPECT_TRUE(EkfImuTestPeer::covariance(reference).isApprox(EkfImuTestPeer::covariance(corrupted), 1e-12));
+	EXPECT_GT(actual.p.x(), 0);
+	EXPECT_LT(actual.p.y(), 0);
+	EXPECT_EQ(corrupted.navigationQuality().observation_dimensions, 5u);
+	EXPECT_FALSE(full.addRtk(1.1, Vector<3>(0, 0, 1000), velocity, 0.01, true, Vector<3>::Ones(), Vector<3>::Ones(), 0.1, 24.322));
+	EXPECT_EQ(full.navigationQuality().observation_dimensions, 7u);
+	ASSERT_TRUE(corrupted.addRtk(1.2, position, velocity, NAN, false, Vector<3>::Ones(), Vector<3>::Ones(), NAN, 18.467, horizontal));
+	EXPECT_EQ(corrupted.navigationQuality().observation_dimensions, 4u);
+}
+
+TEST(EkfImuBaro, RelativeHeightRejectsGnssHeightDriftWithoutInventingAnAbsoluteDatum) {
+	auto params = std::make_shared<EkfImuParameters>();
+	params->Q_init_pos.setConstant(4.0);
+	params->Q_init_vel.setConstant(0.1);
+	params->Q_init_bacc.setConstant(0.01);
+	params->baro_bias_random_walk = 0;
+	EkfImu ekf(params);
+	QuadState state = initial();
+	state.p.z() = 3.0;
+	ASSERT_TRUE(ekf.initialize(state));
+	ASSERT_TRUE(ekf.addImu({state.t, -GVEC, Vector<3>::Zero()}));
+	Scalar anchor = NAN;
+	ASSERT_TRUE(ekf.alignBarometerReference(state.t, 0.25, &anchor));
+	for (int i = 1; i <= 3000; ++i) {
+		const Scalar time = 1.0 + i * 0.01;
+		ASSERT_TRUE(ekf.addImu({time, -GVEC, Vector<3>::Zero()}));
+		if (i % 10 == 0) {
+			ASSERT_TRUE(ekf.addRtk(time, Vector<3>(0, 0, 3.0 + 0.2 * (time - 1.0)), Vector<3>(0, 0, 0.2), 0, true,
+			                       Vector<3>::Constant(4.0), Vector<3>::Constant(0.09), 0.01, 20.515,
+			                       EkfImu::NavigationMeasurementMode::kHorizontal));
+		}
+		if (i % 2 == 0) ASSERT_TRUE(ekf.addBaro(time, anchor, 0.278, 10.828));
+	}
+	ASSERT_TRUE(ekf.getAt(31.0, &state));
+	EXPECT_NEAR(state.p.z(), 3.0, 0.01);
+	EXPECT_NEAR(state.v.z(), 0.0, 0.01);
+	EXPECT_NEAR(ekf.barometerQuality().bias, 0.0, 0.01);
+	// Pressure is relative: the common unknown GNSS datum must remain uncertain.
+	EXPECT_GE(ekf.navigationQuality().position_variance.z(), 4.0 - 1e-6);
+	EXPECT_EQ(ekf.navigationQuality().accepted_updates, 300u);
+	EXPECT_EQ(ekf.barometerQuality().accepted_updates, 1500u);
+	const Eigen::SelfAdjointEigenSolver<Matrix<17, 17>> eigenvalues(EkfImuTestPeer::covariance(ekf));
+	ASSERT_EQ(eigenvalues.info(), Eigen::Success);
+	EXPECT_GE(eigenvalues.eigenvalues().minCoeff(), -1e-10);
+}
+
+TEST(EkfImuBaro, RelativeHeightTracksRealClimbAndDescentWithMisleadingGnssHeight) {
+	auto params = std::make_shared<EkfImuParameters>();
+	params->Q_init_pos.setConstant(4.0);
+	params->Q_init_vel.setConstant(0.1);
+	params->Q_init_bacc.setConstant(0.01);
+	params->baro_bias_random_walk = 0;
+	EkfImu ekf(params);
+	QuadState state = initial();
+	state.p.z() = 3.0;
+	ASSERT_TRUE(ekf.initialize(state));
+	const Scalar frequency = 2.0 * M_PI / 12.0;
+	ASSERT_TRUE(ekf.addImu({state.t, -GVEC + Vector<3>(0, 0, 1.5 * frequency * frequency), Vector<3>::Zero()}));
+	Scalar anchor = NAN;
+	ASSERT_TRUE(ekf.alignBarometerReference(state.t, 0.25, &anchor));
+	Scalar max_height_error = 0, max_velocity_error = 0;
+	for (int i = 1; i <= 2400; ++i) {
+		const Scalar elapsed = i * 0.01, time = 1.0 + elapsed;
+		const Scalar height = 3.0 + 1.5 * (1.0 - std::cos(frequency * elapsed));
+		const Scalar velocity = 1.5 * frequency * std::sin(frequency * elapsed);
+		const Scalar acceleration = 1.5 * frequency * frequency * std::cos(frequency * elapsed);
+		ASSERT_TRUE(ekf.addImu({time, -GVEC + Vector<3>(0, 0, acceleration), Vector<3>::Zero()}));
+		if (i % 10 == 0) {
+			ASSERT_TRUE(ekf.addRtk(time, Vector<3>(0, 0, 3.0), Vector<3>::Zero(), 0, true, Vector<3>::Constant(4.0),
+			                       Vector<3>::Constant(0.09), 0.01, 20.515, EkfImu::NavigationMeasurementMode::kHorizontal));
+		}
+		if (i % 2 == 0) ASSERT_TRUE(ekf.addBaro(time, height, 0.278, 10.828));
+		ASSERT_TRUE(ekf.getAt(time, &state));
+		max_height_error = std::max(max_height_error, std::abs(state.p.z() - height));
+		max_velocity_error = std::max(max_velocity_error, std::abs(state.v.z() - velocity));
+	}
+	EXPECT_LT(max_height_error, 0.10);
+	EXPECT_LT(max_velocity_error, 0.10);
+	EXPECT_EQ(ekf.barometerQuality().rejected_updates, 0u);
+	EXPECT_EQ(ekf.navigationQuality().rejected_updates, 0u);
+}

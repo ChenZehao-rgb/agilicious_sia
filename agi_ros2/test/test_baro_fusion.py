@@ -9,7 +9,7 @@ import time
 import unittest
 
 import rclpy
-from agi_ros2.msg import Barometer, FusedState, Rtk
+from agi_ros2.msg import Barometer, FusedState, LocalNavigation, Rtk
 from builtin_interfaces.msg import Time
 from diagnostic_msgs.msg import DiagnosticArray
 from sensor_msgs.msg import Imu
@@ -22,7 +22,7 @@ def stamp_seconds(stamp):
 
 
 class BarometerHarness(Harness):
-    def __init__(self):
+    def __init__(self, navigation_source='rtk', parameters=None):
         super().__init__()
         self.simulation = True
         self.armed = False
@@ -30,27 +30,68 @@ class BarometerHarness(Harness):
         self.pressure_enabled = True
         self.pressure = 101325.0
         self.source_session = 'synthetic-fc-epoch-1'
+        self.navigation_source = navigation_source
+        self.navigation_position = (0.0, 0.0, 3.0)
+        self.navigation_velocity = (0.0, 0.0, 0.0)
+        self.navigation_heading = 0.0
+        self.navigation_heading_rate = 0.0
+        self.navigation_epoch = self.sim_time_ns * 1e-9
         self.navigation_delay = 0.0
         self.pending_navigation = []
+        self.imu_delay = 0.0
+        self.imu_yaw_rate = 0.0
+        self.pending_imus = []
+        self.pressure_stamp_offset = 0.0
         self.last_sample = 0.0
         self.subscribe('fused_state', FusedState)
         self.subscribe('fusion/baro/status', DiagnosticArray)
-        self.start('state_fusion_node', parameters={
-            'navigation_source': 'rtk', 'baro_enabled': True, 'observation_delay': 0.2,
+        configuration = {
+            'navigation_source': navigation_source, 'baro_enabled': True, 'observation_delay': 0.2,
             'baro_reference_duration': 0.2, 'baro_reference_min_samples': 5,
-            'baro_reference_max_vertical_stddev': 0.3, 'baro_pressure_variance_pa2': 4.0})
+            'baro_reference_max_vertical_stddev': 0.3, 'baro_pressure_variance_pa2': 4.0}
+        if navigation_source == 'gnss':
+            configuration.update(gnss_use_baro_height=True, baro_bias_random_walk=0.0,
+                                 imu_initialization_duration=0.2, imu_initialization_samples=30)
+        configuration.update(parameters or {})
+        self.start('state_fusion_node', parameters=configuration)
+
+    def set_navigation(self, position, velocity=(0.0, 0.0, 0.0), heading=0.0, heading_rate=0.0):
+        self.navigation_position = position
+        self.navigation_velocity = velocity
+        self.navigation_heading = heading
+        self.navigation_heading_rate = heading_rate
+        self.navigation_epoch = self.sim_time_ns * 1e-9
 
     def navigation(self, stamp=None):
-        message = Rtk()
+        message = LocalNavigation() if self.navigation_source == 'gnss' else Rtk()
         message.header.stamp = stamp or self.stamp()
         message.header.frame_id = 'odom'
-        message.position.z = 3.0
-        message.fixed = message.heading_valid = message.accuracy_ok = message.synchronized = True
+        elapsed = stamp_seconds(message.header.stamp) - self.navigation_epoch
+        for index, axis in enumerate(('x', 'y', 'z')):
+            setattr(message.position, axis, self.navigation_position[index] + elapsed * self.navigation_velocity[index])
+            setattr(message.velocity, axis, self.navigation_velocity[index])
+        message.heading = self.navigation_heading + elapsed * self.navigation_heading_rate
+        message.heading_valid = message.accuracy_ok = True
+        if self.navigation_source == 'gnss':
+            message.observation_valid = message.clock_aligned = message.accuracy_known = True
+            message.session_id = 'synthetic-local-origin-1'
+            message.source_session = self.source_session
+            message.altitude_reference = 'msl'
+            message.fix_type = 3
+            message.position_variance = [0.04, 0.04, 4.0]
+            message.velocity_variance = [0.01, 0.01, 0.04]
+            message.heading_variance = 0.01
+            message.horizontal_accuracy = 0.2
+            message.vertical_accuracy = 2.0
+            message.velocity_accuracy = 0.2
+        else:
+            message.fixed = message.synchronized = True
         return message
 
     def barometer(self, valid=True):
         message = Barometer()
-        message.header.stamp = self.stamp()
+        sample_ns = self.sim_time_ns + round(self.pressure_stamp_offset * 1e9)
+        message.header.stamp = Time(sec=sample_ns // 1_000_000_000, nanosec=sample_ns % 1_000_000_000)
         message.header.frame_id = 'baro_link'
         message.source_session = self.source_session
         message.clock_aligned = valid
@@ -68,19 +109,26 @@ class BarometerHarness(Harness):
             sample = self.barometer()
             if self.pressure_enabled:
                 self.publisher('sensors/baro/sample', Barometer).publish(sample)
-            navigation = self.navigation(sample.header.stamp)
+            navigation = self.navigation()
             self.pending_navigation.append((seconds + self.navigation_delay, navigation))
             self.last_sample = seconds
         while self.pending_navigation and self.pending_navigation[0][0] <= seconds:
             _, navigation = self.pending_navigation.pop(0)
-            self.publisher('sensors/rtk', Rtk).publish(navigation)
+            if self.navigation_source == 'gnss':
+                self.publisher('sensors/local_navigation', LocalNavigation, True).publish(navigation)
+            else:
+                self.publisher('sensors/rtk', Rtk).publish(navigation)
         if seconds - self.last_imu >= 0.002:
             imu = Imu()
             imu.header.stamp = self.stamp()
             imu.header.frame_id = 'base_link'
             imu.linear_acceleration.z = 9.80665
-            self.publisher('sensors/imu', Imu, True).publish(imu)
+            imu.angular_velocity.z = self.imu_yaw_rate
+            self.pending_imus.append((seconds + self.imu_delay, imu))
             self.last_imu = seconds
+        while self.pending_imus and self.pending_imus[0][0] <= seconds:
+            _, imu = self.pending_imus.pop(0)
+            self.publisher('sensors/imu', Imu, True).publish(imu)
 
     def drive(self, seconds):
         self.run(seconds, rate=0.5)
@@ -116,6 +164,8 @@ class BarometerFusionTest(unittest.TestCase):
         self.assertGreaterEqual(self.h.status().get('accepted_updates', 0), 3,
                                 (self.h.status(), str(self.h.state()) if self.h.received['fused_state'] else 'no state'))
         self.assertTrue(self.h.state().initialized)
+        self.assertEqual(self.h.status()['gnss_baro_height_active'], 0)
+        self.assertEqual(self.h.status()['navigation_nis_dimensions'], 7)
 
     def assert_height_preserved(self):
         self.assertTrue(self.h.state().initialized)
@@ -177,6 +227,40 @@ class BarometerFusionTest(unittest.TestCase):
         self.assertTrue(h.state().navigation_valid)
         self.assert_height_preserved()
 
+    def test_current_pressure_waits_for_backlogged_imu_without_resetting_reference(self):
+        h = self.h
+        before = h.status()
+        reset_counter = h.state().reset_counter
+        # The pressure stamp is current in ROS time but over 10 ms ahead of
+        # the IMU being processed, reproducing the stationary hardware bag.
+        h.imu_delay = 0.03
+        h.drive(1.5)
+        after = h.status()
+        self.assertEqual(after['reference_resets'], before['reference_resets'], after)
+        self.assertEqual(after['reference_valid'], 1, after)
+        self.assertEqual(after['reference_pressure_pa'], before['reference_pressure_pa'])
+        self.assertGreater(after['accepted_updates'], before['accepted_updates'] + 10)
+        self.assertEqual(h.state().reset_counter, reset_counter)
+        self.assertGreater(h.sim_time_ns * 1e-9 - stamp_seconds(h.state().header.stamp), 0.02)
+        self.assert_height_preserved()
+
+    def test_abnormal_pressure_timestamps_do_not_keep_reference_fresh(self):
+        h = self.h
+        for offset in (0.05, -0.30):
+            with self.subTest(pressure_stamp_offset=offset):
+                before = h.status()
+                h.pressure_stamp_offset = offset
+                h.drive(0.7)
+                after = h.status()
+                self.assertGreater(after['invalid_samples'], before['invalid_samples'])
+                self.assertEqual(after['reference_valid'], 0, after)
+                self.assertGreater(after['reference_resets'], before['reference_resets'])
+                self.assertIn('stale', after['message'])
+                self.assert_height_preserved()
+                h.pressure_stamp_offset = 0.0
+                h.drive(1.3)
+                self.assertEqual(h.status()['reference_valid'], 1, h.status())
+
     def test_observations_older_than_committed_window_are_dropped(self):
         h = self.h
         late_navigation = h.status()['late_navigation']
@@ -193,6 +277,143 @@ class BarometerFusionTest(unittest.TestCase):
         self.assertGreater(h.status()['late_navigation'], late_navigation)
         self.assertGreater(h.status()['late_barometer'], late_barometer)
         self.assert_height_preserved()
+
+
+class GnssBarometerFusionTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        rclpy.init()
+
+    @classmethod
+    def tearDownClass(cls):
+        rclpy.shutdown()
+
+    def setUp(self):
+        self.h = BarometerHarness(navigation_source='gnss', parameters={
+            'navigation_ready_updates': 3, 'max_horizontal_position_stddev': 3.0,
+            'max_vertical_position_stddev': 5.0, 'max_velocity_stddev': 1.0,
+            'max_heading_stddev': 1.0})
+        self.addCleanup(self.h.close)
+        self.wait_for_policy(active=1, dimensions=5)
+        self.h.drive(0.4)
+        self.assertTrue(self.h.state().initialized)
+        self.assertTrue(self.h.state().estimator_ready, self.h.state().readiness_reason)
+        self.assertEqual(self.h.status()['baro_bias_random_walk_m2_s'], 0.0)
+
+    def wait_for_policy(self, active, dimensions):
+        deadline = time.monotonic() + 8.0
+        while time.monotonic() < deadline:
+            self.h.drive(0.2)
+            status = self.h.status()
+            if (status.get('gnss_baro_height_active') == active and
+                    status.get('navigation_nis_dimensions') == dimensions):
+                return status
+        self.fail(f'Height policy did not become active={active}, dimensions={dimensions}: {self.h.status()}')
+
+    def test_gnss_vertical_drift_is_excluded_while_horizontal_motion_and_heading_fuse(self):
+        h = self.h
+        before = h.status()
+        # An already initialized reference must work while armed, at a nonzero
+        # local height, and with horizontal motion; no stationary clamp is used.
+        h.armed = True
+        h.set_navigation((0.0, 0.0, 3.0), velocity=(0.15, -0.10, 0.60), heading_rate=0.08)
+        h.imu_yaw_rate = 0.08
+        h.drive(4.5)
+        state = h.state()
+        expected = h.navigation(state.header.stamp)
+        status = h.status()
+        self.assertGreater(expected.position.z, 4.0)
+        self.assertAlmostEqual(state.position.z, 3.0, delta=0.10)
+        self.assertAlmostEqual(state.velocity.z, 0.0, delta=0.10)
+        self.assertAlmostEqual(state.position.x, expected.position.x, delta=0.10)
+        self.assertAlmostEqual(state.position.y, expected.position.y, delta=0.10)
+        self.assertGreater(state.position.x, 0.20)
+        self.assertLess(state.position.y, -0.12)
+        q = state.orientation
+        yaw = math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
+        self.assertAlmostEqual(yaw, expected.heading, delta=0.04)
+        self.assertGreater(yaw, 0.12)
+        self.assertEqual(status['gnss_baro_height_active'], 1)
+        self.assertEqual(status['navigation_nis_dimensions'], 5)
+        self.assertEqual(status['reference_resets'], before['reference_resets'])
+        self.assertGreater(status['accepted_updates'], before['accepted_updates'] + 20)
+
+    def assert_gnss_height_fallback_and_pressure_recovery(self, require_disarmed_reference=False):
+        h = self.h
+        self.wait_for_policy(active=0, dimensions=7)
+        accepted_before = h.status()['accepted_updates']
+        navigation_before = stamp_seconds(h.state().rtk_stamp)
+        height_before = h.state().position.z
+        h.set_navigation((0.0, 0.0, 3.4))
+        h.drive(3.0)
+        # GNSS height has a 2 m standard deviation: require a clear response
+        # to its 0.4 m step, not complete convergence within 1.5 simulated seconds.
+        self.assertGreater(h.state().position.z, height_before + 0.15, h.state())
+        self.assertGreater(stamp_seconds(h.state().rtk_stamp), navigation_before + 0.5)
+        self.assertEqual(h.status()['gnss_baro_height_active'], 0)
+        self.assertEqual(h.status()['navigation_nis_dimensions'], 7)
+        h.pressure = 101325.0
+        h.pressure_enabled = True
+        if require_disarmed_reference:
+            h.drive(1.5)
+            self.assertEqual(h.status()['reference_valid'], 0, h.status())
+            self.assertEqual(h.status()['gnss_baro_height_active'], 0)
+            self.assertEqual(h.status()['navigation_nis_dimensions'], 7)
+            self.assertIn('disarmed', h.status()['message'])
+            h.armed = False
+        self.wait_for_policy(active=1, dimensions=5)
+        self.assertGreater(h.status()['accepted_updates'], accepted_before)
+        self.assertEqual(h.status()['reference_valid'], 1)
+        self.assertTrue(h.state().initialized)
+
+    def test_pressure_loss_restores_full_gnss_until_pressure_reference_recovers(self):
+        h = self.h
+        resets = h.status()['reference_resets']
+        h.armed = True
+        h.pressure_enabled = False
+        self.assert_gnss_height_fallback_and_pressure_recovery(require_disarmed_reference=True)
+        self.assertGreater(h.status()['reference_resets'], resets)
+
+    def test_continuous_rejected_pressure_does_not_suppress_gnss_height(self):
+        h = self.h
+        before = h.status()
+        h.pressure = 80000.0
+        self.wait_for_policy(active=0, dimensions=7)
+        failed = h.status()
+        self.assertGreater(failed['rejected_updates'], before['rejected_updates'])
+        self.assertGreater(failed['nis'], 10.828)
+        self.assertEqual(failed['reference_valid'], 1)
+        self.assertEqual(failed['reference_resets'], before['reference_resets'])
+        self.assert_gnss_height_fallback_and_pressure_recovery()
+
+    def test_large_gnss_vertical_error_preserves_xy_updates_but_revokes_readiness(self):
+        h = self.h
+        h.armed = True
+        h.set_navigation((0.0, 0.0, 100.0), velocity=(0.15, -0.10, 0.0))
+        h.drive(0.7)
+        self.assertEqual(h.status()['gnss_baro_height_active'], 1)
+        self.assertTrue(h.state().estimator_ready, h.state().readiness_reason)
+        accepted_stamp = stamp_seconds(h.state().rtk_stamp)
+        rejections = h.state().navigation_rejections
+        h.pressure_enabled = False
+        h.drive(1.5)
+        state = h.state()
+        status = h.status()
+        expected = h.navigation(state.header.stamp)
+        self.assertEqual(status['gnss_baro_height_active'], 0)
+        self.assertEqual(status['gnss_vertical_recovery_pending'], 1)
+        self.assertEqual(status['navigation_nis_dimensions'], 5)
+        self.assertGreater(state.navigation_rejections, rejections)
+        self.assertGreater(stamp_seconds(state.rtk_stamp), accepted_stamp + 0.4)
+        self.assertAlmostEqual(state.position.x, expected.position.x, delta=0.10)
+        self.assertAlmostEqual(state.position.y, expected.position.y, delta=0.10)
+        self.assertGreater(state.position.x, 0.10)
+        self.assertLess(state.position.z, 4.0)
+        self.assertTrue(state.navigation_valid)
+        self.assertFalse(state.navigation_ready)
+        self.assertFalse(state.estimator_ready)
+        self.assertEqual(state.navigation_accepted_updates, 0)
+        self.assertIn('vertical recovery', state.readiness_reason)
 
 
 if __name__ == '__main__':

@@ -103,9 +103,13 @@ bridge:
   hover_throttle: 0.5
   min_check: 1050
 fusion:
-  # Initial shadow-evaluation values, not noise or delay measured on this vehicle.
-  # GNSS still supplies the height datum and all navigation readiness evidence.
+  # Pressure supplies relative height while healthy; ordinary GNSS supplies XY/heading.
+  # GNSS initializes the height datum and resumes 3D updates if pressure fusion is unavailable.
+  # Initial pressure noise/delay values require dynamic validation; flight readiness gates still apply.
   baro_enabled: true
+  gnss_use_baro_height: true
+  # 99.9% chi-square limit for XY position, XY velocity and heading (five observations).
+  navigation_horizontal_nis_threshold: 20.515
   observation_delay: 0.20
   baro_max_age: 0.25
   # Fallback when FluidPressure/Barometer reports unknown pressure variance (0).
@@ -118,8 +122,9 @@ fusion:
   baro_reference_min_samples: 40
   baro_reference_max_stddev_pa: 15.0
   baro_reference_max_vertical_stddev: 0.3
-  # Continuous bias random-walk spectral density, m^2/s; initial bias variance, m^2.
-  baro_bias_random_walk: 0.01
+  # Keep the initial correlated reference uncertainty, but do not introduce an
+  # unobservable drifting barometer bias when GNSS height is excluded.
+  baro_bias_random_walk: 0.0
   baro_reference_variance: 4.0
   imu_acceleration_variance: 0.1
   imu_angular_velocity_variance: 0.0001

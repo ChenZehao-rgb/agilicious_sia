@@ -100,6 +100,7 @@ StateFusionNode::StateFusionNode()
 	_navigation_ready_updates = configured("navigation_ready_updates", 30);
 	if (_navigation_ready_updates < 1) throw std::invalid_argument("navigation_ready_updates must be positive");
 	_navigation_nis_threshold = positive("navigation_nis_threshold", 24.322);
+	_navigation_horizontal_nis_threshold = positive("navigation_horizontal_nis_threshold", 20.515);
 	const auto limit = [&configured](const char* name) {
 		const double value = configured(name, 0.0);
 		if (!std::isfinite(value) || value < 0) throw std::invalid_argument(name);
@@ -110,6 +111,7 @@ StateFusionNode::StateFusionNode()
 	_max_velocity_stddev = limit("max_velocity_stddev");
 	_max_heading_stddev = limit("max_heading_stddev");
 	_baro_enabled = configured("baro_enabled", false);
+	_gnss_use_baro_height = configured("gnss_use_baro_height", false);
 	_observation_delay = configured("observation_delay", _baro_enabled ? 0.20 : 0.0);
 	if (!std::isfinite(_observation_delay) || _observation_delay < 0 || _observation_delay > 0.25)
 		throw std::invalid_argument("observation_delay must be between 0 and 0.25 seconds");
@@ -121,7 +123,10 @@ StateFusionNode::StateFusionNode()
 	_baro_nis_threshold = positive("baro_nis_threshold", 10.828);
 	if (_baro_max_pressure <= _baro_min_pressure || _baro_max_age > 1.0)
 		throw std::invalid_argument("Invalid barometer pressure range or maximum age");
-	_ekf_parameters->baro_bias_random_walk = positive("baro_bias_random_walk", 0.01);
+	_ekf_parameters->baro_bias_random_walk = configured("baro_bias_random_walk", _gnss_use_baro_height ? 0.0 : 0.01);
+	if (!std::isfinite(_ekf_parameters->baro_bias_random_walk) || _ekf_parameters->baro_bias_random_walk < 0 ||
+	    (_gnss_use_baro_height && _navigation_source == "gnss" && _ekf_parameters->baro_bias_random_walk != 0))
+		throw std::invalid_argument("baro_bias_random_walk must be nonnegative, and zero when gnss_use_baro_height is enabled");
 	BarometerReference::Params baro_reference;
 	baro_reference.duration = positive("baro_reference_duration", 2.0);
 	const int reference_samples = configured("baro_reference_min_samples", 40);
@@ -173,6 +178,7 @@ void StateFusionNode::reset() {
 	_reference_imus.clear();
 	_observation_watermark = kUnknownTime;
 	resetBarometer("EKF reset; waiting for stationary pressure reference");
+	_gnss_vertical_recovery_pending = false;
 	_imu_ready = false;
 	_accepted_navigation_updates = 0;
 	_imu_initialization->reset();
@@ -296,6 +302,11 @@ void StateFusionNode::enqueueObservation(const Observation& observation) {
 }
 
 void StateFusionNode::resetBarometer(const std::string& reason) {
+	if (_gnss_baro_height_active) {
+		_accepted_navigation_updates = 0;
+		_gnss_vertical_recovery_pending = true;
+	}
+	_gnss_baro_height_active = false;
 	_observations.erase(std::remove_if(_observations.begin(), _observations.end(),
 	                                   [](const Observation& observation) { return observation.barometer; }),
 	                    _observations.end());
@@ -394,8 +405,12 @@ void StateFusionNode::processBarometer(const Observation& observation, double re
 
 void StateFusionNode::processObservations(double time, double received) {
 	const double started = monotonicSeconds();
-	const bool pressure_time_fresh = SafetyGate::fresh(time, _baro_last_time, _baro_max_age, _timing_checks) ||
-	                                 (std::isfinite(_baro_last_time) && _baro_last_time > time && _baro_last_time - time <= 0.010);
+	// A current pressure sample can precede an IMU callback that is catching up.
+	// Check stream age against the ROS clock; the IMU stamp only advances the queue.
+	const double current_time = now().seconds();
+	const bool pressure_time_fresh =
+	        SafetyGate::fresh(current_time, _baro_last_time, _baro_max_age, _timing_checks) ||
+	        (std::isfinite(_baro_last_time) && _baro_last_time > current_time && _baro_last_time - current_time <= 0.010);
 	if (_baro_enabled && std::isfinite(_baro_receive_time) &&
 	    (!SafetyGate::fresh(received, _baro_receive_time, _baro_max_age) || !pressure_time_fresh)) {
 		resetBarometer("Pressure stream stale; using IMU and navigation");
@@ -412,13 +427,34 @@ void StateFusionNode::processObservations(double time, double received) {
 		_last_navigation_attempt = observation.time;
 		const agi::Vector<3> position(navigation.position.x, navigation.position.y, navigation.position.z);
 		const agi::Vector<3> velocity(navigation.velocity.x, navigation.velocity.y, navigation.velocity.z);
-		const double innovation_limit =
-		        _navigation_source == "gnss" ? _navigation_nis_threshold : std::numeric_limits<double>::infinity();
-		if (_ekf->addRtk(observation.time, position, velocity, navigation.heading, navigation.heading_valid,
-		                 observation.position_variance, observation.velocity_variance, observation.heading_variance,
-		                 innovation_limit)) {
+		const auto barometer = _ekf->barometerQuality();
+		// Select the height source at the observation time, not the newest queued pressure time.
+		// A stream of rejected pressure outliers must not suppress GNSS height indefinitely.
+		const bool baro_height = _navigation_source == "gnss" && _gnss_use_baro_height && _baro_enabled &&
+		                         _baro_reference->ready() && barometer.valid &&
+		                         SafetyGate::fresh(observation.time, barometer.stamp, _baro_max_age);
+		const auto measurement_mode =
+		        baro_height ? agi::EkfImu::NavigationMeasurementMode::kHorizontal : agi::EkfImu::NavigationMeasurementMode::kFull3d;
+		const double innovation_limit = _navigation_source == "gnss"
+		                                        ? (baro_height ? _navigation_horizontal_nis_threshold : _navigation_nis_threshold)
+		                                        : std::numeric_limits<double>::infinity();
+		if (_gnss_baro_height_active != baro_height) _accepted_navigation_updates = 0;
+		_gnss_baro_height_active = baro_height;
+		bool accepted = _ekf->addRtk(observation.time, position, velocity, navigation.heading, navigation.heading_valid,
+		                             observation.position_variance, observation.velocity_variance, observation.heading_variance,
+		                             innovation_limit, measurement_mode);
+		_gnss_vertical_recovery_pending = false;
+		if (!accepted && !baro_height && _gnss_use_baro_height && _navigation_source == "gnss") {
+			// Height sources may disagree after an outage. Keep usable XY/heading observations, but do not
+			// advertise navigation readiness until a complete vertical update or pressure fusion recovers.
+			_gnss_vertical_recovery_pending = true;
+			accepted = _ekf->addRtk(observation.time, position, velocity, navigation.heading, navigation.heading_valid,
+			                        observation.position_variance, observation.velocity_variance, observation.heading_variance,
+			                        _navigation_horizontal_nis_threshold, agi::EkfImu::NavigationMeasurementMode::kHorizontal);
+		}
+		if (accepted) {
 			_last_rtk_time = observation.time;
-			if (navigation.accuracy_ok)
+			if (navigation.accuracy_ok && !_gnss_vertical_recovery_pending)
 				_accepted_navigation_updates = std::min(_accepted_navigation_updates + 1, _navigation_ready_updates);
 			else
 				_accepted_navigation_updates = 0;
@@ -427,6 +463,8 @@ void StateFusionNode::processObservations(double time, double received) {
 			_accepted_navigation_updates = 0;
 			_readiness_reason = "Navigation update rejected by EKF timing, innovation or numerical checks";
 		}
+		if (_gnss_vertical_recovery_pending)
+			_readiness_reason = "GNSS vertical recovery unavailable; waiting for accepted 3D navigation or barometer";
 	}
 	// Without barometer or an explicit reorder delay, preserve the original
 	// delayed-navigation contract: only a committed posterior closes history.
@@ -459,6 +497,10 @@ void StateFusionNode::publishBarometerStatus() {
 	};
 	add("enabled", _baro_enabled);
 	add("healthy", healthy);
+	add("gnss_use_baro_height", _gnss_use_baro_height);
+	add("gnss_baro_height_active", _gnss_baro_height_active);
+	add("gnss_vertical_recovery_pending", _gnss_vertical_recovery_pending);
+	add("baro_bias_random_walk_m2_s", _ekf_parameters->baro_bias_random_walk);
 	add("reference_valid", _baro_reference->ready());
 	add("reference_samples", _baro_reference->sampleCount());
 	add("reference_pressure_pa", _baro_reference->pressure());
@@ -486,6 +528,7 @@ void StateFusionNode::publishBarometerStatus() {
 	add("invalid_samples", _baro_invalid_samples);
 	add("observation_delay_s", _observation_delay);
 	const auto navigation = _ekf->navigationQuality();
+	add("navigation_nis_dimensions", navigation.observation_dimensions);
 	add("prediction_span_s", _state.t - navigation.stamp);
 	out.status.push_back(status);
 	_baro_status_pub->publish(out);
@@ -653,7 +696,7 @@ void StateFusionNode::publishState(double imu_receive_time) {
 	out.imu_ready = _imu_ready;
 	out.navigation_accuracy_ok = _rtk.accuracy_ok;
 	out.navigation_ready = out.navigation_valid && out.heading_valid && out.navigation_accuracy_ok && out.clock_aligned &&
-	                       _last_navigation_attempt == _last_rtk_time;
+	                       _last_navigation_attempt == _last_rtk_time && !_gnss_vertical_recovery_pending;
 	const auto quality = _ekf->navigationQuality();
 	if (std::isfinite(quality.stamp)) out.covariance_stamp = rosStamp(quality.stamp);
 	for (int i = 0; i < 3; ++i) {
@@ -673,6 +716,8 @@ void StateFusionNode::publishState(double imu_receive_time) {
 			out.readiness_reason = _readiness_reason;
 		} else if (!out.navigation_valid) {
 			out.readiness_reason = "Navigation unavailable, stale or clock alignment lost";
+		} else if (_gnss_vertical_recovery_pending) {
+			out.readiness_reason = "GNSS vertical recovery unavailable; waiting for accepted 3D navigation or barometer";
 		} else if (!out.navigation_accuracy_ok) {
 			out.readiness_reason = "GNSS accuracy unknown, above limits, or flight accuracy limits unconfigured";
 		} else if (out.navigation_ready && _navigation_source == "gnss" && !covarianceReady(quality)) {

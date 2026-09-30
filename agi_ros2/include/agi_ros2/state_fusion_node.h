@@ -70,6 +70,7 @@ private:
 	int _navigation_ready_updates = 30;
 	int _accepted_navigation_updates = 0;
 	double _navigation_nis_threshold = 24.322;
+	double _navigation_horizontal_nis_threshold = 20.515;
 	double _max_horizontal_position_stddev = 0.0;
 	double _max_vertical_position_stddev = 0.0;
 	double _max_velocity_stddev = 0.0;
@@ -79,6 +80,9 @@ private:
 	double _last_navigation_attempt = NAN;
 	std::string _readiness_reason = "Waiting for navigation and IMU";
 	bool _baro_enabled = false;
+	bool _gnss_use_baro_height = false;
+	bool _gnss_baro_height_active = false;
+	bool _gnss_vertical_recovery_pending = false;
 	double _observation_delay = 0.0;
 	double _observation_watermark = NAN;
 	std::deque<Observation> _observations;
