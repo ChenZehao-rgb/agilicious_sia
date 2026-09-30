@@ -20,6 +20,25 @@ namespace {
 constexpr double kUnknownTime = std::numeric_limits<double>::quiet_NaN();
 using agi::hardware::monotonicSeconds;
 using agi::hardware::SafetyGate;
+
+std::string navigationUpdateReason(agi::EkfImu::NavigationUpdateReason reason) {
+	using Reason = agi::EkfImu::NavigationUpdateReason;
+	switch (reason) {
+		case Reason::kNotAttempted:
+			return "not_attempted";
+		case Reason::kAccepted:
+			return "accepted";
+		case Reason::kInvalidInput:
+			return "invalid_input";
+		case Reason::kTimestamp:
+			return "timestamp";
+		case Reason::kInnovation:
+			return "innovation";
+		case Reason::kNumericalFailure:
+			return "numerical_failure";
+	}
+	return "unknown";
+}
 }  // namespace
 
 StateFusionNode::StateFusionNode()
@@ -101,6 +120,14 @@ StateFusionNode::StateFusionNode()
 	if (_navigation_ready_updates < 1) throw std::invalid_argument("navigation_ready_updates must be positive");
 	_navigation_nis_threshold = positive("navigation_nis_threshold", 24.322);
 	_navigation_horizontal_nis_threshold = positive("navigation_horizontal_nis_threshold", 20.515);
+	_navigation_height_nis_threshold = positive("navigation_height_nis_threshold", 10.828);
+	_navigation_vertical_velocity_nis_threshold = positive("navigation_vertical_velocity_nis_threshold", 10.828);
+	_gnss_height_variance_floor = positive("gnss_height_variance_floor", 18.0);
+	_gnss_height_variance_scale = positive("gnss_height_variance_scale", 4.5);
+	_gnss_vertical_velocity_variance_floor = positive("gnss_vertical_velocity_variance_floor", 0.09);
+	_gnss_vertical_velocity_variance_scale = positive("gnss_vertical_velocity_variance_scale", 2.25);
+	if (_gnss_height_variance_scale < 1 || _gnss_vertical_velocity_variance_scale < 1)
+		throw std::invalid_argument("GNSS variance scales must be at least one");
 	const auto limit = [&configured](const char* name) {
 		const double value = configured(name, 0.0);
 		if (!std::isfinite(value) || value < 0) throw std::invalid_argument(name);
@@ -112,6 +139,11 @@ StateFusionNode::StateFusionNode()
 	_max_heading_stddev = limit("max_heading_stddev");
 	_baro_enabled = configured("baro_enabled", false);
 	_gnss_use_baro_height = configured("gnss_use_baro_height", false);
+	_height_fusion_mode = configured("height_fusion_mode", std::string(_gnss_use_baro_height ? "baro_primary" : "legacy_full3d"));
+	if (_height_fusion_mode != "legacy_full3d" && _height_fusion_mode != "baro_primary" && _height_fusion_mode != "baro_gnss_weighted")
+		throw std::invalid_argument("height_fusion_mode must be legacy_full3d, baro_primary or baro_gnss_weighted");
+	_weighted_height_mode = _navigation_source == "gnss" && _height_fusion_mode == "baro_gnss_weighted";
+	if (_navigation_source == "gnss") _gnss_use_baro_height = _height_fusion_mode != "legacy_full3d";
 	_observation_delay = configured("observation_delay", _baro_enabled ? 0.20 : 0.0);
 	if (!std::isfinite(_observation_delay) || _observation_delay < 0 || _observation_delay > 0.25)
 		throw std::invalid_argument("observation_delay must be between 0 and 0.25 seconds");
@@ -126,7 +158,8 @@ StateFusionNode::StateFusionNode()
 	_ekf_parameters->baro_bias_random_walk = configured("baro_bias_random_walk", _gnss_use_baro_height ? 0.0 : 0.01);
 	if (!std::isfinite(_ekf_parameters->baro_bias_random_walk) || _ekf_parameters->baro_bias_random_walk < 0 ||
 	    (_gnss_use_baro_height && _navigation_source == "gnss" && _ekf_parameters->baro_bias_random_walk != 0))
-		throw std::invalid_argument("baro_bias_random_walk must be nonnegative, and zero when gnss_use_baro_height is enabled");
+		throw std::invalid_argument("baro_bias_random_walk must be nonnegative, and zero for relative barometer height modes");
+	_ekf_parameters->baro_relative_reference = _weighted_height_mode;
 	BarometerReference::Params baro_reference;
 	baro_reference.duration = positive("baro_reference_duration", 2.0);
 	const int reference_samples = configured("baro_reference_min_samples", 40);
@@ -173,6 +206,8 @@ void StateFusionNode::reset() {
 	_state.t = kUnknownTime;
 	_last_rtk_time = kUnknownTime;
 	_last_navigation_attempt = kUnknownTime;
+	_gnss_raw_height_variance = _gnss_effective_height_variance = kUnknownTime;
+	_gnss_raw_vertical_velocity_variance = _gnss_effective_vertical_velocity_variance = kUnknownTime;
 	_last_imu_time = kUnknownTime;
 	_observations.clear();
 	_reference_imus.clear();
@@ -302,11 +337,13 @@ void StateFusionNode::enqueueObservation(const Observation& observation) {
 }
 
 void StateFusionNode::resetBarometer(const std::string& reason) {
+	if (_weighted_height_mode && _ekf) _ekf->clearBarometerReference();
 	if (_gnss_baro_height_active) {
 		_accepted_navigation_updates = 0;
 		_gnss_vertical_recovery_pending = true;
 	}
 	_gnss_baro_height_active = false;
+	_baro_stream_stale = false;
 	_observations.erase(std::remove_if(_observations.begin(), _observations.end(),
 	                                   [](const Observation& observation) { return observation.barometer; }),
 	                    _observations.end());
@@ -413,7 +450,19 @@ void StateFusionNode::processObservations(double time, double received) {
 	        (std::isfinite(_baro_last_time) && _baro_last_time > current_time && _baro_last_time - current_time <= 0.010);
 	if (_baro_enabled && std::isfinite(_baro_receive_time) &&
 	    (!SafetyGate::fresh(received, _baro_receive_time, _baro_max_age) || !pressure_time_fresh)) {
-		resetBarometer("Pressure stream stale; using IMU and navigation");
+		if (_weighted_height_mode) {
+			if (!_baro_stream_stale && _gnss_baro_height_active) {
+				_accepted_navigation_updates = 0;
+				_gnss_vertical_recovery_pending = true;
+			}
+			_baro_stream_stale = true;
+			_gnss_baro_height_active = false;
+			_baro_reason = "Pressure stream stale; retaining same-session reference for recovery";
+		} else {
+			resetBarometer("Pressure stream stale; using IMU and navigation");
+		}
+	} else {
+		_baro_stream_stale = false;
 	}
 	const double cutoff = time - _observation_delay;
 	while (!_observations.empty() && _observations.front().time <= cutoff) {
@@ -430,9 +479,48 @@ void StateFusionNode::processObservations(double time, double received) {
 		const auto barometer = _ekf->barometerQuality();
 		// Select the height source at the observation time, not the newest queued pressure time.
 		// A stream of rejected pressure outliers must not suppress GNSS height indefinitely.
-		const bool baro_height = _navigation_source == "gnss" && _gnss_use_baro_height && _baro_enabled &&
+		const bool baro_height = _navigation_source == "gnss" && _gnss_use_baro_height && _baro_enabled && !_baro_stream_stale &&
 		                         _baro_reference->ready() && barometer.valid &&
 		                         SafetyGate::fresh(observation.time, barometer.stamp, _baro_max_age);
+		if (_weighted_height_mode) {
+			if (_gnss_baro_height_active != baro_height) _accepted_navigation_updates = 0;
+			_gnss_baro_height_active = baro_height;
+			agi::Vector<3> position_variance = observation.position_variance;
+			agi::Vector<3> velocity_variance = observation.velocity_variance;
+			_gnss_raw_height_variance = position_variance.z();
+			_gnss_raw_vertical_velocity_variance = velocity_variance.z();
+			if (baro_height)
+				position_variance.z() =
+				        std::max(_gnss_height_variance_floor, _gnss_height_variance_scale * position_variance.z());
+			velocity_variance.z() = std::max(_gnss_vertical_velocity_variance_floor,
+			                                 _gnss_vertical_velocity_variance_scale * velocity_variance.z());
+			_gnss_effective_height_variance = position_variance.z();
+			_gnss_effective_vertical_velocity_variance = velocity_variance.z();
+			const auto result = _ekf->addNavigation(
+			        observation.time, position, velocity, navigation.heading, navigation.heading_valid, position_variance,
+			        velocity_variance, observation.heading_variance, _navigation_horizontal_nis_threshold,
+			        _navigation_height_nis_threshold, _navigation_vertical_velocity_nis_threshold);
+			const bool horizontal_accepted = result.committed && (result.accepted_groups & agi::EkfImu::kHorizontalGroup);
+			const auto vertical_groups = agi::EkfImu::kHeightGroup | agi::EkfImu::kVerticalVelocityGroup;
+			const bool vertical_accepted = result.committed && (result.accepted_groups & vertical_groups) == vertical_groups;
+			_gnss_vertical_recovery_pending = !baro_height && !vertical_accepted;
+			if (horizontal_accepted) _last_rtk_time = observation.time;
+			if (horizontal_accepted && navigation.accuracy_ok && !_gnss_vertical_recovery_pending)
+				_accepted_navigation_updates = std::min(_accepted_navigation_updates + 1, _navigation_ready_updates);
+			else
+				_accepted_navigation_updates = 0;
+			if (!horizontal_accepted)
+				_readiness_reason =
+				        "GNSS horizontal/heading update rejected; accepted vertical groups do not restore navigation "
+				        "readiness";
+			else if (_gnss_vertical_recovery_pending)
+				_readiness_reason =
+				        "GNSS vertical recovery unavailable; waiting for accepted height and vertical velocity or "
+				        "barometer";
+			else
+				_readiness_reason = "Waiting for consecutive accepted navigation updates and covariance limits";
+			continue;
+		}
 		const auto measurement_mode =
 		        baro_height ? agi::EkfImu::NavigationMeasurementMode::kHorizontal : agi::EkfImu::NavigationMeasurementMode::kFull3d;
 		const double innovation_limit = _navigation_source == "gnss"
@@ -475,6 +563,7 @@ void StateFusionNode::processObservations(double time, double received) {
 
 void StateFusionNode::publishBarometerStatus() {
 	const auto quality = _ekf->barometerQuality();
+	const auto navigation = _ekf->navigationQuality();
 	diagnostic_msgs::msg::DiagnosticArray out;
 	out.header.stamp = now();
 	diagnostic_msgs::msg::DiagnosticStatus status;
@@ -489,19 +578,37 @@ void StateFusionNode::publishBarometerStatus() {
 	status.message = _baro_reason;
 	if (_baro_enabled && !healthy && _baro_reference->ready())
 		status.message = "No recent accepted barometer update; using IMU and navigation: " + _baro_reason;
+	const bool vertical_degraded = _weighted_height_mode && healthy && std::isfinite(navigation.height.observation_stamp) &&
+	                               (!navigation.height.accepted || !navigation.vertical_velocity.accepted);
+	if (vertical_degraded) {
+		status.level = status.WARN;
+		status.message += "; GNSS height or vertical velocity rejected; pressure retains vertical readiness support";
+	}
+	if (_weighted_height_mode && std::isfinite(navigation.horizontal.observation_stamp) && !navigation.horizontal.accepted) {
+		status.level = status.WARN;
+		status.message += "; GNSS horizontal/heading rejected; navigation readiness revoked";
+	}
 	const auto add = [&status](const std::string& key, const auto& value) {
 		diagnostic_msgs::msg::KeyValue item;
 		item.key = key;
-		item.value = std::to_string(value);
+		if constexpr (std::is_convertible_v<decltype(value), std::string>)
+			item.value = value;
+		else
+			item.value = std::to_string(value);
 		status.values.push_back(item);
 	};
 	add("enabled", _baro_enabled);
 	add("healthy", healthy);
+	add("height_fusion_mode", _height_fusion_mode);
+	add("weighted_height_mode_active", _weighted_height_mode);
 	add("gnss_use_baro_height", _gnss_use_baro_height);
 	add("gnss_baro_height_active", _gnss_baro_height_active);
 	add("gnss_vertical_recovery_pending", _gnss_vertical_recovery_pending);
+	add("gnss_vertical_degraded", vertical_degraded);
 	add("baro_bias_random_walk_m2_s", _ekf_parameters->baro_bias_random_walk);
 	add("reference_valid", _baro_reference->ready());
+	add("ekf_reference_valid", quality.reference_valid);
+	add("relative_reference_active", quality.relative_reference_active);
 	add("reference_samples", _baro_reference->sampleCount());
 	add("reference_pressure_pa", _baro_reference->pressure());
 	add("reference_height_m", _baro_reference->height());
@@ -513,6 +620,7 @@ void StateFusionNode::publishBarometerStatus() {
 	add("height_variance_m2", _baro_last_height_variance);
 	add("bias_m", quality.bias);
 	add("bias_variance_m2", quality.bias_variance);
+	add("relative_height_variance_m2", quality.relative_height_variance);
 	add("innovation_m", quality.innovation);
 	add("nis", quality.innovation_squared);
 	add("accepted_updates", quality.accepted_updates);
@@ -527,8 +635,34 @@ void StateFusionNode::publishBarometerStatus() {
 	add("reference_resets", _baro_reference_resets);
 	add("invalid_samples", _baro_invalid_samples);
 	add("observation_delay_s", _observation_delay);
-	const auto navigation = _ekf->navigationQuality();
 	add("navigation_nis_dimensions", navigation.observation_dimensions);
+	add("absolute_height_variance_m2", navigation.position_variance.z());
+	add("gnss_raw_height_variance_m2", _gnss_raw_height_variance);
+	add("gnss_effective_height_variance_m2", _gnss_effective_height_variance);
+	add("gnss_raw_vertical_velocity_variance_m2_s2", _gnss_raw_vertical_velocity_variance);
+	add("gnss_effective_vertical_velocity_variance_m2_s2", _gnss_effective_vertical_velocity_variance);
+	const auto add_group = [&add, this](const std::string& name, const agi::EkfImu::NavigationGroupQuality& group,
+	                                    double nis_threshold) {
+		add(name + "_nis", group.innovation_squared);
+		add(name + "_nis_threshold", nis_threshold);
+		add(name + "_dimensions", group.observation_dimensions);
+		add(name + "_accepted", group.accepted);
+		add(name + "_reason", navigationUpdateReason(group.reason));
+		add(name + "_observation_stamp", group.observation_stamp);
+		add(name + "_last_accepted_stamp", group.stamp);
+		add(name + "_accepted_age_s", now().seconds() - group.stamp);
+		add(name + "_accepted_updates", group.accepted_updates);
+		add(name + "_rejected_updates", group.rejected_updates);
+	};
+	add_group("gnss_horizontal", navigation.horizontal, _navigation_horizontal_nis_threshold);
+	add_group("gnss_height", navigation.height, _navigation_height_nis_threshold);
+	add_group("gnss_vertical_velocity", navigation.vertical_velocity, _navigation_vertical_velocity_nis_threshold);
+	const std::vector<std::string> horizontal_rows{"position_x_m2", "position_y_m2", "velocity_x_m2_s2", "velocity_y_m2_s2",
+	                                               "heading_rad2"};
+	for (size_t i = 0; i < horizontal_rows.size(); ++i)
+		add("gnss_horizontal_variance_" + horizontal_rows[i], navigation.horizontal.measurement_variance(i));
+	add("gnss_height_variance_m2", navigation.height.measurement_variance(0));
+	add("gnss_vertical_velocity_variance_m2_s2", navigation.vertical_velocity.measurement_variance(0));
 	add("prediction_span_s", _state.t - navigation.stamp);
 	out.status.push_back(status);
 	_baro_status_pub->publish(out);
@@ -704,7 +838,7 @@ void StateFusionNode::publishState(double imu_receive_time) {
 		out.velocity_variance[i] = quality.velocity_variance(i);
 	}
 	out.heading_variance = quality.heading_variance;
-	out.navigation_innovation_squared = quality.innovation_squared;
+	out.navigation_innovation_squared = _weighted_height_mode ? quality.horizontal.innovation_squared : quality.innovation_squared;
 	out.navigation_rejections = quality.rejected_updates;
 	out.navigation_accepted_updates = _accepted_navigation_updates;
 	out.estimator_ready =

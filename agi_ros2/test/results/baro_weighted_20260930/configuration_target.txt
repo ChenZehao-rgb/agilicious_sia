@@ -1,0 +1,6 @@
+test_hardware_baro_fusion_and_receiver_parameters_reach_nodes (__main__.RuntimeProfiles) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.043s
+
+OK

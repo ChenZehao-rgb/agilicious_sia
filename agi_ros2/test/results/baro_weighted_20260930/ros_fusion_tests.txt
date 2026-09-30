@@ -1,0 +1,26 @@
+test_abnormal_pressure_timestamps_do_not_keep_reference_fresh (__main__.BarometerFusionTest) ... ok
+test_current_pressure_waits_for_backlogged_imu_without_resetting_reference (__main__.BarometerFusionTest) ... ok
+test_later_navigation_arrival_and_same_stamp_remain_fusable (__main__.BarometerFusionTest) ... ok
+test_loss_and_source_epoch_invalidation_preserve_navigation_height (__main__.BarometerFusionTest) ... ok
+test_nonzero_reference_direction_variance_and_outlier_nis (__main__.BarometerFusionTest) ... ok
+test_observations_older_than_committed_window_are_dropped (__main__.BarometerFusionTest) ... ok
+test_continuous_rejected_pressure_does_not_suppress_gnss_height (__main__.GnssBarometerFusionTest) ... ok
+test_gnss_vertical_drift_is_excluded_while_horizontal_motion_and_heading_fuse (__main__.GnssBarometerFusionTest) ... ok
+test_large_gnss_vertical_error_preserves_xy_updates_but_revokes_readiness (__main__.GnssBarometerFusionTest) ... ok
+test_pressure_loss_restores_full_gnss_until_pressure_reference_recovers (__main__.GnssBarometerFusionTest) ... ok
+test_absolute_height_covariance_remains_the_readiness_gate (__main__.HeightFusionConfigurationTest) ... ok
+test_invalid_weighted_startup_parameters_are_rejected (__main__.HeightFusionConfigurationTest) ... ok
+test_legacy_boolean_mapping_and_explicit_mode_precedence (__main__.HeightFusionConfigurationTest) ... ok
+test_new_gnss_mode_does_not_change_rtk_updates_or_bias_noise_default (__main__.HeightFusionConfigurationTest) ... ok
+test_explicit_pressure_and_navigation_invalidation_clear_reference (__main__.WeightedGnssBarometerFusionTest) ... ok
+test_independent_gates_keep_valid_groups_and_revoke_readiness_on_horizontal_failure (__main__.WeightedGnssBarometerFusionTest) ... ok
+test_missing_pressure_requires_both_vertical_groups_before_rebuilding_ready_count (__main__.WeightedGnssBarometerFusionTest) ... ok
+test_position_drift_does_not_replace_doppler_velocity_and_weights_follow_reported_variance (__main__.WeightedGnssBarometerFusionTest) ... ok
+test_pressure_loss_and_rejected_pressure_recover_same_reference_while_armed (__main__.WeightedGnssBarometerFusionTest) ... ok
+test_source_session_and_clock_epoch_reset_reference (__main__.WeightedGnssBarometerFusionTest) ... ok
+test_weighting_and_mode_parameters_cannot_change_at_runtime (__main__.WeightedGnssBarometerFusionTest) ... ok
+
+----------------------------------------------------------------------
+Ran 21 tests in 97.562s
+
+OK

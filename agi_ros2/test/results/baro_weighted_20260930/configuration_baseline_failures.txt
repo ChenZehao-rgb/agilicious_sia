@@ -1,0 +1,33 @@
+HEAD=bbae2401f58f36e60363e0f7f3e3ebd7ecbef145
+test_geo_hardware_still_rejects_missing_mass_limits_or_thrust_table (head_runtime_baseline.RuntimeProfiles) ... FAIL
+test_hardware_defaults_to_estimate_without_changing_controller_limits_or_shadow (head_runtime_baseline.RuntimeProfiles) ... FAIL
+test_hardware_placeholders_reject_control_but_allow_diagnostics (head_runtime_baseline.RuntimeProfiles) ... FAIL
+
+======================================================================
+FAIL: test_geo_hardware_still_rejects_missing_mass_limits_or_thrust_table (head_runtime_baseline.RuntimeProfiles)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/tmp/agi_runtime_head_bbae240_golt1kiu/agi_ros2/test/test_runtime_config.py", line 140, in test_geo_hardware_still_rejects_missing_mass_limits_or_thrust_table
+    with self.assertRaisesRegex(ValueError, 'measured'):
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_hardware_defaults_to_estimate_without_changing_controller_limits_or_shadow (head_runtime_baseline.RuntimeProfiles)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/tmp/agi_runtime_head_bbae240_golt1kiu/agi_ros2/test/test_runtime_config.py", line 214, in test_hardware_defaults_to_estimate_without_changing_controller_limits_or_shadow
+    self.assertEqual(profile['pilot']['quadrotor']['thrust_max'], 0.0)
+AssertionError: 3.599 != 0.0
+
+======================================================================
+FAIL: test_hardware_placeholders_reject_control_but_allow_diagnostics (head_runtime_baseline.RuntimeProfiles)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/tmp/agi_runtime_head_bbae240_golt1kiu/agi_ros2/test/test_runtime_config.py", line 180, in test_hardware_placeholders_reject_control_but_allow_diagnostics
+    with self.assertRaisesRegex(ValueError, 'measured'):
+AssertionError: ValueError not raised
+
+----------------------------------------------------------------------
+Ran 3 tests in 0.047s
+
+FAILED (failures=3)

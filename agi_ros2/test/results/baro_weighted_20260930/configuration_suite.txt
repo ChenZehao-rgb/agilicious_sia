@@ -1,0 +1,29 @@
+....F.F.F...............
+======================================================================
+FAIL: test_geo_hardware_still_rejects_missing_mass_limits_or_thrust_table (__main__.RuntimeProfiles)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/sia/agilicious_internal-main/agi_ros2/test/test_runtime_config.py", line 140, in test_geo_hardware_still_rejects_missing_mass_limits_or_thrust_table
+    with self.assertRaisesRegex(ValueError, 'measured'):
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_hardware_defaults_to_estimate_without_changing_controller_limits_or_shadow (__main__.RuntimeProfiles)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/sia/agilicious_internal-main/agi_ros2/test/test_runtime_config.py", line 214, in test_hardware_defaults_to_estimate_without_changing_controller_limits_or_shadow
+    self.assertEqual(profile['pilot']['quadrotor']['thrust_max'], 0.0)
+AssertionError: 3.599 != 0.0
+
+======================================================================
+FAIL: test_hardware_placeholders_reject_control_but_allow_diagnostics (__main__.RuntimeProfiles)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/sia/agilicious_internal-main/agi_ros2/test/test_runtime_config.py", line 180, in test_hardware_placeholders_reject_control_but_allow_diagnostics
+    with self.assertRaisesRegex(ValueError, 'measured'):
+AssertionError: ValueError not raised
+
+----------------------------------------------------------------------
+Ran 24 tests in 0.500s
+
+FAILED (failures=3)

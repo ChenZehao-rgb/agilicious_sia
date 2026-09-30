@@ -1,0 +1,6 @@
+test_pressure_fuses_with_known_accuracy_without_flight_limits_in_shadow (__main__.BarometerHardwarePipelineTests) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 3.096s
+
+OK

@@ -9,6 +9,8 @@ namespace agi {
 class EkfImuTestPeer {
 public:
 	static Matrix<17, 17> covariance(const EkfImu& ekf) { return ekf.P_; }
+	static Vector<17> posterior(const EkfImu& ekf) { return ekf.posterior_; }
+	static void setCovariance(EkfImu* ekf, const Matrix<17, 17>& covariance) { ekf->P_ = covariance; }
 };
 }  // namespace agi
 
@@ -618,7 +620,9 @@ TEST(EkfImuBaro, RelativeHeightRejectsGnssHeightDriftWithoutInventingAnAbsoluteD
 			                       Vector<3>::Constant(4.0), Vector<3>::Constant(0.09), 0.01, 20.515,
 			                       EkfImu::NavigationMeasurementMode::kHorizontal));
 		}
-		if (i % 2 == 0) ASSERT_TRUE(ekf.addBaro(time, anchor, 0.278, 10.828));
+		if (i % 2 == 0) {
+			ASSERT_TRUE(ekf.addBaro(time, anchor, 0.278, 10.828));
+		}
 	}
 	ASSERT_TRUE(ekf.getAt(31.0, &state));
 	EXPECT_NEAR(state.p.z(), 3.0, 0.01);
@@ -658,7 +662,9 @@ TEST(EkfImuBaro, RelativeHeightTracksRealClimbAndDescentWithMisleadingGnssHeight
 			ASSERT_TRUE(ekf.addRtk(time, Vector<3>(0, 0, 3.0), Vector<3>::Zero(), 0, true, Vector<3>::Constant(4.0),
 			                       Vector<3>::Constant(0.09), 0.01, 20.515, EkfImu::NavigationMeasurementMode::kHorizontal));
 		}
-		if (i % 2 == 0) ASSERT_TRUE(ekf.addBaro(time, height, 0.278, 10.828));
+		if (i % 2 == 0) {
+			ASSERT_TRUE(ekf.addBaro(time, height, 0.278, 10.828));
+		}
 		ASSERT_TRUE(ekf.getAt(time, &state));
 		max_height_error = std::max(max_height_error, std::abs(state.p.z() - height));
 		max_velocity_error = std::max(max_velocity_error, std::abs(state.v.z() - velocity));
@@ -667,4 +673,361 @@ TEST(EkfImuBaro, RelativeHeightTracksRealClimbAndDescentWithMisleadingGnssHeight
 	EXPECT_LT(max_velocity_error, 0.10);
 	EXPECT_EQ(ekf.barometerQuality().rejected_updates, 0u);
 	EXPECT_EQ(ekf.navigationQuality().rejected_updates, 0u);
+}
+
+namespace {
+std::shared_ptr<EkfImuParameters> relativeReferenceParameters() {
+	auto params = std::make_shared<EkfImuParameters>();
+	params->baro_relative_reference = true;
+	params->baro_bias_random_walk = 0;
+	params->Q_init_pos.setConstant(4.0);
+	params->Q_init_vel.setConstant(0.1);
+	params->Q_init_bacc.setConstant(0.01);
+	return params;
+}
+
+EkfImu::NavigationUpdateResult navigation(EkfImu& ekf, Scalar time, const Vector<3>& position, const Vector<3>& velocity) {
+	return ekf.addNavigation(time, position, velocity, 0, true, Vector<3>(4, 4, 18), Vector<3>(0.04, 0.04, 0.09), 0.01, 20.515, 10.828,
+	                         10.828);
+}
+
+void expectCovarianceValid(const EkfImu& ekf) {
+	const auto covariance = EkfImuTestPeer::covariance(ekf);
+	EXPECT_TRUE(covariance.allFinite());
+	EXPECT_TRUE(covariance.isApprox(covariance.transpose(), 1e-12));
+	const Eigen::SelfAdjointEigenSolver<Matrix<17, 17>> eigenvalues(covariance);
+	ASSERT_EQ(eigenvalues.info(), Eigen::Success);
+	EXPECT_GE(eigenvalues.eigenvalues().minCoeff(), -1e-10);
+}
+}  // namespace
+
+TEST(EkfImuNavigation, ReferencePolicyRequiresZeroRandomWalkAndExplicitAlignment) {
+	EkfImuParameters invalid;
+	invalid.baro_relative_reference = true;
+	EXPECT_FALSE(invalid.valid());
+	invalid.baro_bias_random_walk = 0;
+	EXPECT_TRUE(invalid.valid());
+	EkfImu ekf(relativeReferenceParameters());
+	ASSERT_TRUE(ekf.initialize(initial()));
+	samples(ekf, false);
+	EXPECT_FALSE(ekf.addBaro(1.0, 0, 0.278, 10.828));
+	EXPECT_FALSE(ekf.barometerQuality().relative_reference_active);
+	Scalar anchor = NAN;
+	ASSERT_TRUE(ekf.alignBarometerReference(1.0, 4.0, &anchor));
+	ASSERT_TRUE(ekf.barometerQuality().reference_valid);
+	ASSERT_TRUE(ekf.barometerQuality().relative_reference_active);
+	EXPECT_FALSE(ekf.updateParameters(std::make_shared<EkfImuParameters>()));
+	EXPECT_FALSE(ekf.resetBaroBias(4.0));
+	ASSERT_TRUE(ekf.initialize(initial()));
+	EXPECT_FALSE(ekf.barometerQuality().reference_valid);
+	EXPECT_FALSE(ekf.barometerQuality().relative_reference_active);
+}
+
+TEST(EkfImuNavigation, JointCorrectionMatchesSchmidtInTransformedCoordinates) {
+	EkfImu ekf(relativeReferenceParameters());
+	ASSERT_TRUE(ekf.initialize(initial()));
+	ASSERT_TRUE(ekf.addImu({1.0, -GVEC, Vector<3>::Zero()}));
+	Matrix<17, 17> square_root;
+	for (int row = 0; row < 17; ++row)
+		for (int column = 0; column < 17; ++column)
+			square_root(row, column) = 0.1 * std::sin(1.7 * row + 0.6 * column) + (row == column ? 0.3 : 0.0);
+	const Matrix<17, 17> dense_covariance = square_root * square_root.transpose();
+	EkfImuTestPeer::setCovariance(&ekf, dense_covariance);
+	Scalar anchor = NAN;
+	ASSERT_TRUE(ekf.alignBarometerReference(1.0, 0.25, &anchor));
+	const Matrix<17, 17> covariance = EkfImuTestPeer::covariance(ekf);
+	const Vector<17> prior = EkfImuTestPeer::posterior(ekf);
+	Matrix<17, 17> transform = Matrix<17, 17>::Identity(), inverse = transform;
+	transform(2, 16) = 1;
+	inverse(2, 16) = -1;
+	const Matrix<17, 17> transformed_covariance = transform * covariance * transform.transpose();
+	Matrix<7, 17> observation = Matrix<7, 17>::Zero();
+	observation.block<3, 3>(0, 0).setIdentity();
+	observation.block<3, 3>(3, 7).setIdentity();
+	observation(6, 6) = 2;  // Yaw Jacobian at the identity quaternion.
+	const Matrix<7, 17> transformed_observation = observation * inverse;
+	Vector<7> variances;
+	variances << 4, 4, 18, 0.04, 0.04, 0.09, 0.01;
+	const Matrix<7, 7> noise = variances.asDiagonal();
+	const Matrix<7, 7> innovation = transformed_observation * transformed_covariance * transformed_observation.transpose() + noise;
+	Matrix<17, 7> transformed_gain = transformed_covariance * transformed_observation.transpose() * innovation.inverse();
+	transformed_gain.row(16).setZero();
+	Vector<7> residual;
+	residual << -0.2, 0.1, -0.7, -0.04, 0.03, -0.08, 0;
+	Vector<17> expected = inverse * (transform * prior - transformed_gain * residual);
+	const Matrix<17, 17> correction = Matrix<17, 17>::Identity() - transformed_gain * transformed_observation;
+	Matrix<17, 17> expected_covariance =
+	        inverse *
+	        (correction * transformed_covariance * correction.transpose() + transformed_gain * noise * transformed_gain.transpose()) *
+	        inverse.transpose();
+	const Scalar quaternion_norm = expected.segment<4>(3).norm();
+	const Vector<4> quaternion = expected.segment<4>(3) / quaternion_norm;
+	Matrix<17, 17> normalization = Matrix<17, 17>::Identity();
+	normalization.block<4, 4>(3, 3) = (Matrix<4, 4>::Identity() - quaternion * quaternion.transpose()) / quaternion_norm;
+	expected.segment<4>(3) = quaternion;
+	expected_covariance = (normalization * expected_covariance * normalization.transpose()).eval();
+	const auto result = navigation(ekf, 1.0, Vector<3>(0.2, -0.1, 0.7), Vector<3>(0.04, -0.03, 0.08));
+	ASSERT_TRUE(result.committed);
+	EXPECT_EQ(result.accepted_groups, 7u);
+	EXPECT_TRUE(EkfImuTestPeer::posterior(ekf).isApprox(expected, 1e-12));
+	EXPECT_TRUE(EkfImuTestPeer::covariance(ekf).isApprox(expected_covariance, 1e-12));
+	EXPECT_DOUBLE_EQ(ekf.barometerQuality().bias, 0);
+	EXPECT_DOUBLE_EQ(ekf.barometerQuality().bias_variance, covariance(16, 16));
+	expectCovarianceValid(ekf);
+}
+
+TEST(EkfImuNavigation, IndependentHeightAndVelocityGatesCommitOneEpoch) {
+	EkfImu ekf(relativeReferenceParameters());
+	ASSERT_TRUE(ekf.initialize(initial()));
+	samples(ekf, false);
+	Scalar anchor = NAN;
+	ASSERT_TRUE(ekf.alignBarometerReference(1.0, 4.0, &anchor));
+	const auto height_rejected = navigation(ekf, 1.1, Vector<3>(0.1, 0, 1000), Vector<3>(0.1, 0, 0.1));
+	ASSERT_TRUE(height_rejected.committed);
+	EXPECT_EQ(height_rejected.accepted_groups, EkfImu::kHorizontalGroup | EkfImu::kVerticalVelocityGroup);
+	EXPECT_EQ(height_rejected.rejected_groups, EkfImu::kHeightGroup);
+	auto quality = ekf.navigationQuality();
+	EXPECT_EQ(quality.horizontal.stamp, 1.1);
+	EXPECT_TRUE(std::isnan(quality.height.stamp));
+	EXPECT_EQ(quality.height.reason, EkfImu::NavigationUpdateReason::kInnovation);
+	EXPECT_EQ(quality.height.measurement_variance(0), 18);
+	EXPECT_EQ(quality.vertical_velocity.measurement_variance(0), 0.09);
+	EXPECT_EQ(quality.accepted_updates, 1u);
+	EXPECT_EQ(quality.observation_dimensions, 5u);
+	EXPECT_EQ(quality.innovation_squared, quality.horizontal.innovation_squared);
+	const auto posterior = EkfImuTestPeer::posterior(ekf);
+	const auto duplicate = navigation(ekf, 1.1, Vector<3>::Zero(), Vector<3>::Zero());
+	EXPECT_FALSE(duplicate.committed);
+	EXPECT_EQ(duplicate.reason, EkfImu::NavigationUpdateReason::kTimestamp);
+	EXPECT_TRUE(EkfImuTestPeer::posterior(ekf).isApprox(posterior, 1e-15));
+	EXPECT_FALSE(ekf.navigationQuality().horizontal.accepted);
+	EXPECT_EQ(ekf.navigationQuality().horizontal.reason, EkfImu::NavigationUpdateReason::kTimestamp);
+	EXPECT_EQ(ekf.navigationQuality().horizontal.stamp, 1.1);
+	EXPECT_EQ(ekf.navigationQuality().horizontal.accepted_updates, 1u);
+	EXPECT_EQ(ekf.navigationQuality().horizontal.rejected_updates, 0u);
+	EXPECT_TRUE(std::isnan(ekf.navigationQuality().innovation_squared));
+	EXPECT_EQ(ekf.navigationQuality().observation_dimensions, ekf.navigationQuality().horizontal.observation_dimensions);
+	ASSERT_TRUE(ekf.addBaro(1.1, anchor, 0.278, 10.828));
+	const auto velocity_rejected = navigation(ekf, 1.2, Vector<3>(0.1, 0, 0), Vector<3>(0.1, 0, 1000));
+	ASSERT_TRUE(velocity_rejected.committed);
+	EXPECT_EQ(velocity_rejected.accepted_groups, EkfImu::kHorizontalGroup | EkfImu::kHeightGroup);
+	EXPECT_EQ(velocity_rejected.rejected_groups, EkfImu::kVerticalVelocityGroup);
+	quality = ekf.navigationQuality();
+	EXPECT_EQ(quality.stamp, 1.2);
+	EXPECT_EQ(quality.height.stamp, 1.2);
+	EXPECT_EQ(quality.vertical_velocity.stamp, 1.1);
+	EXPECT_EQ(quality.vertical_velocity.reason, EkfImu::NavigationUpdateReason::kInnovation);
+	EXPECT_EQ(quality.accepted_updates, 2u);
+	EXPECT_EQ(quality.rejected_updates, 0u);
+	expectCovarianceValid(ekf);
+}
+
+TEST(EkfImuNavigation, VerticalOnlyCommitDoesNotRenewHorizontalAcceptance) {
+	EkfImu ekf(relativeReferenceParameters());
+	ASSERT_TRUE(ekf.initialize(initial()));
+	samples(ekf, false);
+	const auto result = navigation(ekf, 1.1, Vector<3>(1000, 1000, 0), Vector<3>(1000, 1000, 0));
+	ASSERT_TRUE(result.committed);
+	EXPECT_EQ(result.accepted_groups, EkfImu::kHeightGroup | EkfImu::kVerticalVelocityGroup);
+	const auto quality = ekf.navigationQuality();
+	EXPECT_EQ(quality.stamp, 1.1);
+	EXPECT_TRUE(std::isnan(quality.horizontal.stamp));
+	EXPECT_EQ(quality.accepted_updates, 0u);
+	EXPECT_EQ(quality.rejected_updates, 1u);
+	EXPECT_EQ(quality.height.stamp, 1.1);
+}
+
+TEST(EkfImuNavigation, AllRejectedAndNumericalFailureRestorePosteriorAndCovariance) {
+	EkfImu rejected, reference;
+	for (EkfImu* ekf : {&rejected, &reference}) {
+		ASSERT_TRUE(ekf->initialize(initial()));
+		samples(*ekf, true);
+	}
+	const auto prior = EkfImuTestPeer::posterior(rejected);
+	const auto covariance = EkfImuTestPeer::covariance(rejected);
+	const auto result = navigation(rejected, 1.1, Vector<3>::Constant(1000), Vector<3>::Constant(1000));
+	EXPECT_FALSE(result.committed);
+	EXPECT_FALSE(result.numerical_failure);
+	EXPECT_EQ(result.rejected_groups, 7u);
+	EXPECT_TRUE(EkfImuTestPeer::posterior(rejected).isApprox(prior, 1e-15));
+	EXPECT_TRUE(EkfImuTestPeer::covariance(rejected).isApprox(covariance, 1e-15));
+	EXPECT_EQ(rejected.navigationQuality().stamp, 1.0);
+	const auto duplicate = navigation(rejected, 1.1, Vector<3>::Zero(), Vector<3>::Zero());
+	EXPECT_FALSE(duplicate.committed);
+	EXPECT_EQ(duplicate.reason, EkfImu::NavigationUpdateReason::kTimestamp);
+	EXPECT_EQ(rejected.navigationQuality().horizontal.rejected_updates, 1u);
+	EXPECT_EQ(rejected.navigationQuality().height.rejected_updates, 1u);
+	EXPECT_EQ(rejected.navigationQuality().vertical_velocity.rejected_updates, 1u);
+	ASSERT_TRUE(navigation(rejected, 1.2, Vector<3>::Zero(), Vector<3>::Zero()).committed);
+	ASSERT_TRUE(navigation(reference, 1.2, Vector<3>::Zero(), Vector<3>::Zero()).committed);
+	EXPECT_TRUE(EkfImuTestPeer::posterior(rejected).isApprox(EkfImuTestPeer::posterior(reference), 1e-12));
+	EXPECT_TRUE(EkfImuTestPeer::covariance(rejected).isApprox(EkfImuTestPeer::covariance(reference), 1e-12));
+
+	EkfImu numerical;
+	ASSERT_TRUE(numerical.initialize(initial()));
+	ASSERT_TRUE(numerical.addImu({1.0, -GVEC, Vector<3>::Zero()}));
+	Matrix<17, 17> invalid = Matrix<17, 17>::Identity();
+	invalid(0, 0) = -100;
+	EkfImuTestPeer::setCovariance(&numerical, invalid);
+	const auto failed = navigation(numerical, 1.0, Vector<3>::Zero(), Vector<3>::Zero());
+	EXPECT_FALSE(failed.committed);
+	EXPECT_TRUE(failed.numerical_failure);
+	EXPECT_EQ(failed.accepted_groups, 0u);
+	EXPECT_EQ(failed.rejected_groups, 7u);
+	EXPECT_TRUE(EkfImuTestPeer::covariance(numerical).isApprox(invalid, 1e-15));
+	EXPECT_EQ(numerical.navigationQuality().height.reason, EkfImu::NavigationUpdateReason::kNumericalFailure);
+}
+
+TEST(EkfImuNavigation, FrozenReferenceSurvivesEveryMeasurementPathAndExplicitInvalidation) {
+	EkfImu ekf(relativeReferenceParameters());
+	ASSERT_TRUE(ekf.initialize(initial()));
+	samples(ekf, false);
+	Scalar anchor = NAN;
+	ASSERT_TRUE(ekf.alignBarometerReference(1.0, 4.0, &anchor));
+	const Scalar bias_variance = ekf.barometerQuality().bias_variance;
+	ASSERT_TRUE(ekf.addRtk(1.05, Vector<3>(0, 0, 1), Vector<3>::Zero(), 0, true, Vector<3>::Constant(18), Vector<3>::Constant(0.09),
+	                       0.01, 24.322));
+	ASSERT_TRUE(ekf.addBaro(1.05, 0.2, 0.278, 10.828));
+	EXPECT_DOUBLE_EQ(ekf.barometerQuality().bias, 0);
+	EXPECT_DOUBLE_EQ(ekf.barometerQuality().bias_variance, bias_variance);
+	ASSERT_TRUE(ekf.addPose({1.1, Vector<3>(0, 0, 0.25), Quaternion::Identity()}));
+	EXPECT_DOUBLE_EQ(ekf.barometerQuality().bias, 0);
+	EXPECT_DOUBLE_EQ(ekf.barometerQuality().bias_variance, bias_variance);
+	expectCovarianceValid(ekf);
+	const auto posterior = EkfImuTestPeer::posterior(ekf);
+	const auto covariance = EkfImuTestPeer::covariance(ekf);
+	ekf.clearBarometerReference();
+	EXPECT_FALSE(ekf.barometerQuality().reference_valid);
+	EXPECT_FALSE(ekf.barometerQuality().valid);
+	EXPECT_TRUE(ekf.barometerQuality().relative_reference_active);
+	EXPECT_TRUE(EkfImuTestPeer::posterior(ekf).isApprox(posterior, 1e-15));
+	EXPECT_TRUE(EkfImuTestPeer::covariance(ekf).isApprox(covariance, 1e-15));
+	EXPECT_FALSE(ekf.addBaro(1.2, 0.25, 0.278, 10.828));
+	ASSERT_TRUE(navigation(ekf, 1.2, Vector<3>(0, 0, 6), Vector<3>::Zero()).committed);
+	EXPECT_DOUBLE_EQ(ekf.barometerQuality().bias, 0);
+	EXPECT_DOUBLE_EQ(ekf.barometerQuality().bias_variance, bias_variance);
+	expectCovarianceValid(ekf);
+}
+
+TEST(EkfImuNavigation, RelativeSchmidtSuppressesSlowGnssDriftAndRetainsDatumUncertainty) {
+	EkfImu ekf(relativeReferenceParameters());
+	ASSERT_TRUE(ekf.initialize(initial()));
+	ASSERT_TRUE(ekf.addImu({1.0, -GVEC, Vector<3>::Zero()}));
+	Scalar anchor = NAN;
+	ASSERT_TRUE(ekf.alignBarometerReference(1.0, 4.0, &anchor));
+	const Scalar bias_variance = ekf.barometerQuality().bias_variance;
+	for (int step = 1; step <= 3000; ++step) {
+		const Scalar elapsed = step * 0.01, time = 1.0 + elapsed;
+		ASSERT_TRUE(ekf.addImu({time, -GVEC, Vector<3>::Zero()}));
+		if (step % 10 == 0) {
+			const auto result = navigation(ekf, time, Vector<3>(0, 0, elapsed * 0.2), Vector<3>::Zero());
+			ASSERT_TRUE(result.committed);
+			ASSERT_EQ(result.accepted_groups, 7u);
+		}
+		if (step % 2 == 0) {
+			ASSERT_TRUE(ekf.addBaro(time, -elapsed / 300.0, 0.278, 10.828));
+		}
+	}
+	QuadState state = initial();
+	ASSERT_TRUE(ekf.getAt(31.0, &state));
+	EXPECT_NEAR(state.p.z(), -0.1, 0.05);
+	EXPECT_NEAR(state.v.z(), 0, 0.03);
+	const auto quality = ekf.barometerQuality();
+	EXPECT_DOUBLE_EQ(quality.bias, 0);
+	EXPECT_DOUBLE_EQ(quality.bias_variance, bias_variance);
+	EXPECT_LT(quality.relative_height_variance, 0.1);
+	EXPECT_GT(ekf.navigationQuality().position_variance.z(), 4.0);
+	EXPECT_EQ(ekf.navigationQuality().height.accepted_updates, 300u);
+	EXPECT_EQ(ekf.navigationQuality().vertical_velocity.accepted_updates, 300u);
+	expectCovarianceValid(ekf);
+}
+
+TEST(EkfImuNavigation, RelativeSchmidtTracksClimbAndDescentWithIndependentVerticalVelocity) {
+	EkfImu ekf(relativeReferenceParameters());
+	ASSERT_TRUE(ekf.initialize(initial()));
+	const Scalar frequency = 2 * M_PI / 12;
+	ASSERT_TRUE(ekf.addImu({1.0, -GVEC + Vector<3>(0, 0, 1.5 * frequency * frequency), Vector<3>::Zero()}));
+	Scalar anchor = NAN;
+	ASSERT_TRUE(ekf.alignBarometerReference(1.0, 4.0, &anchor));
+	Scalar maximum_height_error = 0, maximum_velocity_error = 0;
+	for (int step = 1; step <= 1200; ++step) {
+		const Scalar elapsed = step * 0.01, time = 1.0 + elapsed;
+		const Scalar height = 1.5 * (1 - std::cos(frequency * elapsed));
+		const Scalar velocity = 1.5 * frequency * std::sin(frequency * elapsed);
+		const Scalar acceleration = 1.5 * frequency * frequency * std::cos(frequency * elapsed);
+		ASSERT_TRUE(ekf.addImu({time, -GVEC + Vector<3>(0, 0, acceleration), Vector<3>::Zero()}));
+		if (step % 10 == 0) {
+			ASSERT_TRUE(navigation(ekf, time, Vector<3>(0, 0, height + 0.2 * elapsed), Vector<3>(0, 0, velocity)).committed);
+		}
+		if (step % 2 == 0) {
+			ASSERT_TRUE(ekf.addBaro(time, height, 0.278, 10.828));
+		}
+		QuadState state = initial();
+		ASSERT_TRUE(ekf.getAt(time, &state));
+		maximum_height_error = std::max(maximum_height_error, std::abs(state.p.z() - height));
+		maximum_velocity_error = std::max(maximum_velocity_error, std::abs(state.v.z() - velocity));
+	}
+	EXPECT_LT(maximum_height_error, 0.1);
+	EXPECT_LT(maximum_velocity_error, 0.1);
+	EXPECT_DOUBLE_EQ(ekf.barometerQuality().bias, 0);
+	EXPECT_EQ(ekf.navigationQuality().vertical_velocity.rejected_updates, 0u);
+	expectCovarianceValid(ekf);
+}
+
+TEST(EkfImuNavigation, DelayedOrderedFusionMatchesImmediateFusionWithQueries) {
+	EkfImu immediate(relativeReferenceParameters()), delayed(relativeReferenceParameters());
+	for (EkfImu* ekf : {&immediate, &delayed}) {
+		ASSERT_TRUE(ekf->initialize(initial()));
+		ASSERT_TRUE(ekf->addImu({1.0, -GVEC, Vector<3>::Zero()}));
+		Scalar anchor = NAN;
+		ASSERT_TRUE(ekf->alignBarometerReference(1.0, 4.0, &anchor));
+	}
+	const auto observe = [](EkfImu& ekf, const Scalar time) {
+		ASSERT_TRUE(navigation(ekf, time, Vector<3>(0.1, -0.1, 0.5), Vector<3>(0.02, 0, 0.1)).committed);
+		ASSERT_TRUE(ekf.addBaro(time, 0.1 * (time - 1.0), 0.278, 10.828));
+	};
+	for (int step = 1; step <= 300; ++step) {
+		const Scalar time = 1.0 + step * 0.001;
+		const ImuSample imu{time, -GVEC + Vector<3>(0.02, 0, 0.1 * std::sin(time)), Vector<3>(0, 0, 0.03)};
+		ASSERT_TRUE(immediate.addImu(imu));
+		ASSERT_TRUE(delayed.addImu(imu));
+		if (step == 100 || step == 200) observe(immediate, time);
+		QuadState state = initial();
+		ASSERT_TRUE(immediate.getAt(time, &state));
+		ASSERT_TRUE(delayed.getAt(time, &state));
+	}
+	observe(delayed, 1.1);
+	observe(delayed, 1.2);
+	QuadState expected = initial(), actual = initial();
+	ASSERT_TRUE(immediate.getAt(1.3, &expected));
+	ASSERT_TRUE(delayed.getAt(1.3, &actual));
+	EXPECT_TRUE(actual.x.isApprox(expected.x, 1e-10));
+	EXPECT_TRUE(EkfImuTestPeer::covariance(delayed).isApprox(EkfImuTestPeer::covariance(immediate), 1e-10));
+	EXPECT_DOUBLE_EQ(delayed.barometerQuality().bias, immediate.barometerQuality().bias);
+	EXPECT_EQ(delayed.navigationQuality().horizontal.accepted_updates, 2u);
+}
+
+TEST(EkfImuNavigation, SameEpochPressureAndNavigationAreAcceptedInEitherOrder) {
+	for (const bool pressure_first : {false, true}) {
+		EkfImu ekf(relativeReferenceParameters());
+		ASSERT_TRUE(ekf.initialize(initial()));
+		ASSERT_TRUE(ekf.addImu({1.0, -GVEC, Vector<3>::Zero()}));
+		Scalar anchor = NAN;
+		ASSERT_TRUE(ekf.alignBarometerReference(1.0, 4.0, &anchor));
+		if (pressure_first) {
+			ASSERT_TRUE(ekf.addBaro(1.0, 0.1, 0.278, 10.828));
+		}
+		ASSERT_TRUE(navigation(ekf, 1.0, Vector<3>(0.1, 0, 0.5), Vector<3>::Zero()).committed);
+		if (!pressure_first) {
+			ASSERT_TRUE(ekf.addBaro(1.0, 0.1, 0.278, 10.828));
+		}
+		EXPECT_EQ(ekf.navigationQuality().accepted_updates, 1u);
+		EXPECT_EQ(ekf.barometerQuality().accepted_updates, 1u);
+		EXPECT_DOUBLE_EQ(ekf.barometerQuality().bias, 0);
+		EXPECT_DOUBLE_EQ(ekf.barometerQuality().bias_variance, 8);
+		EXPECT_FALSE(navigation(ekf, 1.0, Vector<3>::Zero(), Vector<3>::Zero()).committed);
+		EXPECT_FALSE(ekf.addBaro(1.0, 0.1, 0.278, 10.828));
+		expectCovarianceValid(ekf);
+	}
+	// Schmidt corrections need not commute; ROS establishes navigation-before-pressure ordering.
 }

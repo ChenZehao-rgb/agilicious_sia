@@ -100,9 +100,9 @@ GNSS 初始化还要求新鲜未 ARM 授权、至少 3 秒/1000 个静止 IMU �
 
 ## 气压高度融合
 
-硬件配置默认启用 `fusion.baro_enabled` 和 `fusion.gnss_use_baro_height`，使用 IMU 传播和
-独立的一维气压高度更新。气压健康时，普通 GNSS 只更新水平位置、水平速度与航向；
-初始高度来自 GNSS，后续高度变化主要由气压约束。RTK 源保持三维位置/速度更新。
+硬件配置默认启用 `fusion.baro_enabled`，选择 `fusion.height_fusion_mode=baro_gnss_weighted`，
+使用 IMU 传播、气压主导高度、GNSS 高度低权重辅助及独立 GNSS 垂速更新。
+初始高度来自 GNSS，参考建立后优先保持相对高度稳定。RTK 源保持原三维位置/速度更新。
 单独启动融合节点和 SITL 默认关闭气压路径及上述高度策略。
 `mavlink.baro_rate_hz: 40` 请求飞控的 `SCALED_PRESSURE`（29）；接收端输出
 `/sensors/baro/pressure`（Pa）、`/sensors/baro/temperature`（℃）和包含会话/有效性的
@@ -123,11 +123,19 @@ z_baro = z_imu + b_baro + noise
 `P(x,b)=-P(x,z)`、`P(b,b)=P(z,z)+R_reference`，因此首次同高度气压不会凭空降低导航协方差。
 `R_reference` 包括配置的对齐方差和参考压力均值传播的方差，作为跨样本共同误差，
 不会在每个 40 Hz 样本中作为独立白噪声重复融合。
-`gnss_use_baro_height=true` 的普通 GNSS 路径要求 `baro_bias_random_walk=0`，避免在不使用
-GNSS 垂向观测时引入不可观测的偏置随机游走。它保留初始参考不确定度和交叉协方差，
-并不把 bias 均值强制为零，也不把绝对高度协方差当作相对高度精度。
-关闭该策略时可继续使用 GNSS 三维观测与可漂移的 baro bias；随机游走按 `q * dt` 注入，
-与原有 IMU 过程噪声的 `dt²` 离散方式分别处理。
+硬件默认 `height_fusion_mode=baro_gnss_weighted`。第一次参考对齐后，在 `u=z+b` 的相对高度坐标
+中采用 Schmidt 参考约束：先用完整协方差和原始观测模型计算增益，再执行 `K_z += K_b; K_b = 0`。
+均值和 Joseph 协方差都使用修改后的增益，之后应用四元数归一化的协方差变换。
+该处理覆盖导航、气压和可到达的位姿更新；只清零原坐标的偏置增益不足以保持相对高度。
+参考存续期间 `baro_bias_random_walk=0`，偏置均值和方差固定，交叉协方差继续传播/更新。
+绝对导航高度方差仍为 `Pzz`；额外诊断 `Pzz+2Pzb+Pbb` 是相对高度方差，不能代替原有就绪门控。
+气压失效时仍保留已经激活的参考约束，不通过释放自由偏置强行恢复。
+
+兼容模式 `baro_primary` 保留旧的健康气压期间排除 GNSS z/vz 行为，也要求随机游走为零，
+但不采用上述增益约束。`legacy_full3d` 保留原三维 GNSS 加可估计气压偏置行为。
+未设置 `height_fusion_mode` 时，旧 `gnss_use_baro_height=false/true` 分别选择 `legacy_full3d` / `baro_primary`；
+显式模式优先，模式和参数仅在启动时选择。RTK 不启用新策略。
+legacy 的气压偏置随机游走按 `q * dt` 注入，与原有 IMU 过程噪声的 `dt²` 离散方式分别处理。
 压力测量方差通过 `dh/dp` 传播到高度方差，再叠加快速模型干扰方差。
 芯片温度不作为空气柱平均温度，不对高度差分再构造一个伪独立的垂直速度观测。
 
@@ -140,8 +148,11 @@ GNSS 垂向观测时引入不可观测的偏置随机游走。它保留初始参
 
 | 参数（`fusion` 段） | 值与含义 |
 |---|---|
-| `gnss_use_baro_height` | true，健康气压期间从普通 GNSS 更新中排除 z、vz |
+| `height_fusion_mode` | `baro_gnss_weighted`，气压主导、GNSS 高度弱辅助、独立垂速融合 |
 | `navigation_horizontal_nis_threshold` | 20.515，XY 位置、XY 速度、航向的五维创新门限 |
+| `navigation_height_nis_threshold` / `navigation_vertical_velocity_nis_threshold` | 各 10.828，各自一维门限 |
+| `gnss_height_variance_floor` / `gnss_height_variance_scale` | 18 m² / 4.5，气压健康时取下限与放大后输入方差的较大值 |
+| `gnss_vertical_velocity_variance_floor` / `gnss_vertical_velocity_variance_scale` | 0.09 m²/s² / 2.25，独立垂速有效方差 |
 | `observation_delay` | 0.20 s，GNSS/气压观测排序等待窗口 |
 | `baro_max_age` | 0.25 s，进入气压融合的最大采样年龄 |
 | `baro_min_pressure_pa` / `baro_max_pressure_pa` | 30000 / 120000 Pa，输入范围 |
@@ -151,7 +162,7 @@ GNSS 垂向观测时引入不可观测的偏置随机游走。它保留初始参
 | `baro_reference_duration` / `baro_reference_min_samples` | 至少 2 s / 40 个独立参考样本 |
 | `baro_reference_max_stddev_pa` | 15 Pa，参考压力标准差上限 |
 | `baro_reference_max_vertical_stddev` | 0.3 m，参考窗口高度稳定性上限 |
-| `baro_bias_random_walk` | 0 m²/s，气压主高度策略中保留初始偏置不确定度，但不增加随机游走 |
+| `baro_bias_random_walk` | 0 m²/s，新策略保持参考偏置；非零值在启动时拒绝 |
 | `baro_reference_variance` | 4 m²，参考对齐的不确定度配置 |
 
 接收端 `mavlink.baro_max_age_s: 0.25` 是独立的输入时效限制；
@@ -174,28 +185,34 @@ GNSS 和气压都进入有界观测缓冲。每次 IMU 到来，先加入 IMU �
 `navigation_valid`；本次没有放宽该门限。诊断提供队列长度/容量/估算载荷字节、
 `last_processing_seconds` 和 `prediction_span_s`；队列字节不包含分配器和字符串额外开销。
 
-参考和偏置与源时钟及导航/EKF 会话绑定。断线、时钟 epoch 变化、导航会话变化或 EKF
-重初始化清除对应的旧队列/参考并报告原因；ARM/DISARM 不是高度归零命令。
-高度策略检查的是最近一次已接受的气压采样时间，不能仅因压力消息持续到达就屏蔽 GNSS 垂向观测。
-没有气压、参考尚未建立或连续创新拒绝超过 `baro_max_age` 时，尝试恢复原七维 GNSS 更新。
-高度源可能已经产生偏差，切换不保证无跳变；不通过放宽创新门限强制接受。
-若三维恢复失败，再尝试五维水平更新；只有水平更新成功时仍将
-`gnss_vertical_recovery_pending=1`，撤销 `navigation_ready` 和 `estimator_ready`，并清零连续就绪计数。
-高度策略切换也重新累计连续就绪次数。压力重新可用或三维 GNSS 恢复后才解除垂向等待。
-真正断流清除了参考时，恢复压力仍须重新满足未解锁/静止条件；空中不静默改变参考。
-诊断新增 `gnss_use_baro_height`、`gnss_baro_height_active`、`gnss_vertical_recovery_pending`、
-`navigation_nis_dimensions` 和 `baro_bias_random_walk_m2_s`；五维更新与七维更新分别使用对应门限。
-气压更新有独立的接受/拒绝、创新和 NIS 诊断，不刷新 GNSS 更新时间、不增加 GNSS
-连续就绪次数，也不能取代导航初始化、姿态初始化或 `navigation_ready` 的证据。
+参考和偏置与源时钟及导航/EKF 会话绑定。新模式的单纯断流或持续 NIS 拒绝停用气压但保留参考，
+同会话重新收到有效样本后按原参考检查时间和创新，允许空中恢复原参考。
+明确无效压力源、时钟 epoch 变化、导航/压力会话变化或 EKF 重初始化撤销参考并报告原因；
+此时重新建立仍须满足未解锁/静止条件。ARM/DISARM 不是高度归零命令。
 
-该策略根据 `hardware_20260930_171830_188540` 中 GNSS 高度慢漂、baro bias 反向吸收差值的
-问题加入。它阻止普通 GNSS 的 z/vz 直接驱动健康气压期间的垂向状态；真实气压慢变仍可变成
-高度慢变，不能保证地面静止时 z 恒定，也未增加“未解锁即静止”的假设或零高度钳位。
+新模式每个 GNSS epoch 在同一个先验上分别检查 XY/航向、高度和垂速，选中的观测行一次联合更新。
+各组门限是边际检验，不是一次七维联合 NIS；独立拒绝通道也不表示 GNSS 高度与速度误差物理独立。
+消息没有它们的测量交叉协方差，沿用对角测量噪声近似；垂速精度来源仍是接收机速度精度，倍率不是标定。
+新模式的既有 `navigation_innovation_squared`、导航接受/拒绝汇总表示水平组；详细组信息在高度诊断中。
+每组分别记录最后接受采样时刻、尝试时刻、NIS、有效方差和拒绝原因。后验/协方差时间不充当 GNSS 接受时间。
+
+气压是否健康由最近已接受样本决定，持续收到但拒绝的压力不能维持健康状态。
+健康时 `R_gnss_z=max(18,4.5*R_input_z)`，垂向组拒绝不会连带丢弃水平观测；
+气压不可用时 `R_gnss_z=R_input_z`，必须水平、高度、垂速均接受才解除垂向恢复阻塞。
+`R_gnss_vz=max(0.09,2.25*R_input_vz)`，按组成功不能重复累计一次 GNSS epoch 的就绪计数。
+水平失败立即撤销导航就绪；源策略变化及必要组失败重新累计连续成功次数。
+气压更新不刷新 GNSS 时间、不增加其连续成功次数；接收机精度、时钟和绝对协方差门控继续独立检查。
+失效恢复不直接赋值 GNSS 高度，长期只剩 GNSS 时可以逐渐向 GNSS 高度收敛。
+旧 `baro_primary` 仍保留断流清参考、完整三维恢复失败再尝试水平更新的原有行为。
+
+新策略针对 `hardware_20260930_171830_188540` 中 GNSS 慢漂被气压偏置吸收的问题，
+保留 GNSS 垂向辅助，同时明确相对高度参考。真实气压慢变仍可变成高度慢变，
+不能保证地面静止时 z 恒定，也未增加“未解锁即静止”的假设或零高度钳位。
 参考本地 Betaflight 的分轴观测与气压主导思路，保留本项目 IMU/姿态/偏置耦合、独立时间戳、
 NIS 和参考相关协方差。Betaflight 的三个二状态 KF、固定循环步长、重复读取气压值及
 按更新次数缓慢修正气压 offset 未直接移植；具体噪声参数也不能跨模型照搬。
 
-2026-09-30 的本地数值回放使用该 bag 的 110881 个已初始化 IMU/状态时刻。旧实现回放与记录 z
+前一轮气压主导方案的本地数值回放使用该 bag 的 110881 个已初始化 IMU/状态时刻。旧实现回放与记录 z
 最大差异小于 0.1 mm；回放从首个已初始化状态种子化，参考边界由 5 Hz 诊断反推，并非完整 ROS/DDS 重放。
 相同数据下的 z 最大值减最小值如下：
 
@@ -210,6 +227,24 @@ NIS 和参考相关协方差。Betaflight 的三个二状态 KF、固定循环�
 X/Y 范围仍约 1.717/1.927 m；初始化后 30 s 起的垂直速度 RMS 从 0.02570 增到 0.02758 m/s。
 这些结果支持减小本段垂向慢漂，不能声称三轴绝对定位精度或所有速度指标提高。
 本地回放脚本、四组参数/命令、基线源码快照与图表在 `analysis/baro_fusion_improvement_20260930/`。
+
+本轮加权方案用同一初始化、同一首次压力参考，与原方案和前一轮方案作连续参考对照：
+
+| 方案 | z 变化范围 | 初始化 30 s 后垂速 RMS |
+|---|---:|---:|
+| 原三维 GNSS + 自由气压偏置（`6e2394b`） | 5.8164 m | 0.02570 m/s |
+| 前一轮气压主导（`bbae240`） | 0.8908 m | 0.02758 m/s |
+| 新 `baro_gnss_weighted` | 0.9589 m | 0.02548 m/s |
+
+新方案满足预先确定的 z 范围 ≤ 1.1 m、垂速 RMS 不超过前一轮的 110% 两项标准，
+后者实测为 92.41%。相对前一轮，z 范围略增，但恢复了独立 GNSS 垂速与低权重高度观测；
+并非所有指标都更好。三个连续参考方案的 X/Y 范围均约 1.7173/1.9266 m，
+本段各有效 GNSS 组与气压的 NIS 拒绝率均为 0。异常拒绝与恢复由合成运动及真实节点测试覆盖。
+新方案保留参考偏置方差 4.1892 m²，最终绝对 `Pzz` 约 4.1862 m²；
+不能因 z 波动较小而授予绝对高度精度或降低原导航协方差门限。
+完整指标、源码和输入摘要、回放耗时、测试结果及复现步骤见
+[本轮验证记录](test/results/baro_weighted_20260930/README.md)。
+该静止结果不认证 50 m/s 飞行；高速气流压力误差补偿仍未实现。
 
 首次运行保持默认 shadow：
 
@@ -237,7 +272,7 @@ source install/agi_ros2/local_setup.bash
 ROS_LOCALHOST_ONLY=1 /usr/bin/python3 agi_ros2/test/test_mavlink_sensor.py
 ROS_LOCALHOST_ONLY=1 /usr/bin/python3 agi_ros2/test/test_baro_fusion.py
 ROS_LOCALHOST_ONLY=1 /usr/bin/python3 agi_ros2/test/test_baro_hardware_pipeline.py
-agilib/build/tests --gtest_filter='EkfImuRtk.*:EkfImuBaro.*'
+agilib/build/tests --gtest_filter='EkfImuRtk.*:EkfImuBaro.*:EkfImuNavigation.*'
 g++ -std=c++17 -Iagi_ros2/include agi_ros2/test/test_barometer_reference.cpp \
   -lgtest -lgtest_main -pthread -o /tmp/agi-baro-reference-test
 /tmp/agi-baro-reference-test

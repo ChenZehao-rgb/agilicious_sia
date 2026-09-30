@@ -1,0 +1,68 @@
+{
+  "original": {
+    "log": "/tmp/agi_baro_authority_probe/original_driver.log",
+    "logged_samples": 73,
+    "negative_ros_age_count": 0,
+    "ros_age_range_s": [
+      0.09600000000000009,
+      0.32500000000000107
+    ],
+    "receive_age_range_s": [
+      1.910499941004673e-05,
+      0.37049072700028773
+    ],
+    "archived_log": "driver_original.txt"
+  },
+  "fixed_normal": {
+    "log": "/tmp/agi_baro_authority_probe/deduplicated_clock_driver.log",
+    "logged_samples": 0,
+    "negative_ros_age_count": 0,
+    "ros_age_range_s": null,
+    "receive_age_range_s": null,
+    "consecutive_reference_samples": 75,
+    "intermediate_fix_only": "DDS discovery + clock deduplication; a subsequent directed test still reproduced stale authority, so this was insufficient by itself.",
+    "archived_log": "driver_fixed_normal.txt"
+  },
+  "fixed_age_probe": {
+    "log": "/tmp/agi_baro_authority_probe/fixed_driver_authority_age.log",
+    "logged_samples": 35,
+    "negative_ros_age_count": 0,
+    "ros_age_range_s": [
+      0.0,
+      0.019999999999999574
+    ],
+    "receive_age_range_s": [
+      6.2039998738327995e-06,
+      0.04018237699983729
+    ],
+    "all_timestamp_freshness_checks_pass": true,
+    "archived_log": "driver_fixed_age_probe.txt"
+  },
+  "method": "Temporary off-tree node copy logs the existing disarmed/freshness branch without changing gates. Original and fixed normal use 8 wall seconds, 0.5 simulated rate, 10 s reference duration. The fixed age probe uses armed=true for 4 wall seconds to log every pressure attempt; it intentionally prevents reference alignment while retaining identical timestamp/receive paths.",
+  "production_changes": false,
+  "final_fix": "Also match production authority QoS reliable keep_last(1) and rclcpp ClockQoS best_effort keep_last(1), retaining payload/acquisition time and exact production freshness limits.",
+  "final_segmented_probe": {
+    "segments": 40,
+    "wall_seconds_per_segment": 0.2,
+    "sim_rate": 0.5,
+    "authority_publications": 191,
+    "max_authority_sim_gap_s": 0.021,
+    "max_sim_clock_step_s": 0.003,
+    "last_rc_sim_s": 13.959,
+    "last_sim_s": 13.96,
+    "probe_samples": 74,
+    "ros_age_range_s": [
+      0.0,
+      0.019999999999999574
+    ],
+    "receive_age_range_s": [
+      8.881999747245573e-06,
+      0.04010251699946821
+    ],
+    "all_fresh": true,
+    "method": "Armed=true only to log every authority age; this intentionally prevents alignment and does not change any freshness gate.",
+    "archived_log": "driver_final_segmented.txt"
+  },
+  "targeted_regression_log": "/tmp/agi_baro_harness_fixes_tests_final.log",
+  "archived_targeted_regression_log": "driver_targeted_regression.txt"
+}

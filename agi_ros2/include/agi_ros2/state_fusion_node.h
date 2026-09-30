@@ -71,6 +71,12 @@ private:
 	int _accepted_navigation_updates = 0;
 	double _navigation_nis_threshold = 24.322;
 	double _navigation_horizontal_nis_threshold = 20.515;
+	double _navigation_height_nis_threshold = 10.828;
+	double _navigation_vertical_velocity_nis_threshold = 10.828;
+	double _gnss_height_variance_floor = 18.0;
+	double _gnss_height_variance_scale = 4.5;
+	double _gnss_vertical_velocity_variance_floor = 0.09;
+	double _gnss_vertical_velocity_variance_scale = 2.25;
 	double _max_horizontal_position_stddev = 0.0;
 	double _max_vertical_position_stddev = 0.0;
 	double _max_velocity_stddev = 0.0;
@@ -81,8 +87,15 @@ private:
 	std::string _readiness_reason = "Waiting for navigation and IMU";
 	bool _baro_enabled = false;
 	bool _gnss_use_baro_height = false;
+	std::string _height_fusion_mode = "legacy_full3d";
+	bool _weighted_height_mode = false;
 	bool _gnss_baro_height_active = false;
 	bool _gnss_vertical_recovery_pending = false;
+	bool _baro_stream_stale = false;
+	double _gnss_raw_height_variance = NAN;
+	double _gnss_effective_height_variance = NAN;
+	double _gnss_raw_vertical_velocity_variance = NAN;
+	double _gnss_effective_vertical_velocity_variance = NAN;
 	double _observation_delay = 0.0;
 	double _observation_watermark = NAN;
 	std::deque<Observation> _observations;

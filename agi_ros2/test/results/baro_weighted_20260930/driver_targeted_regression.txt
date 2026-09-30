@@ -1,0 +1,8 @@
+test_later_navigation_arrival_and_same_stamp_remain_fusable (__main__.BarometerFusionTest) ... ok
+test_legacy_boolean_mapping_and_explicit_mode_precedence (__main__.HeightFusionConfigurationTest) ... ok
+test_invalid_weighted_startup_parameters_are_rejected (__main__.HeightFusionConfigurationTest) ... ok
+
+----------------------------------------------------------------------
+Ran 3 tests in 13.706s
+
+OK

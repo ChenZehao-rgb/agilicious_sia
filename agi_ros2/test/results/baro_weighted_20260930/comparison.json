@@ -1,0 +1,362 @@
+{
+  "input_manifest": {
+    "source_bag": "hardware_20260930_171830_188540",
+    "source_path": "/home/sia/agilicious_internal-main/bags/hardware_20260930_171830_188540",
+    "start_ns": 1790759911872635667,
+    "message_count": 525309,
+    "topic_counts": {
+      "/tf_static": 1,
+      "/sensors/gps/fix": 2190,
+      "/sensors/baro/sample": 9056,
+      "/rosout": 42,
+      "/msp/rc": 5713,
+      "/msp/status": 5712,
+      "/authority": 26140,
+      "/sensors/fc_heading": 2189,
+      "/msp/config": 229,
+      "/sensors/imu": 114082,
+      "/sensors/baro/temperature": 9052,
+      "/health/status": 26138,
+      "/fused_state": 114060,
+      "/sensors/baro/pressure": 9051,
+      "/health": 26136,
+      "/msp/decoded_state": 26135,
+      "/msp/events": 29681,
+      "/fusion/baro/status": 1142,
+      "/sensors/navigation": 2188,
+      "/sensors/gps/velocity": 2188,
+      "/msp/battery": 457,
+      "/sensors/mavlink/status": 228,
+      "/navigation/status": 228,
+      "/navigation/origin": 226,
+      "/sensors/local_navigation": 2159,
+      "/state": 110881,
+      "/parameter_events": 5
+    },
+    "validation": {
+      "embedded_schemas": true,
+      "stored_crcs_checked": true,
+      "all_topic_counts_match_metadata": true
+    },
+    "source_sha256": {
+      "hardware_20260930_171830_188540_0.mcap": "0e475aa1266237060ffc050abd99c65b1d159aeb2307c0c2103a3dbb0a1c9989",
+      "metadata.yaml": "0a9c57e5f44f6c73a72f3e9b878d1931c7e3d4c07c6aa3dc526f40bc646a25a3"
+    },
+    "preparation_script_sha256": "0096f40d7576de4816283387b802392add4201a7ba8d75633cb9ddcddc775150",
+    "package_versions": {
+      "mcap": "1.5.0",
+      "mcap-ros2-support": "0.5.7",
+      "numpy": "1.26.4",
+      "pandas": "2.3.3",
+      "PyYAML": "5.4.1"
+    },
+    "rows": {
+      "initial": 1,
+      "imu": 110881,
+      "nav": 2129,
+      "baro": 9056,
+      "references": 3,
+      "recorded": 110881
+    },
+    "references": [
+      {
+        "t": 1790759920.7171557,
+        "pressure": 101047.47939875096,
+        "independent_variance": 4.000344,
+        "stop": 1790760110.801745,
+        "recorded_height": -0.132017,
+        "window_match_error_pa": 2.490414772182703e-07
+      },
+      {
+        "t": 1790760113.1060493,
+        "pressure": 101055.77648775077,
+        "independent_variance": 4.000344,
+        "stop": 1790760115.261245,
+        "recorded_height": 3.105433,
+        "window_match_error_pa": 2.4923065211623907e-07
+      },
+      {
+        "t": 1790760117.520378,
+        "pressure": 101056.43061885127,
+        "independent_variance": 4.000344,
+        "stop": 1790760140.4334292,
+        "recorded_height": 3.217548,
+        "window_match_error_pa": 1.487351255491376e-07
+      }
+    ],
+    "limitations": [
+      "Native EKF numerical replay, not full ROS/DDS callback and timer playback.",
+      "Initialization is seeded from first initialized fused output, with zero initial acceleration bias.",
+      "Reference windows and source-reset cutoff times are inferred from recorded 5 Hz status.",
+      "Recorded-reference replay uses all inferred windows and recorded reset cutoffs.",
+      "Continuous-reference candidates keep the first inferred reference and omit recorded later resets.",
+      "Neither reference mode re-runs physical stationary-reference acquisition gates.",
+      "Sorted observations execute at measurement time plus 0.2 s; DDS late drops are not reproduced.",
+      "Current hardware parameters are not a proven deployment snapshot.",
+      "Static accuracy uses user-reported stationarity; no independently surveyed position truth."
+    ],
+    "input_sha256": {
+      "initial.csv": "97600a8b79a88c791228cea51f040c653e86980f39aeceb9d8e8814ffe691796",
+      "imu.csv": "928810344c021eaf6184dce2bcc63d24c054a470f0194e0995988451173e779b",
+      "nav.csv": "516f8d2e31106500a4f342b053c4c6f1a6efc6e5c12e1b47ad7234c7758a3e51",
+      "baro.csv": "ec5c2f2975ab34ff6f8936bea073c18b14c4105a0e58075cdc72df75fda7fbe6",
+      "references.csv": "73e31f5a835ceb51eac2fec87551499fcbcc922e1489c6faa57e1da52da6e711",
+      "recorded.csv": "489d5bf624e7a59315dbc5909a3ba6b4c9685afd2c1b4b1a45feb9d15d2168fa"
+    }
+  },
+  "cases": {
+    "original_recorded": {
+      "command": [
+        "/home/sia/agilicious_internal-main/agi_ros2/analysis/baro_weighted_20260930/build/original/replay",
+        "--input",
+        "/home/sia/agilicious_internal-main/agi_ros2/analysis/baro_weighted_20260930/inputs",
+        "--output",
+        "/home/sia/agilicious_internal-main/agi_ros2/analysis/baro_weighted_20260930/original_recorded.csv",
+        "--nav-mode",
+        "full3d",
+        "--reference-mode",
+        "recorded",
+        "--baro-q",
+        "0.01"
+      ],
+      "build": {
+        "revision": "6e2394b",
+        "source_sha256": {
+          "agilib/src/estimator/ekf_imu/ekf_imu.cpp": "9a254f60641d459414c9ad65e353db3108d331de4349ffb175ed63a542fdd66f",
+          "agilib/include/agilib/estimator/ekf_imu/ekf_imu.hpp": "efd74e43133156c5337bc975ac85dfc43af768e8e0a11aadd5dabf6fe341a142",
+          "agilib/src/estimator/ekf_imu/ekf_imu_params.cpp": "42cf1953539305c262fd52b9c94d1b53de6eb6e117f6a782381a6de39f099d7a",
+          "agilib/include/agilib/estimator/ekf_imu/ekf_imu_params.hpp": "aa1c60355ae12ad0ff4273ac743339b313b3755ab85e1432fd70e767db112df4"
+        },
+        "source_changes": "Only class/type names renamed to avoid linking the library EKF.",
+        "replay_source_sha256": "898768813c714ca6c82d74b6b0a0c262677ef85ae0a8c700a076d171db8365de",
+        "library_sha256": "7b57bfc3f4e9e21e944b14733c3984457fd12c5a885ebdcc6b4297b7ac47e10a"
+      },
+      "metrics": {
+        "rows": 110881,
+        "z_range_m": 5.816392449240324,
+        "z_final_m": 3.8381048618940787,
+        "vz_rms_after_30s_m_s": 0.02569569237591118,
+        "x_range_m": 1.7173129149029926,
+        "y_range_m": 1.9265517961933425,
+        "xy_speed_rms_after_30s_m_s": 0.01703886638229712,
+        "bias_final_m": -0.6053857173611238,
+        "bias_variance_final_m2": 0.030216092571632054,
+        "absolute_height_variance_final_m2": 0.02385526741448722,
+        "relative_height_variance_final_m2": null,
+        "imu_failures": 0,
+        "get_failures": 0,
+        "nonfinite_states": 0,
+        "nav_accepted": 2128,
+        "nav_rejected": 0,
+        "baro_accepted": 8515,
+        "baro_rejected": 0,
+        "height_accepted": 0,
+        "height_rejected": 0,
+        "vz_accepted": 0,
+        "vz_rejected": 0,
+        "nav_rejection_rate": 0.0,
+        "baro_rejection_rate": 0.0,
+        "height_rejection_rate": null,
+        "vz_rejection_rate": null,
+        "recorded_z_max_difference_m": 9.372891569148223e-05
+      },
+      "replay_wall_seconds": 3.4712392689998524,
+      "trace_sha256": "78d76e204eb705498c305582db26d2606b7ed035badbf61214dcd8e6448e7fd7"
+    },
+    "original_continuous": {
+      "command": [
+        "/home/sia/agilicious_internal-main/agi_ros2/analysis/baro_weighted_20260930/build/original/replay",
+        "--input",
+        "/home/sia/agilicious_internal-main/agi_ros2/analysis/baro_weighted_20260930/inputs",
+        "--output",
+        "/home/sia/agilicious_internal-main/agi_ros2/analysis/baro_weighted_20260930/original_continuous.csv",
+        "--nav-mode",
+        "full3d",
+        "--reference-mode",
+        "continuous",
+        "--baro-q",
+        "0.01"
+      ],
+      "build": {
+        "revision": "6e2394b",
+        "source_sha256": {
+          "agilib/src/estimator/ekf_imu/ekf_imu.cpp": "9a254f60641d459414c9ad65e353db3108d331de4349ffb175ed63a542fdd66f",
+          "agilib/include/agilib/estimator/ekf_imu/ekf_imu.hpp": "efd74e43133156c5337bc975ac85dfc43af768e8e0a11aadd5dabf6fe341a142",
+          "agilib/src/estimator/ekf_imu/ekf_imu_params.cpp": "42cf1953539305c262fd52b9c94d1b53de6eb6e117f6a782381a6de39f099d7a",
+          "agilib/include/agilib/estimator/ekf_imu/ekf_imu_params.hpp": "aa1c60355ae12ad0ff4273ac743339b313b3755ab85e1432fd70e767db112df4"
+        },
+        "source_changes": "Only class/type names renamed to avoid linking the library EKF.",
+        "replay_source_sha256": "898768813c714ca6c82d74b6b0a0c262677ef85ae0a8c700a076d171db8365de",
+        "library_sha256": "7b57bfc3f4e9e21e944b14733c3984457fd12c5a885ebdcc6b4297b7ac47e10a"
+      },
+      "metrics": {
+        "rows": 110881,
+        "z_range_m": 5.816392449240324,
+        "z_final_m": 3.831180795102223,
+        "vz_rms_after_30s_m_s": 0.0256988471950066,
+        "x_range_m": 1.7173128447053583,
+        "y_range_m": 1.9265517961933425,
+        "xy_speed_rms_after_30s_m_s": 0.017038873914535967,
+        "bias_final_m": -4.695365631282077,
+        "bias_variance_final_m2": 0.03014025065337414,
+        "absolute_height_variance_final_m2": 0.023779643417112546,
+        "relative_height_variance_final_m2": null,
+        "imu_failures": 0,
+        "get_failures": 0,
+        "nonfinite_states": 0,
+        "nav_accepted": 2128,
+        "nav_rejected": 0,
+        "baro_accepted": 8698,
+        "baro_rejected": 0,
+        "height_accepted": 0,
+        "height_rejected": 0,
+        "vz_accepted": 0,
+        "vz_rejected": 0,
+        "nav_rejection_rate": 0.0,
+        "baro_rejection_rate": 0.0,
+        "height_rejection_rate": null,
+        "vz_rejection_rate": null,
+        "recorded_z_max_difference_m": 0.01852340138998798
+      },
+      "replay_wall_seconds": 3.661194366000018,
+      "trace_sha256": "6da807114a8e0bd3f837518236cef2d9ac3170c1ab8336b01ba09cbdc0dc436c"
+    },
+    "baro_primary_continuous": {
+      "command": [
+        "/home/sia/agilicious_internal-main/agi_ros2/analysis/baro_weighted_20260930/build/baro_primary/replay",
+        "--input",
+        "/home/sia/agilicious_internal-main/agi_ros2/analysis/baro_weighted_20260930/inputs",
+        "--output",
+        "/home/sia/agilicious_internal-main/agi_ros2/analysis/baro_weighted_20260930/baro_primary_continuous.csv",
+        "--nav-mode",
+        "baro-primary",
+        "--reference-mode",
+        "continuous",
+        "--baro-q",
+        "0"
+      ],
+      "build": {
+        "revision": "bbae240",
+        "source_sha256": {
+          "agilib/src/estimator/ekf_imu/ekf_imu.cpp": "639f79d671b09dc1f8c6c61ff3f2f91acb496c198a3349fa3208d466d0424c74",
+          "agilib/include/agilib/estimator/ekf_imu/ekf_imu.hpp": "4e98f85958c4a194da483d90c7c37280a1a1cac201754446413872faba6ca125",
+          "agilib/src/estimator/ekf_imu/ekf_imu_params.cpp": "42cf1953539305c262fd52b9c94d1b53de6eb6e117f6a782381a6de39f099d7a",
+          "agilib/include/agilib/estimator/ekf_imu/ekf_imu_params.hpp": "aa1c60355ae12ad0ff4273ac743339b313b3755ab85e1432fd70e767db112df4"
+        },
+        "source_changes": "Only class/type names renamed to avoid linking the library EKF.",
+        "replay_source_sha256": "898768813c714ca6c82d74b6b0a0c262677ef85ae0a8c700a076d171db8365de",
+        "library_sha256": "7b57bfc3f4e9e21e944b14733c3984457fd12c5a885ebdcc6b4297b7ac47e10a"
+      },
+      "metrics": {
+        "rows": 110881,
+        "z_range_m": 0.8908418960909784,
+        "z_final_m": -0.7594391043574089,
+        "vz_rms_after_30s_m_s": 0.027577871277627553,
+        "x_range_m": 1.7173225775091812,
+        "y_range_m": 1.9265489334664005,
+        "xy_speed_rms_after_30s_m_s": 0.01703776267838193,
+        "bias_final_m": -0.07882024975612195,
+        "bias_variance_final_m2": 0.18834939071135748,
+        "absolute_height_variance_final_m2": 0.19303674590591133,
+        "relative_height_variance_final_m2": null,
+        "imu_failures": 0,
+        "get_failures": 0,
+        "nonfinite_states": 0,
+        "nav_accepted": 2128,
+        "nav_rejected": 0,
+        "baro_accepted": 8698,
+        "baro_rejected": 0,
+        "height_accepted": 0,
+        "height_rejected": 0,
+        "vz_accepted": 0,
+        "vz_rejected": 0,
+        "nav_rejection_rate": 0.0,
+        "baro_rejection_rate": 0.0,
+        "height_rejection_rate": null,
+        "vz_rejection_rate": null,
+        "recorded_z_max_difference_m": 6.237671215538849
+      },
+      "replay_wall_seconds": 3.5535689969992745,
+      "trace_sha256": "86fb9e8a07807d2b3939ff02ba35917532a5bcf701a144f422a152b457998223"
+    },
+    "weighted_continuous": {
+      "command": [
+        "/home/sia/agilicious_internal-main/agi_ros2/analysis/baro_weighted_20260930/build/weighted/replay",
+        "--input",
+        "/home/sia/agilicious_internal-main/agi_ros2/analysis/baro_weighted_20260930/inputs",
+        "--output",
+        "/home/sia/agilicious_internal-main/agi_ros2/analysis/baro_weighted_20260930/weighted_continuous.csv",
+        "--nav-mode",
+        "weighted",
+        "--reference-mode",
+        "continuous",
+        "--baro-q",
+        "0"
+      ],
+      "build": {
+        "revision": "worktree",
+        "source_sha256": {
+          "agilib/src/estimator/ekf_imu/ekf_imu.cpp": "3ec260bbf7a71bc760a3eca095bc7cb50a136483899db04c6f7e1ca282c19610",
+          "agilib/include/agilib/estimator/ekf_imu/ekf_imu.hpp": "72a349d60cd71249e26ca9ef8003fc1f69d342baa40999a4746f0f5ae169b02a",
+          "agilib/src/estimator/ekf_imu/ekf_imu_params.cpp": "845929296190067eb03ec013f740c4bca8e77772d46e9d6ca4a9dafbc4de933b",
+          "agilib/include/agilib/estimator/ekf_imu/ekf_imu_params.hpp": "43bd0e25ca721a5bfc21a79b3fafb4d1b81d70f6ddef3e1349bfd8f8478047f0"
+        },
+        "source_changes": "Only class/type names renamed to avoid linking the library EKF.",
+        "replay_source_sha256": "898768813c714ca6c82d74b6b0a0c262677ef85ae0a8c700a076d171db8365de",
+        "library_sha256": "7b57bfc3f4e9e21e944b14733c3984457fd12c5a885ebdcc6b4297b7ac47e10a"
+      },
+      "metrics": {
+        "rows": 110881,
+        "z_range_m": 0.9588963504895346,
+        "z_final_m": -0.8864508991571246,
+        "vz_rms_after_30s_m_s": 0.025483462208883235,
+        "x_range_m": 1.7173201767003587,
+        "y_range_m": 1.9265501897026136,
+        "xy_speed_rms_after_30s_m_s": 0.01703768009360597,
+        "bias_final_m": 0.0,
+        "bias_variance_final_m2": 4.18918877392305,
+        "absolute_height_variance_final_m2": 4.186167215401384,
+        "relative_height_variance_final_m2": 0.00417603362914587,
+        "imu_failures": 0,
+        "get_failures": 0,
+        "nonfinite_states": 0,
+        "nav_accepted": 2128,
+        "nav_rejected": 0,
+        "baro_accepted": 8698,
+        "baro_rejected": 0,
+        "height_accepted": 2128,
+        "height_rejected": 0,
+        "vz_accepted": 2128,
+        "vz_rejected": 0,
+        "nav_rejection_rate": 0.0,
+        "baro_rejection_rate": 0.0,
+        "height_rejection_rate": 0.0,
+        "vz_rejection_rate": 0.0,
+        "recorded_z_max_difference_m": 6.3426531004196125
+      },
+      "replay_wall_seconds": 3.4888233060000857,
+      "trace_sha256": "e190005c860252de933102cf39358e9ba77e9a1e806b202af8be61d4f46631ac"
+    }
+  },
+  "limits": {
+    "z_range_m": 1.1,
+    "vz_rms_ratio": 1.1
+  },
+  "limitations": [
+    "Native EKF replay, not full ROS/DDS scheduling or reference acquisition.",
+    "Continuous-reference cases share the first reference and omit two recorded reference resets.",
+    "Initialization uses the recorded initialized state, derived gyro bias and zero acceleration bias.",
+    "Stationarity is operator-reported; no surveyed height or dynamic flight truth.",
+    "Host wall time includes CSV output and is not a CM5 real-time certification."
+  ],
+  "acceptance": {
+    "checks": {
+      "height_range": true,
+      "vertical_speed": true,
+      "original_reproduced": true,
+      "valid_traces": true
+    },
+    "passed": true,
+    "vertical_speed_ratio": 0.924054723163372
+  }
+}

@@ -23,6 +23,30 @@ namespace agi {
 class EkfImu : public EstimatorBase {
 public:
 	enum class NavigationMeasurementMode { kFull3d, kHorizontal };
+	enum class NavigationUpdateReason { kNotAttempted, kAccepted, kInvalidInput, kTimestamp, kInnovation, kNumericalFailure };
+	static constexpr uint8_t kHorizontalGroup = 1;
+	static constexpr uint8_t kHeightGroup = 2;
+	static constexpr uint8_t kVerticalVelocityGroup = 4;
+
+	struct NavigationGroupQuality {
+		Scalar stamp{NAN};  // Last accepted observation.
+		Scalar observation_stamp{NAN};
+		Scalar innovation_squared{NAN};
+		// Horizontal order: px, py, vx, vy, heading. Scalar groups use element zero.
+		Vector<5> measurement_variance = Vector<5>::Constant(NAN);
+		uint64_t accepted_updates{0};
+		uint64_t rejected_updates{0};
+		uint32_t observation_dimensions{0};
+		bool accepted{false};
+		NavigationUpdateReason reason{NavigationUpdateReason::kNotAttempted};
+	};
+	struct NavigationUpdateResult {
+		bool committed{false};
+		bool numerical_failure{false};
+		uint8_t accepted_groups{0};
+		uint8_t rejected_groups{0};
+		NavigationUpdateReason reason{NavigationUpdateReason::kNotAttempted};
+	};
 
 	struct NavigationQuality {
 		Scalar stamp{NAN};
@@ -34,6 +58,9 @@ public:
 		uint64_t rejected_updates{0};
 		uint32_t observation_dimensions{0};
 		bool valid{false};
+		NavigationGroupQuality horizontal;
+		NavigationGroupQuality height;
+		NavigationGroupQuality vertical_velocity;
 	};
 	struct BarometerQuality {
 		// Last accepted barometer time; bias and variance describe the current posterior.
@@ -42,9 +69,13 @@ public:
 		Scalar innovation{NAN};
 		Scalar bias{NAN};
 		Scalar bias_variance{NAN};
+		// Variance of z + bias, not the absolute navigation height variance.
+		Scalar relative_height_variance{NAN};
 		uint64_t accepted_updates{0};
 		uint64_t rejected_updates{0};
 		bool valid{false};
+		bool reference_valid{false};
+		bool relative_reference_active{false};
 	};
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
   EkfImu(const std::shared_ptr<EkfImuParameters>& params =
@@ -66,6 +97,12 @@ public:
 	            const Vector<3>& position_variance, const Vector<3>& velocity_variance, Scalar heading_variance,
 	            Scalar max_innovation_squared = std::numeric_limits<Scalar>::infinity(),
 	            NavigationMeasurementMode mode = NavigationMeasurementMode::kFull3d);
+	// Gate XY/heading, height and vertical velocity separately using one propagated prior.
+	// All accepted rows are fused jointly and committed once. Aggregate navigation counters describe XY/heading.
+	NavigationUpdateResult addNavigation(Scalar time, const Vector<3>& position, const Vector<3>& velocity, Scalar heading,
+	                                     bool heading_valid, const Vector<3>& position_variance, const Vector<3>& velocity_variance,
+	                                     Scalar heading_variance, Scalar horizontal_nis_limit, Scalar height_nis_limit,
+	                                     Scalar vertical_velocity_nis_limit);
 
 	// Posterior covariance and innovation at stamp; not a claim of convergence.
 	NavigationQuality navigationQuality();
@@ -77,6 +114,8 @@ public:
 	// Anchor a relative pressure reference to the estimated height while preserving their correlation.
 	// independent_variance is pressure-reference/model uncertainty only, in m^2; height receives the anchor.
 	bool alignBarometerReference(Scalar time, Scalar independent_variance, Scalar* height);
+	// Invalidate pressure observations without changing the state or releasing an already frozen reference.
+	void clearBarometerReference();
 	BarometerQuality barometerQuality();
 
   bool addMotorSpeeds(const Vector<4>& speeds) override;
@@ -134,6 +173,13 @@ private:
   bool propagatePrior(const Scalar time);
   bool propagatePriorAndCovariance(const Scalar time);
 	bool normalizeCorrection(StateVector* state, StateMatrix* covariance) const;
+	template <int Columns>
+	void constrainReferenceGain(Matrix<IDX::SIZE, Columns>* gain) const {
+		if (!_relative_reference_active) return;
+		// Schmidt update in coordinates (z + bias, bias), mapped back to (z, bias).
+		gain->row(POSZ) += gain->row(BARO_BIAS);
+		gain->row(BARO_BIAS).setZero();
+	}
   bool vectorToState(const Scalar t, const StateVector& x,
                      QuadState* const state) const;
   bool stateToVector(const QuadState& state, Scalar* const t,
@@ -159,6 +205,9 @@ private:
 	NavigationQuality _navigation_quality;
 	BarometerQuality _barometer_quality;
 	Scalar _last_rtk_time{NAN};
+	Scalar _last_navigation_attempt_time{NAN};
+	bool _barometer_reference_valid{false};
+	bool _relative_reference_active{false};
 	friend class EkfImuTestPeer;
   Vector<4> motor_speeds_{0, 0, 0, 0};
 

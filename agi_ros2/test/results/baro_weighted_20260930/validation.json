@@ -1,0 +1,43 @@
+{
+  "base_git_commit": "bbae2401f58f36e60363e0f7f3e3ebd7ecbef145",
+  "source_sha256": {
+    "agi_ros2/src/state_fusion_node.cpp": "effb71e542677e51275b380492ae91d0ffd94d3953b3f843f3fd66b4722ad67e",
+    "agi_ros2/include/agi_ros2/state_fusion_node.h": "29e1c9b8643e1681400af4cfa297f1c2e880ad8c9123d0366b6c5aa271a6f17d",
+    "agi_ros2/config/hardware.yaml": "46e59c7841c6c8208263c6def70b413cb201fe21f1ced0bc0423c20ba07edeae",
+    "agi_ros2/test/test_baro_fusion.py": "d58a8ad25f09a8db55e126bc167ef015944028e8134c81ffee5b559a11c69269",
+    "agi_ros2/test/test_baro_hardware_pipeline.py": "4e340e9d894f3f288d332750ea04d0135539758074e2d2ca4900e633a1bd8e2b",
+    "agi_ros2/test/test_runtime_config.py": "8f99217905cd9b2f4d7f9544ce9054baeb855fc71f34ae992f75ae85833dc8e2",
+    "agi_ros2/test/prepare_height_fusion_replay.py": "0096f40d7576de4816283387b802392add4201a7ba8d75633cb9ddcddc775150",
+    "agi_ros2/test/replay_height_fusion.py": "36d49e9b2c9518eed42abb456c4b59f73bf61ea9cfe417c2a89da3716ffa1218",
+    "agi_ros2/test/replay_height_fusion.cpp": "898768813c714ca6c82d74b6b0a0c262677ef85ae0a8c700a076d171db8365de",
+    "agilib/tests/estimator/ekf/ekf_imu_rtk_test.cpp": "a3397bd9adbff95f57ae87462e2ef8a9489dd504497e699c441adaaa3955ad76"
+  },
+  "checks": {
+    "full_cpp_ros_build_and_install": true,
+    "ekf_tests_passed": 37,
+    "barometer_reference_tests_passed": 3,
+    "ros_fusion_tests_passed": 21,
+    "six_node_shadow_tests_passed": 1,
+    "msp_control_override_observed": false,
+    "height_configuration_target_passed": 1,
+    "full_configuration_suite_passed": 21,
+    "full_configuration_suite_preexisting_failures": 3,
+    "native_replay_acceptance": {
+      "checks": {
+        "height_range": true,
+        "vertical_speed": true,
+        "original_reproduced": true,
+        "valid_traces": true
+      },
+      "passed": true,
+      "vertical_speed_ratio": 0.924054723163372
+    },
+    "changed_cpp_format_checked": true,
+    "python_syntax_checked": true,
+    "git_diff_check": true
+  },
+  "limits": [
+    "Static numerical replay, not absolute accuracy or 50 m/s flight validation.",
+    "Three configuration failures also reproduced on the unmodified base commit."
+  ]
+}

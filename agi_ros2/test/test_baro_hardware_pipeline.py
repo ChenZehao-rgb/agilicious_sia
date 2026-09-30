@@ -13,6 +13,7 @@ from diagnostic_msgs.msg import DiagnosticArray
 from sensor_msgs.msg import FluidPressure
 
 from test_hardware_pipeline import HardwareHarness
+from test_baro_fusion import diagnostic_values
 
 
 class BarometerHardwareHarness(HardwareHarness):
@@ -29,7 +30,7 @@ class BarometerHardwareHarness(HardwareHarness):
             params.update(max_horizontal_accuracy=0.0, max_vertical_accuracy=0.0, max_velocity_accuracy=0.0)
         elif executable == 'state_fusion_node':
             params.update(baro_enabled=True, observation_delay=0.2, baro_reference_duration=0.3,
-                          baro_reference_min_samples=5, gnss_use_baro_height=True, baro_bias_random_walk=0.0)
+                          baro_reference_min_samples=5, height_fusion_mode='baro_gnss_weighted', baro_bias_random_walk=0.0)
         elif executable == 'mavlink_sensor_node':
             params.update(baro_rate_hz=40, baro_pressure_variance_pa2=0.0)
         return super().start_node(executable, **params)
@@ -46,7 +47,7 @@ class BarometerHardwareHarness(HardwareHarness):
         if not messages:
             return {}
         status = messages[-1].status[0]
-        return dict(message=status.message, **{value.key: float(value.value) for value in status.values})
+        return diagnostic_values(status)
 
 
 class BarometerHardwarePipelineTests(unittest.TestCase):
@@ -73,6 +74,10 @@ class BarometerHardwarePipelineTests(unittest.TestCase):
         self.assertEqual(h.barometer_status()['reference_valid'], 1)
         self.assertEqual(h.barometer_status()['gnss_baro_height_active'], 1)
         self.assertEqual(h.barometer_status()['navigation_nis_dimensions'], 5)
+        self.assertEqual(h.barometer_status()['height_fusion_mode'], 'baro_gnss_weighted')
+        self.assertEqual(h.barometer_status()['relative_reference_active'], 1)
+        self.assertGreater(h.barometer_status()['gnss_height_accepted_updates'], 0)
+        self.assertGreater(h.barometer_status()['gnss_vertical_velocity_accepted_updates'], 0)
         pressure = h.received['sensors/baro/pressure']
         samples = [message for message in h.received['sensors/baro/sample'] if message.valid]
         navigation = [message for message in h.received['sensors/local_navigation'] if message.observation_valid]

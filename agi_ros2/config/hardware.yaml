@@ -103,13 +103,20 @@ bridge:
   hover_throttle: 0.5
   min_check: 1050
 fusion:
-  # Pressure supplies relative height while healthy; ordinary GNSS supplies XY/heading.
-  # GNSS initializes the height datum and resumes 3D updates if pressure fusion is unavailable.
+  # Keep the relative pressure reference and fuse GNSS XY/heading, height and vertical velocity independently.
+  # Healthy pressure reduces GNSS height weight; unavailable pressure restores its raw reported variance.
   # Initial pressure noise/delay values require dynamic validation; flight readiness gates still apply.
   baro_enabled: true
-  gnss_use_baro_height: true
+  height_fusion_mode: baro_gnss_weighted
   # 99.9% chi-square limit for XY position, XY velocity and heading (five observations).
   navigation_horizontal_nis_threshold: 20.515
+  # Separate 99.9% one-dimensional gates for height and vertical velocity.
+  navigation_height_nis_threshold: 10.828
+  navigation_vertical_velocity_nis_threshold: 10.828
+  gnss_height_variance_floor: 18.0
+  gnss_height_variance_scale: 4.5
+  gnss_vertical_velocity_variance_floor: 0.09
+  gnss_vertical_velocity_variance_scale: 2.25
   observation_delay: 0.20
   baro_max_age: 0.25
   # Fallback when FluidPressure/Barometer reports unknown pressure variance (0).
@@ -122,8 +129,8 @@ fusion:
   baro_reference_min_samples: 40
   baro_reference_max_stddev_pa: 15.0
   baro_reference_max_vertical_stddev: 0.3
-  # Keep the initial correlated reference uncertainty, but do not introduce an
-  # unobservable drifting barometer bias when GNSS height is excluded.
+  # Retain correlated reference uncertainty with a fixed Schmidt reference;
+  # all later observations preserve this datum instead of letting its bias wander.
   baro_bias_random_walk: 0.0
   baro_reference_variance: 4.0
   imu_acceleration_variance: 0.1

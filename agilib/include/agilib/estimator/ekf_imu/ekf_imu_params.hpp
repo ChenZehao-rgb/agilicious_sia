@@ -30,6 +30,8 @@ struct EkfImuParameters : public ParameterBase {
   Vector<3> Q_bacc;
 	// Continuous barometer bias random walk variance rate, m^2/s (discretized with dt).
 	Scalar baro_bias_random_walk = 0.01;
+	// Freeze the pressure reference in relative-height coordinates after alignment. Requires zero random walk.
+	bool baro_relative_reference = false;
 
   Vector<3> Q_init_pos;
   Vector<4> Q_init_att;
