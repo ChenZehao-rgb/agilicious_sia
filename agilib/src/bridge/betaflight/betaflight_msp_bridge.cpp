@@ -18,19 +18,26 @@ uint8_t crc8(uint8_t crc, uint8_t value) {
     crc = (crc & 0x80) ? (crc << 1) ^ 0xd5 : crc << 1;
   return crc;
 }
-bool waitFd(int fd, short events, double deadline) {
-  while (monotonicSeconds() < deadline) {
-    pollfd p{fd, events, 0};
-    // Never round up a caller's absolute deadline by more than 1 ms.
-    const int ms = static_cast<int>(std::ceil(
-      1000 * (deadline - monotonicSeconds())));
-    if (ms <= 0) return false;
-    const int n = poll(&p, 1, ms);
-    if (n > 0) return !(p.revents & (POLLERR | POLLHUP | POLLNVAL)) &&
-                       (p.revents & events);
-    if (n < 0 && errno != EINTR) return false;
-  }
-  return false;
+bool waitFd(int fd, short events, double deadline, int* system_error = nullptr) {
+	while (monotonicSeconds() < deadline) {
+		pollfd p{fd, events, 0};
+		// Never round up a caller's absolute deadline by more than 1 ms.
+		const int ms = static_cast<int>(std::ceil(1000 * (deadline - monotonicSeconds())));
+		if (ms <= 0) return false;
+		const int n = poll(&p, 1, ms);
+		if (n > 0) {
+			if (p.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+				if (system_error) *system_error = p.revents & POLLNVAL ? EBADF : EIO;
+				return false;
+			}
+			return p.revents & events;
+		}
+		if (n < 0 && errno != EINTR) {
+			if (system_error) *system_error = errno;
+			return false;
+		}
+	}
+	return false;
 }
 }
 double monotonicSeconds() {
@@ -127,10 +134,17 @@ void BetaflightMspBridge::checkOwner() const {
   if (std::this_thread::get_id() != owner_)
     throw std::logic_error("MSP serial accessed from a second thread");
 }
-bool BetaflightMspBridge::writeFrame(uint16_t code, const std::vector<uint8_t>& payload, double deadline) {
+bool BetaflightMspBridge::writeFrame(uint16_t code, const std::vector<uint8_t>& payload, double deadline, bool read_only) {
 	checkOwner();
+	if (failed_) return false;
+	_last_write_diagnostic = {};
 	const double start = monotonicSeconds();
-	if (failed_ || !std::isfinite(deadline) || deadline <= start || deadline - start > 0.1 || payload.size() > 254) return false;
+	if (!std::isfinite(deadline) || deadline - start > 0.1 || payload.size() > 254) return false;
+	if (deadline <= start) {
+		_last_write_diagnostic.deadline_overrun_seconds = start - deadline;
+		if (read_only) _last_write_diagnostic.outcome = MspWriteOutcome::Deferred;
+		return false;
+	}
 	const bool v2 = code > 254;
 	std::vector<uint8_t> bytes;
 	if (v2) {
@@ -149,6 +163,7 @@ bool BetaflightMspBridge::writeFrame(uint16_t code, const std::vector<uint8_t>& 
 	uint8_t check = 0;
 	for (size_t i = 3; i < bytes.size(); ++i) check = v2 ? crc8(check, bytes[i]) : check ^ bytes[i];
 	bytes.push_back(check);
+	_last_write_diagnostic.frame_bytes = bytes.size();
 	size_t offset = 0;
 	while (offset < bytes.size() && monotonicSeconds() < deadline) {
 		const ssize_t n = write(fd_, bytes.data() + offset, bytes.size() - offset);
@@ -157,17 +172,31 @@ bool BetaflightMspBridge::writeFrame(uint16_t code, const std::vector<uint8_t>& 
 		else if (n < 0 && errno == EINTR)
 			continue;
 		else if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-			if (!waitFd(fd_, POLLOUT, deadline)) break;
-		} else
+			if (!waitFd(fd_, POLLOUT, deadline, &_last_write_diagnostic.system_error)) break;
+		} else {
+			_last_write_diagnostic.system_error = n < 0 ? errno : EIO;
 			break;
+		}
 	}
-	last_write_seconds_ = monotonicSeconds() - start;
-	if (offset != bytes.size() || monotonicSeconds() > deadline) {
+	const double finished = monotonicSeconds();
+	last_write_seconds_ = finished - start;
+	_last_write_diagnostic.bytes_written = offset;
+	_last_write_diagnostic.elapsed_seconds = last_write_seconds_;
+	_last_write_diagnostic.deadline_overrun_seconds = std::max(0.0, finished - deadline);
+	// No bytes means a read-only query can be deferred safely. A complete query
+	// must await its reply even if scheduling delayed the completion check.
+	// Control writes retain their strict deadline and failure latch.
+	if (read_only && offset == 0 && _last_write_diagnostic.system_error == 0) {
+		_last_write_diagnostic.outcome = MspWriteOutcome::Deferred;
+		return false;
+	}
+	if (offset != bytes.size() || (!read_only && finished > deadline)) {
 		++errors_;
 		failed_ = true;  // Partial frames cannot be retried as another RC command.
 		tcflush(fd_, TCOFLUSH);
 		return false;
 	}
+	_last_write_diagnostic.outcome = finished > deadline ? MspWriteOutcome::CompleteLate : MspWriteOutcome::Complete;
 	return true;  // Kernel acceptance only, NOT proof of FC receipt.
 }
 bool BetaflightMspBridge::request(uint8_t code, MspFrame* reply,
@@ -196,31 +225,31 @@ bool BetaflightMspBridge::request(uint8_t code, MspFrame* reply,
   return false;
 }
 bool BetaflightMspBridge::sendRequest(uint8_t code, double deadline) {
-  checkOwner();
-  switch (code) {
-	  case 1:
-	  case 2:
-	  case 3:
-	  case 5:
-	  case 34:
-	  case 44:
-	  case 64:
-	  case 101:
-	  case 105:
-	  case 125:
-	  case 238:
-	  case 106:
-	  case 108:
-	  case 110:
-	  case 111:
-	  case 114:
-	  case 119:
-	  case 130:
-	  case 150:
-		  return writeFrame(code, {}, deadline);
-	  default:
-		  return false;
-  }
+	checkOwner();
+	switch (code) {
+		case 1:
+		case 2:
+		case 3:
+		case 5:
+		case 34:
+		case 44:
+		case 64:
+		case 101:
+		case 105:
+		case 125:
+		case 238:
+		case 106:
+		case 108:
+		case 110:
+		case 111:
+		case 114:
+		case 119:
+		case 130:
+		case 150:
+			return writeFrame(code, {}, deadline, true);
+		default:
+			return false;
+	}
 }
 bool BetaflightMspBridge::readOverrideSetting(const std::string& name, double deadline) {
 	if (name != "msp_override_channels_mask" && name != "msp_override_failsafe" && name != "msp_override_timeout_ms") return false;
@@ -228,25 +257,26 @@ bool BetaflightMspBridge::readOverrideSetting(const std::string& name, double de
 	// transmitted: MSP2_CLI_SETTING's write variant is intentionally inaccessible.
 	std::vector<uint8_t> payload(96, 0);
 	std::copy(name.begin(), name.end(), payload.begin());
-	return writeFrame(0x3010, payload, deadline);
+	return writeFrame(0x3010, payload, deadline, true);
 }
 
 bool BetaflightMspBridge::receive(MspFrame* reply) {
-  checkOwner();
-  if (!reply) return false;
-  if (!decoder_.next(reply)) {
-    uint8_t bytes[512];
-    const ssize_t n = read(fd_, bytes, sizeof(bytes));
-    if (n > 0) decoder_.append(bytes, static_cast<size_t>(n));
-    else if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
-      ++errors_;
-      failed_ = true;
-      throw std::runtime_error("MSP serial read failed");
-    }
-    if (!decoder_.next(reply)) return false;
-  }
-  if (reply->error) ++errors_;
-  return true;
+	checkOwner();
+	if (!reply) return false;
+	if (!decoder_.next(reply)) {
+		uint8_t bytes[512];
+		const ssize_t n = read(fd_, bytes, sizeof(bytes));
+		if (n > 0)
+			decoder_.append(bytes, static_cast<size_t>(n));
+		else if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+			++errors_;
+			failed_ = true;
+			throw std::runtime_error("MSP serial read failed: errno=" + std::to_string(errno));
+		}
+		if (!decoder_.next(reply)) return false;
+	}
+	if (reply->error) ++errors_;
+	return true;
 }
 bool BetaflightMspBridge::sendBenchRc(
   const std::array<uint16_t, 4>& channels, double deadline) {

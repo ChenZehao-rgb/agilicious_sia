@@ -298,6 +298,28 @@ class HardwarePipelineTests(unittest.TestCase):
         h.run(.2)
         self.assertFalse(h.has_output(start))
 
+    def test_uart_disconnect_keeps_nodes_alive_and_revokes_override(self):
+        h = self.harness(thrust_model='quadratic')
+        h.wait_ready()
+        h.response_armed = True
+        h.run(.1)
+        h.wait_ready()
+        h.response_auto = True
+        h.run(.15)
+        self.assertTrue(h.has_output(), h.snapshot())
+        os.close(h.master)
+        h.master = None
+        h.run(.3)
+        self.assertTrue(all(process.poll() is None for process in h.processes))
+        self.assertFalse(h.received['output_status'][-1].transport_healthy)
+        self.assertFalse(h.received['output_status'][-1].override_active)
+        self.assertFalse(h.received['health'][-1].transport_healthy)
+        h.response_auto = False
+        h.run(.1)
+        h.response_auto = True
+        h.run(.1)
+        self.assertFalse(h.received['output_status'][-1].override_active)
+
 
 if __name__ == '__main__':
     unittest.main()

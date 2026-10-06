@@ -14,6 +14,13 @@ struct MspFrame {
 	bool error{false};
 	std::vector<uint8_t> payload;
 };
+enum class MspWriteOutcome { Failed, Deferred, Complete, CompleteLate };
+struct MspWriteDiagnostic {
+	MspWriteOutcome outcome{MspWriteOutcome::Failed};
+	size_t bytes_written{0}, frame_bytes{0};
+	int system_error{0};
+	double elapsed_seconds{0}, deadline_overrun_seconds{0};
+};
 // Incremental, bounded MSP v1 / native v2 reply decoder. Encapsulated v2
 // ($M, code 255) is not supported and is never requested.
 class MspDecoder {
@@ -40,6 +47,8 @@ public:
 	bool request(uint8_t code, MspFrame* reply, double deadline);
 	// Split-phase diagnostic I/O. Caller owns scheduling and reply timeouts;
 	// do not mix with synchronous request() while requests are outstanding.
+	// Read-only zero-byte deadline misses defer; complete late writes await a
+	// reply. Partial writes and I/O errors latch failed. Inspect the diagnostic.
 	bool sendRequest(uint8_t code, double deadline);
 	bool readOverrideSetting(const std::string& name, double deadline);
 	bool receive(MspFrame* reply);  // bounded, nonblocking; includes RC ACKs
@@ -52,10 +61,12 @@ public:
 	uint64_t errors() const { return errors_ + decoder_.errors(); }
 	double lastSendTime() const { return last_send_time_; }
 	double lastWriteSeconds() const { return last_write_seconds_; }
+	const MspWriteDiagnostic& lastWriteDiagnostic() const { return _last_write_diagnostic; }
 
 private:
 	void checkOwner() const;
-	bool writeFrame(uint16_t code, const std::vector<uint8_t>& payload, double deadline);
+	bool writeFrame(uint16_t code, const std::vector<uint8_t>& payload, double deadline, bool read_only = false);
+	MspWriteDiagnostic _last_write_diagnostic;
 	int fd_{-1};
 	const std::thread::id owner_;
 	MspDecoder decoder_;

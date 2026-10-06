@@ -85,6 +85,8 @@ void MspTelemetry::expireRequests(double now, uint64_t errors) {
 	}
 }
 void MspTelemetry::tick(agi::hardware::BetaflightMspBridge& bridge, double write_deadline, double write_budget) {
+	if (_transport_failed) return;
+	uint16_t request_code = 0;
 	try {
 		if (monotonicSeconds() >= _next_config) {
 			std_msgs::msg::String config;
@@ -138,6 +140,7 @@ void MspTelemetry::tick(agi::hardware::BetaflightMspBridge& bridge, double write
 		}
 		if (!selected) return;
 		auto& p = *selected;
+		request_code = p.code;
 		const auto stamp = _node.now();
 		const double sent_at = monotonicSeconds();
 		if (write_deadline - sent_at < write_budget) return;
@@ -146,15 +149,30 @@ void MspTelemetry::tick(agi::hardware::BetaflightMspBridge& bridge, double write
 		const double deadline = std::min(write_deadline, sent_at + write_budget);
 		const bool sent = p.setting.empty() ? bridge.sendRequest(static_cast<uint8_t>(p.code), deadline)
 		                                    : bridge.readOverrideSetting(p.setting, deadline);
-		if (!sent) throw std::runtime_error("MSP telemetry write failed for code " + std::to_string(p.code));
+		const auto& diagnostic = bridge.lastWriteDiagnostic();
+		if (!sent) {
+			if (diagnostic.outcome == agi::hardware::MspWriteOutcome::Deferred) {
+				emit("write_deferred", {p.code, false, {}}, bridge.errors());
+				return;
+			}
+			throw std::runtime_error("MSP telemetry write failed for code " + std::to_string(p.code) + ": bytes=" +
+			                         std::to_string(diagnostic.bytes_written) + "/" + std::to_string(diagnostic.frame_bytes) +
+			                         ", errno=" + std::to_string(diagnostic.system_error) +
+			                         ", elapsed_s=" + std::to_string(diagnostic.elapsed_seconds) +
+			                         ", deadline_overrun_s=" + std::to_string(diagnostic.deadline_overrun_seconds));
+		}
 		p.pending = true;
 		// Missed periods are skipped instead of creating a catch-up burst.
 		p.next += (std::floor((p.sent - p.next) * p.hz) + 1) / p.hz;
 		emit("tx", {p.code, false, {}}, bridge.errors(), NAN, &p);
-	} catch (...) {
+		if (diagnostic.outcome == agi::hardware::MspWriteOutcome::CompleteLate) {
+			emit("write_late", {p.code, false, {}}, bridge.errors(), diagnostic.elapsed_seconds, &p);
+		}
+	} catch (const std::runtime_error& error) {
 		_healthy = false;
-		emit("transport_error", {}, bridge.errors());
-		throw;
+		_transport_failed = true;
+		emit("transport_error", {request_code, false, {}}, bridge.errors());
+		RCLCPP_ERROR(_node.get_logger(), "%s; MSP transport latched unhealthy, restart required", error.what());
 	}
 }
 }  // namespace agi_ros2

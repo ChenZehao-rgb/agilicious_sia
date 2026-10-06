@@ -78,6 +78,8 @@ class ShadowHarness(Harness):
         self.driver()
 
     def drain(self):
+        if self.master is None:
+            return
         while True:
             try:
                 data = os.read(self.master, 8192)

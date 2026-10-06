@@ -1,5 +1,29 @@
 # Split-node validation (2026-09-10)
 
+## 2026-10-06 MSP write deadlines and transport failure containment
+
+Validated on local aarch64 / ROS 2 Jazzy with owned PTYs only; no physical UART was opened:
+
+- Release build and install passed with `./agi_ros2/scripts/build.sh --parallel-workers 1`.
+- `msp_write_deadline_test.cpp` passed with linker wrappers for deterministic clock/write injection:
+  expired and zero-byte deferred queries, complete late queries, partial writes, preserved I/O errno,
+  latched diagnostics and strict RC write deadlines. Compile with `-Wl,--wrap=write -Wl,--wrap=clock_gettime`
+  and the transport source; the target is also included in `BUILD_BETAFLIGHT_HW`.
+- Existing `betaflight_hw_test.cpp` passed: safety gates, parser, thrust mapping and PTY transport.
+- MSP poll scheduler suite passed all six cases, including physical-port emulation disconnect:
+  the monitor remains alive, latches unhealthy, stops polling and logs write diagnostics.
+- Six-node `HardwarePipelineTests.test_uart_disconnect_keeps_nodes_alive_and_revokes_override` passed:
+  quadratic/MPC output was authorized before disconnect; all nodes survived, health and output became
+  unhealthy, override stopped, and subsequent AUTO edges did not reauthorize it.
+- The six-node test initially failed its pre-fault readiness check while the Release build was running:
+  RC/state freshness and controller warmup were not met. After the build completed, it passed unchanged.
+- New C++ file and changed C++ ranges passed clang-format 18, 140-column and whitespace checks.
+
+Read-only complete late writes keep their original request identity and reply timeout; they are never
+retried as a fresh request. Partial writes and I/O failures remain latched. Retaining the node after
+a telemetry transport fault preserves diagnostics rather than restoring output. A real hardware
+shadow run with recording and sustained load, plus FC override timeout validation, remains outstanding.
+
 ## 2026-09-30 IMU/GNSS/barometer height fusion
 
 Validated on local x86-64 / ROS 2 Humble, with synthetic inputs and PTYs only:

@@ -103,6 +103,8 @@ class MonitorHarness:
         return self.config.get(code, b'')
 
     def read_requests(self):
+        if self.master is None:
+            return
         while True:
             try:
                 data = os.read(self.master, 8192)
@@ -158,6 +160,8 @@ class MonitorHarness:
         ready = [item for item in self.responses if item[0] <= now]
         self.responses = [item for item in self.responses if item[0] > now]
         for _, response, request in ready:
+            if self.master is None:
+                continue
             assert os.write(self.master, response) == len(response)
             request['reply_time'] = time.monotonic()
         if self.process.poll() is not None:
@@ -194,7 +198,8 @@ class MonitorHarness:
                 process.wait()
         self.log.close()
         self.node.destroy_node()
-        os.close(self.master)
+        if self.master is not None:
+            os.close(self.master)
         os.close(self.slave)
         self.temp.cleanup()
 
@@ -243,7 +248,7 @@ class MspPollSchedulerTests(unittest.TestCase):
         self.assertTrue(all(request['v2'] for request in h.requests if request['code'] == 0x3010))
         self.assertTrue(h.events, 'No MSP events discovered')
         failures = [(event.event, event.code) for event in h.events
-                    if event.event not in ('tx', 'rx') or event.errors]
+                    if event.event not in ('tx', 'rx', 'write_deferred', 'write_late') or event.errors]
         self.assertEqual(failures, [])
         for setting in MspEvidence.OVERRIDE_SETTINGS:
             self.assertTrue(any(event.event == 'rx' and event.request_name == setting for event in h.events), setting)
@@ -289,6 +294,23 @@ class MspPollSchedulerTests(unittest.TestCase):
 
     def test_critical_receiver_timeout_latches_unhealthy_and_quarantines_late_reply(self):
         self.assert_timeout_isolated(105, critical=True)
+
+    def test_uart_disconnect_latches_unhealthy_without_exiting_or_retries(self):
+        h = self.harness()
+        h.wait_until(lambda: h.snapshot()['config_verified'] and h.snapshot()['transport_healthy'])
+        os.close(h.master)
+        h.master = None
+        h.wait_until(lambda: any(event.event == 'transport_error' for event in h.events))
+        count = len(h.events)
+        h.run(.3)
+        self.assertIsNone(h.process.poll(), 'Transport failure exited the monitor')
+        self.assertEqual(len(h.events), count, 'Failed transport kept polling or retrying')
+        self.assertFalse(h.snapshot()['transport_healthy'], h.snapshot())
+        self.assertTrue(h.decoder.failed)
+        h.log.seek(0)
+        log = h.log.read()
+        self.assertIn('errno=', log)
+        self.assertIn('restart required', log)
 
     def test_setting_timeout_disables_all_requests_sharing_the_v2_code(self):
         self.assert_timeout_isolated(0x3010, critical=True)

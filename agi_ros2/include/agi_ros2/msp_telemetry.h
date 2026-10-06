@@ -39,6 +39,7 @@ private:
 	double _timeout;
 	uint64_t _timeouts{0};
 	bool _healthy{true};
+	bool _transport_failed{false};
 	std::string _session_id;
 };
 }  // namespace agi_ros2
