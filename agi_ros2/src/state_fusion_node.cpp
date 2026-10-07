@@ -144,9 +144,7 @@ StateFusionNode::StateFusionNode()
 		throw std::invalid_argument("height_fusion_mode must be legacy_full3d, baro_primary or baro_gnss_weighted");
 	_weighted_height_mode = _navigation_source == "gnss" && _height_fusion_mode == "baro_gnss_weighted";
 	if (_navigation_source == "gnss") _gnss_use_baro_height = _height_fusion_mode != "legacy_full3d";
-	_observation_delay = configured("observation_delay", _baro_enabled ? 0.20 : 0.0);
-	if (!std::isfinite(_observation_delay) || _observation_delay < 0 || _observation_delay > 0.25)
-		throw std::invalid_argument("observation_delay must be between 0 and 0.25 seconds");
+	_observation_delay = declareObservationDelay(*this, profile, _baro_enabled);
 	_baro_max_age = positive("baro_max_age", 0.25);
 	_baro_pressure_variance = positive("baro_pressure_variance_pa2", 4.0);
 	_baro_min_pressure = positive("baro_min_pressure_pa", 30000.0);
@@ -811,6 +809,7 @@ void StateFusionNode::publishState(double imu_receive_time) {
 	out.published_steady_time = monotonicSeconds();
 	out.imu_receive_time = imu_receive_time;
 	out.rtk_receive_time = _rtk_receive_time;
+	out.navigation_sample_stamp = _rtk.header.stamp;
 	if (std::isfinite(_last_rtk_time)) {
 		out.rtk_stamp = rosStamp(_last_rtk_time);
 	}
@@ -819,8 +818,10 @@ void StateFusionNode::publishState(double imu_receive_time) {
 	out.fix_type = _navigation_source == "gnss" ? _navigation.fix_type : (_rtk.fixed ? 6 : 0);
 	out.clock_aligned = _navigation_source == "gnss" ? _navigation.clock_aligned : _rtk.synchronized;
 	out.accuracy_known = _navigation_source == "gnss" ? _navigation.accuracy_known : _rtk.accuracy_ok;
-	out.navigation_valid = std::isfinite(_last_rtk_time) && SafetyGate::fresh(_state.t, _last_rtk_time, .3, _timing_checks) &&
-	                       navigationFresh(_state.t, imu_receive_time);
+	out.navigation_valid =
+	        std::isfinite(_last_rtk_time) &&
+	        SafetyGate::fresh(_state.t, _last_rtk_time, SafetyGate::acceptedNavigationMaxAge(_observation_delay), _timing_checks) &&
+	        navigationFresh(_state.t, imu_receive_time);
 	out.reset_counter = _reset_counter;
 	out.initialized = _ekf->healthy() && _state.valid() && std::isfinite(_last_rtk_time);
 	out.rtk_fixed = _rtk.fixed;

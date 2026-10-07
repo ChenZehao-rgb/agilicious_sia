@@ -2,6 +2,8 @@ std_msgs/Header header
 bool imu_calibrated
 bool converged
 # GNSS readiness is distinct from legacy RTK calibration/convergence evidence.
+# FC sensor/calibration readiness, independent of cached fused-state age.
+bool fc_imu_ready
 bool imu_ready
 bool estimator_ready
 bool navigation_ready

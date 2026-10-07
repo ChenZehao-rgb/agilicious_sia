@@ -21,7 +21,7 @@ from test_runtime_profile_nodes import dump_profile
 
 
 class HardwareHarness(ShadowHarness):
-    def __init__(self, shadow=False, override_timeout='50', controller='MPC', thrust_model='table'):
+    def __init__(self, shadow=False, override_timeout='50', controller='MPC', thrust_model='table', observation_delay=0.0):
         super().__init__()
         self.response_armed = False
         self.config_frames[119] = bytes((27, 50, 0, 1))  # Include ANGLE in the FC's stable BOXIDS list.
@@ -49,6 +49,8 @@ class HardwareHarness(ShadowHarness):
         profile['pilot']['quadrotor'] = {key: synthetic[key] for key in
                                          ('mass', 'omega_max', 'thrust_min', 'thrust_max')}
         profile['bridge'] = yaml.safe_load(self.bridge.read_text())
+        profile['fusion']['baro_enabled'] = False
+        profile['fusion']['observation_delay'] = observation_delay
         profile['flight']['shadow_only'] = shadow
         profile['flight']['thrust_model'] = thrust_model
         profile['flight']['thrust_table'] = str(table)
@@ -69,7 +71,7 @@ class HardwareHarness(ShadowHarness):
         self.start_node('gnss_adapter.py', heading_confirmed=True, fc_declination_applied=True,
                         origin_duration=.3, origin_samples=3,
                         max_horizontal_accuracy=2., max_vertical_accuracy=3., max_velocity_accuracy=.6)
-        self.start_node('state_fusion_node', navigation_source='gnss', imu_initialization_duration=.4,
+        self.start_node('state_fusion_node', navigation_source='gnss', **control_parameters, imu_initialization_duration=.4,
                         imu_initialization_samples=100, navigation_ready_updates=5,
                         max_horizontal_position_stddev=2., max_vertical_position_stddev=3.,
                         max_velocity_stddev=.6, max_heading_stddev=.5)

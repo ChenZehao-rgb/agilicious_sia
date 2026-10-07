@@ -65,7 +65,7 @@ class EvidenceNode(Node):
         self.fused = None
         self.create_subscription(MspEvent, 'msp/events', self.on_event, 1000)
         self.create_subscription(OutputStatus, 'output_status', self.on_output, 10)
-        self.create_subscription(FusedState, 'fused_state', self.on_state, 10)
+        self.create_subscription(FusedState, 'fused_state', self.on_state, 1)
         self.authority_pub = self.create_publisher(Authority, 'authority', 1)
         self.health_pub = self.create_publisher(Health, 'health', 1)
         self.decoded_pub = self.create_publisher(MspState, 'msp/decoded_state', 10)
@@ -92,7 +92,7 @@ class EvidenceNode(Node):
             return
         self.decoder.accept(message.code, message.payload, request_time, message.session_id,
                             message.request_name, message.event)
-        if message.event in ('rx', 'error', 'timeout', 'transport_error'):
+        if message.event in ('error', 'timeout', 'transport_error'):
             self.publish()
 
     def publish(self):
@@ -125,9 +125,11 @@ class EvidenceNode(Node):
         health.thrust_mapping_ready = bool(output_fresh and self.output.thrust_mapping_ready)
         health.transport_healthy = bool(health.transport_healthy and output_fresh and self.output.transport_healthy)
         configured = all(a < b for a, b in zip(self.minimum, self.maximum))
+        # A diagnostic cache has a 25 ms lifetime. Control checks its own latest
+        # 15 ms state and consumes FC readiness independently of this summary.
         fused_fresh = (self.fused is not None and self.fused.clock_id == self.clock_id and
-                       self.fused.initialized and fresh(now, seconds(self.fused.header.stamp), .01) and
-                       fresh(time.monotonic(), self.fused.published_steady_time, .01))
+                       self.fused.initialized and fresh(now, seconds(self.fused.header.stamp), .025) and
+                       fresh(time.monotonic(), self.fused.published_steady_time, .025))
         if configured and fused_fresh:
             position = self.fused.position.x, self.fused.position.y, self.fused.position.z
             health.geofence_ok = all(a <= x <= b for a, x, b in zip(self.minimum, position, self.maximum))
@@ -135,7 +137,8 @@ class EvidenceNode(Node):
         # startup/update checks; legacy calibration/RTK claims remain untouched.
         health.imu_calibrated = False
         health.converged = False
-        health.imu_ready = bool(fused_fresh and data['imu_ready'] and self.fused.imu_ready)
+        health.fc_imu_ready = data['imu_ready']
+        health.imu_ready = bool(fused_fresh and health.fc_imu_ready and self.fused.imu_ready)
         health.estimator_ready = bool(fused_fresh and self.fused.estimator_ready)
         health.navigation_ready = bool(fused_fresh and self.fused.navigation_ready and
                                        self.fused.navigation_accuracy_ok and self.fused.accuracy_known and

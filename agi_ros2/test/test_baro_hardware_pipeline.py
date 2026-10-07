@@ -19,7 +19,7 @@ from test_baro_fusion import diagnostic_values
 class BarometerHardwareHarness(HardwareHarness):
     def __init__(self):
         self.next_pressure = 0.0
-        super().__init__(shadow=True, controller='GEO')
+        super().__init__(shadow=True, controller='GEO', observation_delay=0.2)
         self.subscribe('fusion/baro/status', DiagnosticArray)
         self.subscribe('sensors/baro/sample', Barometer)
         self.subscribe_sensor('sensors/baro/pressure', FluidPressure)

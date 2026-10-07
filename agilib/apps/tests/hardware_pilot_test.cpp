@@ -37,7 +37,23 @@ Evidence health(double now, bool automatic = false) {
 	e.auto_switch = automatic;
 	return e;
 }
+void stateFreshnessTests() {
+	auto config = configuration();
+	config.pipeline_cfg_.outer_controller_cfg.type = "GEO";
+	double state_time = 20;
+	HardwarePilot delayed(config, [&] { return state_time; });
+	QuadState sample;
+	sample.setZero();
+	sample.t = state_time - 0.014;
+	auto decision = delayed.tick(sample, health(state_time));
+	require(decision.state_valid && decision.evidence.command_valid, "14 ms state rejected by obsolete command-age gate");
+	state_time += 0.01;
+	sample.t = state_time - 0.016;
+	decision = delayed.tick(sample, health(state_time));
+	require(!decision.state_valid && !decision.evidence.command_valid, "16 ms state bypassed 15 ms limit");
+}
 void referenceAndWatchdogTests() {
+	stateFreshnessTests();
 	QuadState state;
 	state.setZero();
 	state.t = 10;

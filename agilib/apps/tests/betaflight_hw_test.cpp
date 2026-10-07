@@ -15,6 +15,7 @@ void require(bool condition) {
 Evidence healthy(double now = 10) {
 	Evidence e;
 	e.now = e.imu_time = e.rtk_time = e.rc_time = e.command_time = now;
+	e.navigation_sample_time = e.navigation_receive_time = now;
 	e.solve_seconds = 0.004;
 	e.rtk_fixed = e.heading_valid = e.accuracy_ok = e.imu_calibrated = true;
 	e.synchronized = e.converged = e.config_verified = e.thrust_calibrated = true;
@@ -168,6 +169,58 @@ void gnssPolicyTests() {
 		require(gate.update(e));
 	}
 }
+void navigationTimingTests() {
+	auto e = healthy();
+	e.imu_ready = e.estimator_ready = e.navigation_ready = e.clock_aligned = e.accuracy_known = true;
+	e.rtk_time = e.now - 0.49;
+	e.navigation_sample_time = e.now - 0.10;
+	e.navigation_receive_time = e.now - 0.05;
+	SafetyGate delayed(NavigationPolicy::Gnss, 0.20);
+	require(!delayed.update(e));
+	e.auto_switch = true;
+	require(delayed.update(e));
+	// Delay compensation never extends the lifetime of raw GNSS evidence.
+	for (int failure = 0; failure < 6; ++failure) {
+		auto bad = e;
+		switch (failure) {
+			case 0:
+				bad.rtk_time = bad.now - 0.501;
+				break;
+			case 1:
+				bad.navigation_sample_time = bad.now - 0.301;
+				break;
+			case 2:
+				bad.navigation_receive_time = bad.now - 0.301;
+				break;
+			case 3:
+				bad.navigation_sample_time = bad.now + 0.001;
+				break;
+			case 4:
+				bad.navigation_receive_time = NAN;
+				break;
+			case 5:
+				bad.navigation_ready = false;
+				break;
+		}
+		require(!delayed.update(bad));
+		require(!delayed.update(e));
+		e.auto_switch = false;
+		require(!delayed.update(e));
+		e.auto_switch = true;
+		require(delayed.update(e));
+	}
+	require(!SafetyGate::inputsHealthy(e, NavigationPolicy::Gnss));
+	require(SafetyGate::inputsHealthy(e, NavigationPolicy::Gnss, 0.20));
+	for (double invalid : {-0.01, 0.251, static_cast<double>(NAN)}) {
+		bool rejected = false;
+		try {
+			SafetyGate gate(NavigationPolicy::Gnss, invalid);
+		} catch (const std::invalid_argument&) {
+			rejected = true;
+		}
+		require(rejected);
+	}
+}
 void thrustTests() {
   ThrustTable table({12,16}, {1000,1500,2000}, {{0,10,20},{0,20,40}});
   require(table.collectiveThrustToRc(15, 1, 14) == 1500);
@@ -224,6 +277,7 @@ int main() {
 		safetyTests();
 		thrustMappingReadinessTests();
 		gnssPolicyTests();
+		navigationTimingTests();
 		parserTests();
 		thrustTests();
 		transportTests();

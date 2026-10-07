@@ -17,13 +17,15 @@ protected:
 };
 }  // namespace
 
-HardwarePilot::HardwarePilot(const PilotParams& params, TimeFunction clock, TimeFunction steady_clock, NavigationPolicy policy)
-        : _clock(std::move(clock)),
-          _steady_clock(steady_clock ? std::move(steady_clock) : _clock),
-          _navigation_policy(policy),
-          _owner(std::this_thread::get_id()),
-          _reference(std::make_shared<CapturedReference>()),
-          _gate(policy) {
+HardwarePilot::HardwarePilot(const PilotParams& params, TimeFunction clock, TimeFunction steady_clock, NavigationPolicy policy,
+                             double observation_delay)
+	: _clock(std::move(clock)),
+	  _steady_clock(steady_clock ? std::move(steady_clock) : _clock),
+	  _navigation_policy(policy),
+	  _observation_delay(observation_delay),
+	  _owner(std::this_thread::get_id()),
+	  _reference(std::make_shared<CapturedReference>()),
+	  _gate(policy, observation_delay) {
 	const auto& cfg = params.pipeline_cfg_;
 	// Check before constructing Pilot, whose general-purpose constructor may open devices.
 	if (!_clock || !params.valid() || cfg.bridge_cfg.type != "External" || cfg.estimator_cfg.type != "External" ||
@@ -83,12 +85,13 @@ ControlDecision HardwarePilot::tick(const QuadState& state, Evidence evidence, b
 	const bool cadence_ok =
 	        !std::isfinite(_previous_tick) || (now > _previous_tick && (!evidence.timing_checks || now - _previous_tick <= .025));
 	_previous_tick = now;
-	const bool state_ok =
-	        state.valid() && SafetyGate::fresh(now, state.t, .010, evidence.timing_checks) && std::abs(state.q().norm() - 1.0) < 1e-3;
+	const bool state_ok = state.valid() && SafetyGate::fresh(now, state.t, SafetyGate::kStateMaxAge, evidence.timing_checks) &&
+	                      std::abs(state.q().norm() - 1.0) < 1e-3;
 	result.state_valid = state_ok && cadence_ok && (!shadow_only || navigation_valid);
 	const bool receiver_ok =
 	        evidence.rc_link && SafetyGate::fresh(evidence.now, evidence.rc_time, .1, evidence.timing_checks) && !evidence.kill;
-	const bool compute_healthy = shadow_only ? navigation_valid : SafetyGate::inputsHealthy(evidence, _navigation_policy);
+	const bool compute_healthy =
+	        shadow_only ? navigation_valid : SafetyGate::inputsHealthy(evidence, _navigation_policy, _observation_delay);
 	const bool ready = result.state_valid && compute_healthy && !evidence.kill;
 	if (!ready || !receiver_ok || !evidence.armed || !evidence.auto_switch) {
 		_reference_active = false;
@@ -115,7 +118,7 @@ ControlDecision HardwarePilot::tick(const QuadState& state, Evidence evidence, b
 				if (!references.empty()) result.reference = references.front().state;
 				const Command command = _pilot->getCommand();
 				if (command.isRatesThrust() && command.collective_thrust >= 0 &&
-				    SafetyGate::fresh(now, command.t, .010, evidence.timing_checks)) {
+				    SafetyGate::fresh(now, command.t, SafetyGate::kStateMaxAge, evidence.timing_checks)) {
 					result.command = command;
 					evidence.command_valid = true;
 					evidence.command_time = _steady_clock();
@@ -151,7 +154,7 @@ ControlDecision HardwarePilot::tick(const QuadState& state, Evidence evidence, b
 		_reference_start = NAN;
 		if (!evidence.command_valid) _shadow_low_seen = false;
 	}
-	if (!shadow_only && !SafetyGate::inputsHealthy(evidence, _navigation_policy)) _warm_cycles = 0;
+	if (!shadow_only && !SafetyGate::inputsHealthy(evidence, _navigation_policy, _observation_delay)) _warm_cycles = 0;
 	result.trajectory_active = _reference_active;
 	result.reference_elapsed = _reference_active ? now - _reference_start : 0;
 	result.evidence = evidence;

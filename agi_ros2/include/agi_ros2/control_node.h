@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "agi_ros2/msg/authority.hpp"
 #include "agi_ros2/msg/computation_status.hpp"
@@ -37,6 +38,9 @@ private:
 	bool _timing_checks = true;
 	agi::hardware::NavigationPolicy _navigation_policy = agi::hardware::NavigationPolicy::Rtk;
 	double _cycle_seconds = 0.0;
+	double _observation_delay = 0.0;
+	std::vector<double> _geofence_min;
+	std::vector<double> _geofence_max;
 	std::unique_ptr<agi::PilotParams> _params;
 	std::unique_ptr<agi::hardware::HardwarePilot> _pilot;
 	double _control_time = 0.0;

@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 
+#include "agilib/bridge/betaflight/hardware_safety.hpp"
 #include "agilib/pilot/pilot_params.hpp"
 #include "agilib/types/quadrotor.hpp"
 #include "agilib/utils/yaml.hpp"
@@ -147,6 +148,22 @@ inline std::optional<RuntimeConfig> loadRuntimeConfig(rclcpp::Node& node, const 
 	            mode.c_str(), config.controllerType().c_str(),
 	            config.controllerType() == "MPC" ? "ideal_rate_thrust" : "geometric_rate_thrust");
 	return config;
+}
+
+inline double declareObservationDelay(rclcpp::Node& node, const std::optional<RuntimeConfig>& profile, bool baro_enabled = false) {
+	if (profile && profile->section("fusion")["baro_enabled"].isDefined())
+		baro_enabled = profile->section("fusion")["baro_enabled"].as<bool>();
+	double fallback = baro_enabled ? 0.20 : 0.0;
+	if (profile && profile->section("fusion")["observation_delay"].isDefined())
+		fallback = profile->section("fusion")["observation_delay"].as<double>();
+	rcl_interfaces::msg::ParameterDescriptor descriptor;
+	descriptor.read_only = true;
+	const double delay = node.declare_parameter<double>("observation_delay", fallback, descriptor);
+	if (!std::isfinite(agi::hardware::SafetyGate::acceptedNavigationMaxAge(delay)))
+		throw std::invalid_argument("observation_delay must be between 0 and 0.25 seconds");
+	RCLCPP_INFO(node.get_logger(), "Navigation age limits: source=0.300 s; accepted=%.3f s; observation_delay=%.3f s",
+	            agi::hardware::SafetyGate::acceptedNavigationMaxAge(delay), delay);
+	return delay;
 }
 
 }  // namespace agi_ros2

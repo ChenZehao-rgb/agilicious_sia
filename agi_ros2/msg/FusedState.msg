@@ -11,7 +11,10 @@ string clock_id
 float64 published_steady_time
 float64 imu_receive_time
 float64 rtk_receive_time
+# Last accepted navigation sample, after bounded observation reordering.
 builtin_interfaces/Time rtk_stamp
+# Newest original navigation sample; receipt remains rtk_receive_time.
+builtin_interfaces/Time navigation_sample_stamp
 uint64 reset_counter
 bool initialized
 bool rtk_fixed

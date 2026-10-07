@@ -33,6 +33,21 @@ ControlNode::ControlNode()
 	shadow_descriptor.read_only = true;
 	_mode = declare_parameter<std::string>("mode", "sitl", shadow_descriptor);
 	const auto profile = loadRuntimeConfig(*this, _mode);
+	_observation_delay = declareObservationDelay(*this, profile);
+	const auto geofence = [this, &profile, &shadow_descriptor](const char* name) {
+		std::vector<double> bounds(3, 0.0);
+		if (profile && profile->section("evidence")[name].isDefined()) {
+			const auto configured = profile->section("evidence")[name];
+			if (!configured.isSequence() || configured.size() != 3) throw std::invalid_argument(name);
+			for (int i = 0; i < 3; ++i) bounds[i] = configured[i].as<double>();
+		}
+		bounds = declare_parameter<std::vector<double>>(name, bounds, shadow_descriptor);
+		if (bounds.size() != 3 || !std::all_of(bounds.begin(), bounds.end(), [](double x) { return std::isfinite(x); }))
+			throw std::invalid_argument(name);
+		return bounds;
+	};
+	_geofence_min = geofence("geofence_min");
+	_geofence_max = geofence("geofence_max");
 	_shadow_only = declare_parameter<bool>("shadow_only", profile ? profile->section("flight")["shadow_only"].as<bool>() : false,
 	                                       shadow_descriptor);
 	const auto navigation =
@@ -66,7 +81,7 @@ ControlNode::ControlNode()
 	            _params->pipeline_cfg_.outer_controller_cfg.type.c_str());
 	_pilot = std::make_unique<agi::hardware::HardwarePilot>(
 	        *_params, [this] { return _control_time; }, [this] { return _simulation_time ? _control_time : monotonicSeconds(); },
-	        _navigation_policy);
+	        _navigation_policy, _observation_delay);
 	if (!trajectory.empty()) {
 		const auto rows = agi::trajectory_csv::readTrajectoryRows(trajectory);
 		const auto points = agi::trajectory_csv::loadTrajectory(rows, 0, agi::Vector<3>::Zero(), 0,
@@ -128,8 +143,8 @@ void ControlNode::tick() {
 	const auto timely = [this](double now, double sample, double limit) {
 		return SafetyGate::fresh(now, sample, limit, _timing_checks);
 	};
-	_control_time = alignedRosTime(*this, std::max({stampSeconds(_state.header.stamp), stampSeconds(_authority.header.stamp),
-	                                                stampSeconds(_health.header.stamp)}));
+	_control_time = alignedRosTime(*this, std::max({stampSeconds(_state.header.stamp), stampSeconds(_state.navigation_sample_stamp),
+	                                                stampSeconds(_authority.header.stamp), stampSeconds(_health.header.stamp)}));
 	const double wall = monotonicSeconds();
 	const double safety_now = _simulation_time ? _control_time : wall;
 	if (_output_fault || (std::isfinite(_previous_clock) &&
@@ -143,7 +158,7 @@ void ControlNode::tick() {
 	state.setZero();
 	state.t = kUnknownTime;
 	if (_state.initialized && _state.clock_id == _clock_id && _state.header.frame_id == "odom" &&
-	    timely(wall, _state.published_steady_time, _simulation_time ? kSitlWallTimeout : 0.010)) {
+	    timely(wall, _state.published_steady_time, _simulation_time ? kSitlWallTimeout : SafetyGate::kStateMaxAge)) {
 		state.t = stampSeconds(_state.header.stamp);
 		state.p = agi::Vector<3>{_state.position.x, _state.position.y, _state.position.z};
 		state.v = agi::Vector<3>{_state.velocity.x, _state.velocity.y, _state.velocity.z};
@@ -156,6 +171,9 @@ void ControlNode::tick() {
 	evidence.now = safety_now;
 	evidence.imu_time = _state.clock_id == _clock_id ? (_simulation_time ? state.t : _state.imu_receive_time) : kUnknownTime;
 	evidence.rtk_time = _state.initialized ? safety_now - (_control_time - stampSeconds(_state.rtk_stamp)) : kUnknownTime;
+	evidence.navigation_sample_time =
+	        _state.initialized ? safety_now - (_control_time - stampSeconds(_state.navigation_sample_stamp)) : kUnknownTime;
+	evidence.navigation_receive_time = _simulation_time ? evidence.navigation_sample_time : _state.rtk_receive_time;
 	evidence.rc_time = safety_now - (_control_time - stampSeconds(_authority.header.stamp));
 	evidence.rc_link = _authority.rc_link && timely(wall, _authority_receive_time, _simulation_time ? kSitlWallTimeout : 0.1);
 	evidence.armed = _authority.armed;
@@ -171,11 +189,11 @@ void ControlNode::tick() {
 	                          timely(wall, _output.steady_time, _simulation_time ? kSitlWallTimeout : 0.05);
 	evidence.imu_calibrated = health_fresh && _health.imu_calibrated;
 	evidence.converged = health_fresh && _health.converged && _state.initialized;
-	evidence.imu_ready = health_fresh && _health.imu_ready && _state.imu_ready;
-	evidence.estimator_ready = health_fresh && _health.estimator_ready && _state.estimator_ready;
+	evidence.imu_ready = health_fresh && (_mode == "hardware" ? _health.fc_imu_ready : _health.imu_ready) && _state.imu_ready;
+	evidence.estimator_ready = health_fresh && _state.estimator_ready && (_mode == "hardware" || _health.estimator_ready);
 	evidence.clock_aligned = _state.clock_aligned;
 	evidence.accuracy_known = _state.accuracy_known;
-	evidence.navigation_ready = health_fresh && _health.navigation_ready && _state.navigation_ready &&
+	evidence.navigation_ready = health_fresh && (_mode == "hardware" || _health.navigation_ready) && _state.navigation_ready &&
 	                            _state.navigation_source == "gnss" && _state.fix_type >= 3 && _state.fix_type <= 6 &&
 	                            timely(wall, _state.rtk_receive_time, .3);
 	if (_navigation_policy == agi::hardware::NavigationPolicy::Gnss) evidence.accuracy_ok = _state.navigation_accuracy_ok;
@@ -183,10 +201,18 @@ void ControlNode::tick() {
 	evidence.thrust_calibrated = health_fresh && _health.thrust_calibrated && output_fresh && _output.thrust_calibrated;
 	evidence.thrust_mapping_ready = health_fresh && _health.thrust_mapping_ready && output_fresh && _output.thrust_mapping_ready;
 	evidence.geofence_ok = health_fresh && _health.geofence_ok;
+	if (_mode == "hardware") {
+		evidence.geofence_ok = health_fresh && state.valid();
+		for (int i = 0; i < 3; ++i)
+			evidence.geofence_ok = evidence.geofence_ok && _geofence_min[i] < _geofence_max[i] &&
+			                       state.p(i) >= _geofence_min[i] && state.p(i) <= _geofence_max[i];
+	}
 	evidence.msp_healthy = health_fresh && _health.transport_healthy && output_fresh && _output.transport_healthy;
-	const bool navigation_valid = _state.navigation_source == "gnss" && _state.navigation_valid && _state.clock_aligned &&
-	                              _state.heading_valid && timely(_control_time, stampSeconds(_state.rtk_stamp), .3) &&
-	                              timely(wall, _state.rtk_receive_time, .3) && timely(wall, _state.imu_receive_time, .010);
+	const bool navigation_valid =
+	        _state.navigation_source == "gnss" && _state.navigation_valid && _state.clock_aligned && _state.heading_valid &&
+	        timely(_control_time, stampSeconds(_state.rtk_stamp), SafetyGate::acceptedNavigationMaxAge(_observation_delay)) &&
+	        timely(_control_time, stampSeconds(_state.navigation_sample_stamp), .3) && timely(wall, _state.rtk_receive_time, .3) &&
+	        timely(wall, _state.imu_receive_time, .010);
 	const auto decision = _pilot->tick(state, evidence, _shadow_only, navigation_valid);
 	_cycle_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - cycle_start).count();
 	publishDecision(decision, state);

@@ -48,6 +48,7 @@ private:
 	bool _timing_checks = true;
 	agi::hardware::NavigationPolicy _navigation_policy = agi::hardware::NavigationPolicy::Rtk;
 	double _mass = 0.0;
+	double _observation_delay = 0.0;
 	int _socket_fd = -1;
 	sockaddr_in _destination{};
 	agi::BetaflightUdpBridgeParams _bridge_params;

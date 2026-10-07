@@ -55,6 +55,8 @@ class BarometerHarness(Harness):
         self.navigation_heading_rate = 0.0
         self.navigation_epoch = self.sim_time_ns * 1e-9
         self.navigation_delay = 0.0
+        self.navigation_period = 0.05
+        self.navigation_enabled = True
         self.pending_navigation = []
         self.imu_delay = 0.0
         self.imu_yaw_rate = 0.0
@@ -138,13 +140,14 @@ class BarometerHarness(Harness):
     def publish_inputs(self, sensors, commands):
         super().publish_inputs(False, False)
         seconds = self.sim_time_ns * 1e-9
-        if seconds - self.last_sample >= 0.05:
+        if seconds - self.last_sample >= self.navigation_period:
             # Identical sample stamps, but pressure is deliberately delivered first.
             sample = self.barometer()
             if self.pressure_enabled:
                 self.publisher('sensors/baro/sample', Barometer).publish(sample)
             navigation = self.navigation()
-            self.pending_navigation.append((seconds + self.navigation_delay, navigation))
+            if self.navigation_enabled:
+                self.pending_navigation.append((seconds + self.navigation_delay, navigation))
             self.last_sample = seconds
         while self.pending_navigation and self.pending_navigation[0][0] <= seconds:
             _, navigation = self.pending_navigation.pop(0)
@@ -674,6 +677,40 @@ class WeightedGnssBarometerFusionTest(unittest.TestCase):
         h.pending_imus.clear()
         self.wait_for_status(reference_valid=0, ekf_reference_valid=0)
         self.assertGreater(h.state().reset_counter, before)
+        self.assertFalse(h.state().estimator_ready)
+
+
+class NavigationTimingFusionTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        rclpy.init()
+
+    @classmethod
+    def tearDownClass(cls):
+        rclpy.shutdown()
+
+    def test_reorder_delay_preserves_readiness_but_raw_outage_revokes(self):
+        h = BarometerHarness(navigation_source='gnss', parameters={
+            'height_fusion_mode': 'baro_gnss_weighted', 'navigation_ready_updates': 3,
+            'max_horizontal_position_stddev': 2.0, 'max_vertical_position_stddev': 3.0,
+            'max_velocity_stddev': 0.6, 'max_heading_stddev': 0.5})
+        self.addCleanup(h.close)
+        h.navigation_period = 0.20
+        deadline = time.monotonic() + 12.0
+        while time.monotonic() < deadline and (not h.received['fused_state'] or not h.state().estimator_ready):
+            h.drive(0.2)
+        self.assertTrue(h.state().estimator_ready, h.state().readiness_reason)
+        before = len(h.received['fused_state'])
+        h.drive(1.6)
+        states = [s for s in h.received['fused_state'][before:] if s.initialized]
+        older = [s for s in states if stamp_seconds(s.header.stamp) - stamp_seconds(s.rtk_stamp) > 0.30]
+        self.assertTrue(older, 'Regression did not exercise accepted navigation ages over 300 ms')
+        self.assertTrue(all(s.navigation_ready and s.estimator_ready for s in older))
+        self.assertTrue(all(s.navigation_sample_stamp != s.rtk_stamp for s in older))
+        h.navigation_enabled = False
+        h.drive(0.9)
+        self.assertFalse(h.state().navigation_valid)
+        self.assertFalse(h.state().navigation_ready)
         self.assertFalse(h.state().estimator_ready)
 
 

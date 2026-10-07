@@ -46,6 +46,7 @@ CommandOutputNode::CommandOutputNode()
 	shadow_descriptor.read_only = true;
 	_mode = declare_parameter<std::string>("mode", "sitl", shadow_descriptor);
 	const auto profile = loadRuntimeConfig(*this, _mode);
+	_observation_delay = declareObservationDelay(*this, profile);
 	_shadow_only = declare_parameter<bool>("shadow_only", profile ? profile->section("flight")["shadow_only"].as<bool>() : false,
 	                                       shadow_descriptor);
 	const auto navigation =
@@ -53,7 +54,7 @@ CommandOutputNode::CommandOutputNode()
 	if (navigation != "gnss" && navigation != "rtk") throw std::invalid_argument("navigation_source must be gnss or rtk");
 	const auto policy = navigation == "gnss" ? agi::hardware::NavigationPolicy::Gnss : agi::hardware::NavigationPolicy::Rtk;
 	_navigation_policy = policy;
-	_gate = std::make_unique<SafetyGate>(policy);
+	_gate = std::make_unique<SafetyGate>(policy, _observation_delay);
 	if (_shadow_only && _mode != "hardware") throw std::invalid_argument("shadow_only requires hardware mode");
 	if (_mode != "sitl" && _mode != "hardware") {
 		throw std::invalid_argument("mode must be sitl or hardware");
@@ -141,7 +142,7 @@ CommandOutputNode::CommandOutputNode()
 		if (!_thrust && !_quadratic_thrust && !_shadow_only) {
 			throw std::invalid_argument("Hardware output requires a thrust_table");
 		}
-		_msp = std::make_unique<agi::hardware::BetaflightMspBridge>(device, baud, policy);
+		_msp = std::make_unique<agi::hardware::BetaflightMspBridge>(device, baud, policy, _observation_delay);
 	} else {
 		_destination.sin_family = AF_INET;
 		_destination.sin_port = htons(_bridge_params.port);
@@ -333,15 +334,15 @@ void CommandOutputNode::processOutput(bool new_command) {
 	                         (!_authority.auto_switch || _command.permit_override);
 	evidence.msp_healthy = evidence.msp_healthy && _transport_healthy && health_fresh && _health.transport_healthy;
 	evidence.config_verified = evidence.config_verified && health_fresh && _health.config_verified;
-	evidence.geofence_ok = evidence.geofence_ok && health_fresh && _health.geofence_ok;
+	evidence.geofence_ok = evidence.geofence_ok && health_fresh && (_mode == "hardware" || _health.geofence_ok);
 	evidence.thrust_calibrated = evidence.thrust_calibrated && health_fresh && _health.thrust_calibrated;
 	evidence.thrust_mapping_ready = evidence.thrust_mapping_ready && health_fresh && _health.thrust_mapping_ready &&
 	                                (_mode == "sitl" || _thrust || _quadratic_thrust);
 	evidence.imu_calibrated = evidence.imu_calibrated && health_fresh && _health.imu_calibrated;
 	evidence.converged = evidence.converged && health_fresh && _health.converged;
-	evidence.imu_ready = evidence.imu_ready && health_fresh && _health.imu_ready;
-	evidence.estimator_ready = evidence.estimator_ready && health_fresh && _health.estimator_ready;
-	evidence.navigation_ready = evidence.navigation_ready && health_fresh && _health.navigation_ready;
+	evidence.imu_ready = evidence.imu_ready && health_fresh && (_mode == "hardware" ? _health.fc_imu_ready : _health.imu_ready);
+	evidence.estimator_ready = evidence.estimator_ready && health_fresh && (_mode == "hardware" || _health.estimator_ready);
+	evidence.navigation_ready = evidence.navigation_ready && health_fresh && (_mode == "hardware" || _health.navigation_ready);
 	bool active = _gate->update(evidence) && _command.permit_override;
 	// Heartbeats and watchdog callbacks may revoke, but never transmit another
 	// copy of a healthy hardware command or claim a new physical write.

@@ -504,14 +504,23 @@ EKF 运行参数也只在 `fusion` 段：`ekf_process_*_variance` 对应位置�
 TIMESYNC 是近似时钟对齐，仍包括 FC 滤波和 GPS 串口/解算延迟，不等于 PPS 测量同步。
 
 显式 no-fix、无效航向/速度、时钟失效或源会话重置会传播导航失效事件；原点建立后，GNSS adapter
-发布 `LocalNavigation.observation_valid=false`，融合立即发布撤销 readiness 的状态，控制下一周期和
-证据节点下一次更新撤销授权，输出收到不健康证据即复查。不会继续把旧好定位保留到 300 ms 才失效。
+发布 `LocalNavigation.observation_valid=false`，融合立即发布撤销 readiness 的状态，控制下一周期撤销授权，
+输出收到撤销命令即复查。证据节点继续发布融合 readiness 诊断。不会继续把旧好定位保留到 300 ms 才失效。
 失效事件使用本地检测时间，不刷新最后有效 GPS/IMU 的采集时间；完全停流仍由年龄检查处理。
 实际撤销包含 ROS 调度、消息传递与飞控回退时间，不能解释为物理零延迟。
 
 控制定时器为 100 Hz：SITL 用 ROS 仿真时钟，hardware 用墙钟；两种控制器的计算耗时都用单调墙钟。
-默认保持 10 ms 状态/IMU、300 ms 导航、100 ms RC、8 ms 计算预算和 50 个健康预热周期。
+控制状态采样及发布年龄上限为 15 ms，IMU 接收年龄仍为 10 ms。原始导航采样与接收年龄分别保持 300 ms；
+已接受观测的年龄预算为 `300 ms + fusion.observation_delay`，当前 200 ms 排序窗口对应 500 ms。
+融合 readiness、控制节点、输出和 MSP 共同 SafetyGate 使用同一 profile 的本地只读排序窗口；
+窗口必须有限且在 0–250 ms 内，消息不能修改预算。`FusedState.navigation_sample_stamp` 是最新原始采样时间，
+`rtk_stamp` 是最后已接受观测时间，`rtk_receive_time` 是最新原始接收时间；转发到 `SafetyEvidence` 时仍保留这些时间。
+RC 100 ms、计算预算 8 ms 和 50 个连续健康预热周期保持不变。
 输出还检查 25 ms 命令年龄；SITL 有独立 250 ms 墙钟停流保护。消息证据时间不会在转发/看门狗时刷新。
+硬件 health 只缓存最新融合样本，按 50 Hz 定时汇总，MSP 错误事件立即汇总；诊断融合缓存期限为 25 ms。
+控制节点使用当前融合状态检查估计器、导航和围栏，health 提供 FC 配置、接收机、传输、电池和独立的
+`fc_imu_ready`。输出复查控制证据的原始年龄及独立 FC 证据，不以 health 中缓存的融合 readiness/围栏重复否决。
+本次改变了 ROS 消息定义，须重新构建并重启整套节点；默认 `shadow_only: true` 保持不变。
 串口独占、进程重启、融合重置、旧导航会话/旧命令、时钟回退都会影响就绪或撤销授权。
 新鲜度不满足应先检查观测和调度原因，不以放宽门限代替目标机测量。
 

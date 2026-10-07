@@ -18,7 +18,7 @@ import unittest
 import uuid
 
 import rclpy
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from agi_ros2.msg import Authority, ControlCommand, FusedState, Health, OutputStatus, Rtk
 from sensor_msgs.msg import Imu
 from std_msgs.msg import String
@@ -68,6 +68,10 @@ class Harness:
         self.kill = False
         self.command_valid = True
         self.command_age = 0.0
+        self.navigation_age = 0.0
+        self.navigation_sample_age = 0.0
+        self.navigation_receive_age = 0.0
+        self.fc_imu_ready = True
         self.command_clock = CLOCK_ID
         self.total_thrust = 10.0
         self.battery_voltage = 16.0
@@ -84,6 +88,7 @@ class Harness:
         self.last_rc = 0.0
         self.rc_enabled = True
         self.last_command = 0.0
+        self.command_period = .01
         self.imu_enabled = True
         self.last_health = 0.0
         self.last_imu = 0.0
@@ -104,6 +109,10 @@ class Harness:
         if executable == 'command_output_node':
             args += ['-p', 'bridge_config:=' + str(self.bridge)]
             if hardware:
+                # Synthetic output-policy fixtures refresh IMU evidence faster
+                # than its 10 ms watchdog. HardwareHarness exercises real 100 Hz
+                # control commands from independently published sensors.
+                self.command_period = .004
                 self.master, self.slave = pty.openpty()
                 os.set_blocking(self.master, False)
                 table = self.path / 'thrust.csv'
@@ -121,8 +130,11 @@ class Harness:
 
     def publisher(self, topic, cls, sensor=False):
         if topic not in self.pubs:
+            qos = qos_profile_sensor_data if sensor else 1
+            if topic == 'clock':
+                qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
             self.pubs[topic] = self.node.create_publisher(
-                cls, topic, qos_profile_sensor_data if sensor else 10)
+                cls, topic, qos)
         return self.pubs[topic]
 
     def subscribe(self, topic, cls):
@@ -153,6 +165,7 @@ class Harness:
                 setattr(health, field, True)
             health.thrust_calibrated = self.thrust_calibrated
             health.thrust_mapping_ready = self.thrust_mapping_ready
+            health.fc_imu_ready = self.fc_imu_ready
             health.battery_voltage = self.battery_voltage
             self.publisher('health', Health).publish(health)
             self.last_health = wall
@@ -177,7 +190,7 @@ class Harness:
             imu.linear_acceleration.z = 9.8066
             self.publisher('sensors/imu', Imu, True).publish(imu)
             self.last_imu = wall
-        if commands and wall - self.last_command >= 0.01:
+        if commands and wall - self.last_command >= self.command_period:
             command = ControlCommand()
             command.header.stamp = self.stamp()
             command.header.frame_id = 'base_link'
@@ -189,13 +202,17 @@ class Harness:
             command.permit_override = self.auto
             command.mode = 4 if self.auto else 3
             evidence = command.evidence
-            for field in ('now', 'imu_time', 'rtk_time', 'rc_time', 'command_time'):
+            for field in ('now', 'imu_time', 'rtk_time', 'navigation_sample_time', 'navigation_receive_time', 'rc_time', 'command_time'):
                 setattr(evidence, field, wall - self.command_age)
+            evidence.rtk_time -= self.navigation_age
+            evidence.navigation_sample_time -= self.navigation_sample_age
+            evidence.navigation_receive_time -= self.navigation_receive_age
             evidence.solve_seconds = self.solve_seconds
             for field in ('rtk_fixed', 'heading_valid', 'accuracy_ok', 'imu_calibrated',
                           'synchronized', 'converged', 'config_verified',
                           'geofence_ok', 'msp_healthy',
-                          'controller_warm', 'rc_link'):
+                          'controller_warm', 'rc_link', 'imu_ready', 'estimator_ready',
+                          'navigation_ready', 'clock_aligned', 'accuracy_known'):
                 setattr(evidence, field, True)
             evidence.thrust_calibrated = self.thrust_calibrated
             evidence.thrust_mapping_ready = self.thrust_mapping_ready
@@ -550,6 +567,44 @@ class NodePipelineTest(unittest.TestCase):
         h.drop_telemetry = True
         h.run(0.35, commands=True)
         self.assertFalse(h.received['output_status'][-1].transport_healthy)
+
+    def test_gnss_output_separates_raw_age_and_accepted_age_with_local_delay(self):
+        h = self.h
+        h.navigation_age = .4
+        h.navigation_sample_age = h.navigation_receive_age = .1
+        h.subscribe('output_status', OutputStatus)
+        h.start('command_output_node', hardware=True, parameters={
+            'navigation_source': 'gnss', 'observation_delay': .2})
+        h.run(.8, commands=True)
+        h.auto = True
+        h.run(.15, commands=True)
+        # Cached Health fusion flags remain false; current command evidence and
+        # independent FC readiness govern both output and its MSP gate.
+        self.assertTrue(h.received['output_status'][-1].override_active,
+                        sorted(set(s.reason for s in h.received['output_status'][-30:])))
+        self.assertTrue(self.rc_frames())
+        for attribute, value, reason in [
+                ('navigation_receive_age', .31, 'navigation source receive stale/future'),
+                ('navigation_sample_age', .31, 'navigation source sample stale/future'),
+                ('navigation_age', .51, 'navigation stale/future'),
+                ('fc_imu_ready', False, 'IMU not ready')]:
+            with self.subTest(attribute=attribute):
+                original = getattr(h, attribute)
+                setattr(h, attribute, value)
+                h.run(.08, commands=True)
+                self.assertFalse(h.received['output_status'][-1].override_active)
+                self.assertTrue(any(reason in s.reason for s in h.received['output_status'][-30:]))
+                h.clear()
+                h.run(.05, commands=True)
+                self.assertFalse(self.rc_frames())
+                setattr(h, attribute, original)
+                h.run(.08, commands=True)
+                self.assertFalse(h.received['output_status'][-1].override_active)
+                h.auto = False
+                h.run(.12, commands=True)
+                h.auto = True
+                h.run(.12, commands=True)
+                self.assertTrue(h.received['output_status'][-1].override_active)
 
     def start_simulated_pipeline(self):
         h = self.h

@@ -4,7 +4,11 @@
 # Consumers must not replace acquisition/command times with receipt times.
 float64 now
 float64 imu_time
+# Last accepted navigation sampling time, including observation delay.
 float64 rtk_time
+# Original navigation sampling and receipt times; never refreshed by consumers.
+float64 navigation_sample_time
+float64 navigation_receive_time
 float64 rc_time
 float64 command_time
 float64 solve_seconds

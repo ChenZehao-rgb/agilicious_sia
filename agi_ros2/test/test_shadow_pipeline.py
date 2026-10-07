@@ -188,6 +188,7 @@ class ShadowHarness(Harness):
         s.clock_id = CLOCK_ID
         s.published_steady_time = s.imu_receive_time = s.rtk_receive_time = now
         s.rtk_stamp = self.stamp()
+        s.navigation_sample_stamp = s.rtk_stamp
         s.initialized = s.navigation_valid = s.clock_aligned = s.heading_valid = True
         s.navigation_source = 'gnss'
         s.fix_type = 3
@@ -396,6 +397,64 @@ class ShadowTests(unittest.TestCase):
         h.driver = h.sensors
         h.run(1.2)
         self.assertFalse(h.received['sensors/local_navigation'])
+
+    def test_hardware_control_uses_latest_fusion_and_independent_fc_health(self):
+        h = self.h
+        h.subscribe('computation_status', ComputationStatus)
+        h.subscribe('control_command', ControlCommand)
+        h.start_node('control_node', shadow_only=False, geofence_min=[-3.0]*3, geofence_max=[3.0]*3)
+        fc_ready = True
+        position = 2.0
+
+        def inputs():
+            now = time.monotonic()
+            state = FusedState()
+            state.header.stamp = h.stamp()
+            state.header.frame_id = 'odom'
+            state.position.z = position
+            state.orientation.w = 1.0
+            state.clock_id = CLOCK_ID
+            state.published_steady_time = state.imu_receive_time = state.rtk_receive_time = now
+            state.rtk_stamp = state.navigation_sample_stamp = h.stamp()
+            state.initialized = state.imu_ready = state.estimator_ready = state.navigation_ready = True
+            state.navigation_valid = state.clock_aligned = state.heading_valid = True
+            state.accuracy_known = state.navigation_accuracy_ok = True
+            state.navigation_source = 'gnss'
+            state.fix_type = 3
+            h.publisher('fused_state', FusedState).publish(state)
+            health = Health()
+            health.header.stamp = h.stamp()
+            health.fc_imu_ready = fc_ready
+            health.config_verified = health.thrust_mapping_ready = health.transport_healthy = True
+            # A cached health summary cannot veto the newer ready state/position.
+            health.imu_ready = health.estimator_ready = health.navigation_ready = health.geofence_ok = False
+            h.publisher('health', Health).publish(health)
+            authority = Authority()
+            authority.header.stamp = h.stamp()
+            authority.rc_link = True
+            h.publisher('authority', Authority).publish(authority)
+            output = OutputStatus()
+            output.header.stamp = h.stamp()
+            output.clock_id = CLOCK_ID
+            output.steady_time = now
+            output.transport_healthy = output.thrust_mapping_ready = True
+            h.publisher('output_status', OutputStatus).publish(output)
+
+        h.driver = inputs
+        h.run(2.0)
+        self.assertTrue(any(m.warm_cycles == 50 for m in h.received['computation_status']),
+                        [(m.warm_cycles, m.reason) for m in h.received['computation_status'][-10:]])
+        self.assertTrue(any(m.evidence.estimator_ready and m.evidence.navigation_ready and m.evidence.geofence_ok
+                            for m in h.received['control_command']))
+        fc_ready = False
+        h.run(.15)
+        self.assertFalse(h.received['computation_status'][-1].controller_success)
+        self.assertIn('IMU not ready', h.received['computation_status'][-1].reason)
+        fc_ready = True
+        position = 4.0
+        h.run(.15)
+        self.assertFalse(h.received['computation_status'][-1].controller_success)
+        self.assertIn('geofence rejected', h.received['computation_status'][-1].reason)
 
     def test_shadow_mpc_health_separation_and_edges(self):
         h = self.h

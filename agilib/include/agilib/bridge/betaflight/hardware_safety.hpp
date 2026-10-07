@@ -1,5 +1,6 @@
 #pragma once
 #include <cmath>
+#include <stdexcept>
 #include <string>
 
 namespace agi::hardware {
@@ -12,6 +13,8 @@ struct Evidence {
 	bool timing_checks{true};  // Local policy; never taken from a received command.
 	double now{NAN}, imu_time{NAN}, rtk_time{NAN}, rc_time{NAN};
 	double command_time{NAN}, solve_seconds{NAN};
+	// Original source sample/receipt times, distinct from accepted rtk_time.
+	double navigation_sample_time{NAN}, navigation_receive_time{NAN};
 	bool rtk_fixed{false}, heading_valid{false}, accuracy_ok{false};
 	bool imu_calibrated{false}, synchronized{false}, converged{false};
 	bool imu_ready{false}, estimator_ready{false}, navigation_ready{false};
@@ -24,10 +27,29 @@ struct Evidence {
 
 class SafetyGate {
 public:
-	explicit SafetyGate(NavigationPolicy policy = NavigationPolicy::Rtk) : _policy(policy) {}
-	static const char* inputFailure(const Evidence& e, NavigationPolicy policy = NavigationPolicy::Rtk) {
+	static constexpr double kNavigationSourceMaxAge = 0.300;
+	static constexpr double kStateMaxAge = 0.015;
+	static double acceptedNavigationMaxAge(double observation_delay) {
+		if (!std::isfinite(observation_delay) || observation_delay < 0 || observation_delay > 0.250) return NAN;
+		return kNavigationSourceMaxAge + observation_delay;
+	}
+	explicit SafetyGate(NavigationPolicy policy = NavigationPolicy::Rtk, double observation_delay = 0.0)
+	        : _policy(policy), _observation_delay(observation_delay) {
+		if (!std::isfinite(acceptedNavigationMaxAge(observation_delay)))
+			throw std::invalid_argument("Invalid navigation observation delay");
+	}
+	static const char* inputFailure(const Evidence& e, NavigationPolicy policy = NavigationPolicy::Rtk,
+	                                double observation_delay = 0.0) {
 		if (!fresh(e.now, e.imu_time, .010, e.timing_checks)) return "IMU stale/future";
-		if (!fresh(e.now, e.rtk_time, .300, e.timing_checks)) return "navigation stale/future";
+		const double accepted_max_age = acceptedNavigationMaxAge(observation_delay);
+		if (!std::isfinite(accepted_max_age)) return "navigation timing policy invalid";
+		if (policy == NavigationPolicy::Gnss || observation_delay > 0) {
+			if (!fresh(e.now, e.navigation_sample_time, kNavigationSourceMaxAge, e.timing_checks))
+				return "navigation source sample stale/future";
+			if (!fresh(e.now, e.navigation_receive_time, kNavigationSourceMaxAge, e.timing_checks))
+				return "navigation source receive stale/future";
+		}
+		if (!fresh(e.now, e.rtk_time, accepted_max_age, e.timing_checks)) return "navigation stale/future";
 		if (!fresh(e.now, e.rc_time, .100, e.timing_checks) || !e.rc_link) return "RC timeout/future/link unavailable";
 		if (!e.heading_valid) return "heading unavailable";
 		if (!e.accuracy_ok) return "navigation accuracy rejected";
@@ -47,14 +69,15 @@ public:
 		if (!e.msp_healthy) return "output transport unavailable";
 		return nullptr;
 	}
-	static bool inputsHealthy(const Evidence& e, NavigationPolicy policy = NavigationPolicy::Rtk) {
-		return inputFailure(e, policy) == nullptr;
+	static bool inputsHealthy(const Evidence& e, NavigationPolicy policy = NavigationPolicy::Rtk, double observation_delay = 0.0) {
+		return inputFailure(e, policy, observation_delay) == nullptr;
 	}
 	bool canEnterAuto(const Evidence& e) const {
-		return _low_seen && e.armed && e.auto_switch && !e.kill && e.controller_warm && inputsHealthy(e, _policy);
+		return _low_seen && e.armed && e.auto_switch && !e.kill && e.controller_warm &&
+		       inputsHealthy(e, _policy, _observation_delay);
 	}
 	bool update(const Evidence& e) {
-		const char* failure = inputFailure(e, _policy);
+		const char* failure = inputFailure(e, _policy, _observation_delay);
 		const bool command_ok = fresh(e.now, e.command_time, .025, e.timing_checks) && e.command_valid &&
 		                        std::isfinite(e.solve_seconds) && e.solve_seconds >= 0 &&
 		                        (!e.timing_checks || e.solve_seconds <= .008);
@@ -113,6 +136,7 @@ public:
 
 private:
 	const NavigationPolicy _policy;
+	const double _observation_delay;
 	Mode _mode{Mode::Boot};
 	bool _low_seen{false};
 	std::string _reason{"boot"};
