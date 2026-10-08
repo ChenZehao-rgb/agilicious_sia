@@ -282,6 +282,21 @@ hardware 模式拒绝启用此开关。旧独立控制器仍可用 `run.py --no-
    ./agi_ros2/scripts/launch.sh mode:=hardware shadow_only:=false
    ```
 
+   CM5 若出现控制线程被普通系统任务抢占、引发 `IMU stale/future`，可使用可选的实时调度入口：
+
+   ```bash
+   sudo -v  # 已配置免密 sudo 时可省略
+   python3 agi_ros2/scripts/launch_realtime.py mode:=hardware shadow_only:=false bench_fixed_gps:=true
+   ```
+
+   上述命令仅用于拆桨台架，`bench_fixed_gps` 使用合成静止导航。正常真实 GNSS 运行时省略此参数。
+   入口只给本次启动的四个 C++ 节点设置 `SCHED_FIFO`：MAVLink 主线程 30、融合 25、输出 20、控制 15，
+   四节点的辅助线程为 5；也会检查并设置后来创建的辅助线程。ROS 节点仍由当前用户运行，只有 `chrt` 使用 sudo。
+   10 ms IMU 时效、8 ms 控制计算预算及其他安全门限保持不变；不修改 CPU 调频或系统永久配置。
+   已有节点运行、权限不足、设置失败或节点退出时会拒绝启动或停止本次启动的节点，Ctrl-C 也会清理节点。
+   此入口要求明确传入 `mode:=hardware`，其余参数传给原来的 `launch.sh`。退出后进程调度设置随进程消失，
+   使用原 `launch.sh` 即可恢复普通调度。实时调度改善本机时延，不替代拆桨验收、负载测试及实飞前验证。
+
    这仅允许程序在证据满足时发送四通道 AETR，不会 ARM。静止、未解锁时先完成原点和 IMU 初始化；
    观察导航/估计/配置/推力/围栏就绪以及 50 个健康控制预热周期；人工起飞到目标高度，
    在实体 AUTO low 状态确认 AUTO_STANDBY 后切 high。空轨迹捕获当前三维位置和 yaw 悬停。
