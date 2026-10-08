@@ -12,6 +12,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/ComputationStatus.msg" "msg/MspState.msg"
   "msg/Heading.msg" "msg/FusedState.msg" "msg/SafetyEvidence.msg"
   "msg/ControlCommand.msg" "msg/OutputStatus.msg" "msg/MspEvent.msg"
+  "msg/ImuTiming.msg" "msg/OutputTiming.msg" "msg/MspWriteTiming.msg"
   DEPENDENCIES std_msgs geometry_msgs builtin_interfaces)
 rosidl_get_typesupport_target(typesupport ${PROJECT_NAME} rosidl_typesupport_cpp)
 set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
@@ -78,11 +79,13 @@ target_compile_options(mavlink_sensor_node PRIVATE -Wall -Wextra -Werror -fno-fi
 install(TARGETS mavlink_sensor_node DESTINATION lib/${PROJECT_NAME})
 install(FILES README.md MAVLINK_SENSORS.md SHADOW_EVALUATION.md
   RUNTIME_WALKTHROUGH.zh-CN.md HARDWARE_ADAPTATION_VALIDATION.zh-CN.md RATE_MPC_VALIDATION.zh-CN.md
+  PIPELINE_TIMING.zh-CN.md
   DESTINATION share/${PROJECT_NAME})
 install(DIRECTORY test/results/rate_mpc_20260922 DESTINATION share/${PROJECT_NAME}/test/results)
 install(DIRECTORY launch config DESTINATION share/${PROJECT_NAME})
 install(DIRECTORY ${AGILIB_ROOT}/params/ DESTINATION share/${PROJECT_NAME}/params)
-install(PROGRAMS scripts/sim_rc.py scripts/gnss_adapter.py scripts/msp_evidence.py scripts/summarize_shadow_bag.py DESTINATION lib/${PROJECT_NAME})
+install(PROGRAMS scripts/sim_rc.py scripts/gnss_adapter.py scripts/msp_evidence.py scripts/summarize_shadow_bag.py
+  scripts/analyze_pipeline_timing.py DESTINATION lib/${PROJECT_NAME})
 install(FILES scripts/shadow_support.py DESTINATION lib/${PROJECT_NAME})
 ament_export_dependencies(rosidl_default_runtime)
 ament_package()

@@ -806,7 +806,6 @@ void StateFusionNode::publishState(double imu_receive_time) {
 	out.acceleration.y = _state.a.y();
 	out.acceleration.z = _state.a.z();
 	out.clock_id = _clock_id;
-	out.published_steady_time = monotonicSeconds();
 	out.imu_receive_time = imu_receive_time;
 	out.rtk_receive_time = _rtk_receive_time;
 	out.navigation_sample_stamp = _rtk.header.stamp;
@@ -861,6 +860,7 @@ void StateFusionNode::publishState(double imu_receive_time) {
 			out.readiness_reason = "Navigation and estimator satisfy configured readiness checks";
 		}
 	}
+	out.published_steady_time = monotonicSeconds();
 	_fused_pub->publish(out);
 	if (!out.initialized) return;
 

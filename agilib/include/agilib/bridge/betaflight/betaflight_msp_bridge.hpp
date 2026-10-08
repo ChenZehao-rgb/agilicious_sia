@@ -14,12 +14,18 @@ struct MspFrame {
 	bool error{false};
 	std::vector<uint8_t> payload;
 };
-enum class MspWriteOutcome { Failed, Deferred, Complete, CompleteLate };
+enum class MspWriteOutcome { Failed, Deferred, Complete, CompleteLate, TransportLatched, GateRejected };
+const char* mspWriteOutcomeName(MspWriteOutcome outcome);
 struct MspWriteDiagnostic {
 	MspWriteOutcome outcome{MspWriteOutcome::Failed};
+	uint64_t attempt_id{0};
+	uint16_t code{0};
 	size_t bytes_written{0}, frame_bytes{0};
 	int system_error{0};
 	double elapsed_seconds{0}, deadline_overrun_seconds{0};
+	double started_steady_time{NAN}, finished_steady_time{NAN}, deadline_steady_time{NAN};
+	double thread_cpu_seconds{NAN}, write_syscall_seconds{0}, poll_seconds{0};
+	uint32_t write_calls{0}, eagain_count{0};
 };
 // Incremental, bounded MSP v1 / native v2 reply decoder. Encapsulated v2
 // ($M, code 255) is not supported and is never requested.
@@ -63,11 +69,15 @@ public:
 	double lastSendTime() const { return last_send_time_; }
 	double lastWriteSeconds() const { return last_write_seconds_; }
 	const MspWriteDiagnostic& lastWriteDiagnostic() const { return _last_write_diagnostic; }
+	// First fatal write is separate from the latest attempted operation.
+	const MspWriteDiagnostic& failureWriteDiagnostic() const { return _failure_write_diagnostic; }
 
 private:
 	void checkOwner() const;
 	bool writeFrame(uint16_t code, const std::vector<uint8_t>& payload, double deadline, bool read_only = false);
 	MspWriteDiagnostic _last_write_diagnostic;
+	MspWriteDiagnostic _failure_write_diagnostic;
+	uint64_t _write_attempt_count{0};
 	int fd_{-1};
 	const std::thread::id owner_;
 	MspDecoder decoder_;

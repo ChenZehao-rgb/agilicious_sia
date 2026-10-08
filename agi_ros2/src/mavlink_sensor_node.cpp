@@ -12,6 +12,7 @@
 #include <cstring>
 #include <deque>
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
+#include <fstream>
 #include <geometry_msgs/msg/quaternion_stamped.hpp>
 #include <geometry_msgs/msg/twist_stamped.hpp>
 #include <limits>
@@ -28,6 +29,7 @@
 
 #include "agi_ros2/msg/barometer.hpp"
 #include "agi_ros2/msg/heading.hpp"
+#include "agi_ros2/msg/imu_timing.hpp"
 #include "agi_ros2/msg/navigation.hpp"
 
 namespace {
@@ -38,6 +40,8 @@ constexpr double nan = std::numeric_limits<double>::quiet_NaN();
 class MavlinkSensorNode : public rclcpp::Node {
 public:
 	MavlinkSensorNode() : Node("mavlink_sensor") {
+		std::ifstream boot_file("/proc/sys/kernel/random/boot_id");
+		if (!std::getline(boot_file, _clock_id) || _clock_id.empty()) throw std::runtime_error("Cannot identify IMU clock host");
 		if (get_parameter("use_sim_time").as_bool()) throw std::invalid_argument("MAVLink hardware requires use_sim_time=false");
 		rcl_interfaces::msg::ParameterDescriptor desc;
 		desc.read_only = true;
@@ -85,6 +89,7 @@ public:
 		}
 		auto qos = rclcpp::SensorDataQoS();
 		_imu_pub = create_publisher<sensor_msgs::msg::Imu>("sensors/imu", qos);
+		_imu_timing_pub = create_publisher<agi_ros2::msg::ImuTiming>("sensors/imu/timing", 100);
 		_fix_pub = create_publisher<sensor_msgs::msg::NavSatFix>("sensors/gps/fix", qos);
 		_velocity_pub = create_publisher<geometry_msgs::msg::TwistStamped>("sensors/gps/velocity", qos);
 		_attitude_pub = create_publisher<geometry_msgs::msg::QuaternionStamped>("sensors/fc_attitude", qos);
@@ -392,6 +397,7 @@ private:
 		return value + std::round((now_remote - value) / wrap) * wrap;
 	}
 	void handle(const mavlink_message_t &m) {
+		const double received = steady();
 		if (m.msgid == MAVLINK_MSG_ID_TIMESYNC) {
 			timesync(m);
 			return;
@@ -464,7 +470,17 @@ private:
 				out.linear_acceleration_covariance[i * 4] = _acc_variance[i];
 				out.angular_velocity_covariance[i * 4] = _gyro_variance[i];
 			}
+			agi_ros2::msg::ImuTiming timing;
+			timing.header = out.header;
+			timing.clock_id = _clock_id;
+			timing.source_session = _source_session;
+			timing.fc_time_usec = v.time_usec;
+			timing.receive_steady_time = received;
+			timing.mapped_sample_age = now().seconds() - (out.header.stamp.sec + out.header.stamp.nanosec * 1e-9);
+			timing.published_steady_time = steady();
 			_imu_pub->publish(out);
+			timing.publish_return_steady_time = steady();
+			_imu_timing_pub->publish(timing);
 			++_counts[0];
 			_last_imu_receive = steady();
 		} else if (m.msgid == MAVLINK_MSG_ID_GPS_RAW_INT && _gps_hz) {
@@ -669,6 +685,7 @@ private:
 	rclcpp::Publisher<sensor_msgs::msg::FluidPressure>::SharedPtr _pressure_pub;
 	rclcpp::Publisher<sensor_msgs::msg::Temperature>::SharedPtr _temperature_pub;
 	std::string _source_session;
+	std::string _clock_id;
 	int _fd{-1}, _baud, _sys, _comp, _imu_hz, _gps_hz, _attitude_hz, _baro_hz;
 	std::array<std::pair<uint32_t, int>, 5> _rate_requests{};
 	double _baro_max_age_s, _baro_pressure_variance_pa2, _baro_temperature_variance_c2;
@@ -696,6 +713,7 @@ private:
 	uint64_t _bad_frames{0}, _wrong_source{0}, _duplicates{0}, _stale{0}, _rejected_sync{0}, _tx_errors{0};
 	std::array<unsigned, 6> _counts{};
 	rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr _imu_pub;
+	rclcpp::Publisher<agi_ros2::msg::ImuTiming>::SharedPtr _imu_timing_pub;
 	rclcpp::Publisher<sensor_msgs::msg::NavSatFix>::SharedPtr _fix_pub;
 	rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr _velocity_pub;
 	rclcpp::Publisher<geometry_msgs::msg::QuaternionStamped>::SharedPtr _attitude_pub;

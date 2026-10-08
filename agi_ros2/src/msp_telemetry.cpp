@@ -10,6 +10,7 @@ using agi::hardware::monotonicSeconds;
 MspTelemetry::MspTelemetry(rclcpp::Node& node) : _node(node) {
 	_config = node.create_publisher<std_msgs::msg::String>("msp/config", rclcpp::QoS(1).reliable().transient_local());
 	_events = node.create_publisher<msg::MspEvent>("msp/events", rclcpp::QoS(1000).reliable());
+	_write_timing = node.create_publisher<msg::MspWriteTiming>("msp/write_timing", 100);
 	rcl_interfaces::msg::ParameterDescriptor descriptor;
 	descriptor.read_only = true;
 	_timeout = node.declare_parameter<double>("msp.response_timeout_ms", 100.0, descriptor) / 1000;
@@ -19,6 +20,7 @@ MspTelemetry::MspTelemetry(rclcpp::Node& node) : _node(node) {
 	std::string boot_id;
 	if (!std::getline(boot_file, boot_id) || boot_id.empty()) throw std::runtime_error("Cannot identify MSP clock host");
 	_session_id = boot_id + ":" + std::to_string(monotonicSeconds());
+	_clock_id = boot_id;
 	const std::array<std::string, 6> names{"attitude", "rc", "status", "analog", "battery", "gps"};
 	const std::array<uint8_t, 6> codes{108, 105, 150, 110, 130, 106};
 	const std::array<double, 6> rates{10, 10, 5, 2, 2, 2};
@@ -149,8 +151,20 @@ void MspTelemetry::tick(agi::hardware::BetaflightMspBridge& bridge, double write
 		const double deadline = std::min(write_deadline, sent_at + write_budget);
 		const bool sent = p.setting.empty() ? bridge.sendRequest(static_cast<uint8_t>(p.code), deadline)
 		                                    : bridge.readOverrideSetting(p.setting, deadline);
+		recordWrite(bridge);
 		const auto& diagnostic = bridge.lastWriteDiagnostic();
 		if (!sent) {
+			if (diagnostic.outcome == agi::hardware::MspWriteOutcome::TransportLatched) {
+				const auto& failure = bridge.failureWriteDiagnostic();
+				throw std::runtime_error(
+				        "MSP request code " + std::to_string(p.code) +
+				        " blocked by latched transport; original write code=" + std::to_string(failure.code) +
+				        ", attempt=" + std::to_string(failure.attempt_id) +
+				        ", bytes=" + std::to_string(failure.bytes_written) + "/" + std::to_string(failure.frame_bytes) +
+				        ", errno=" + std::to_string(failure.system_error) +
+				        ", elapsed_s=" + std::to_string(failure.elapsed_seconds) +
+				        ", deadline_overrun_s=" + std::to_string(failure.deadline_overrun_seconds));
+			}
 			if (diagnostic.outcome == agi::hardware::MspWriteOutcome::Deferred) {
 				emit("write_deferred", {p.code, false, {}}, bridge.errors());
 				return;
@@ -174,5 +188,35 @@ void MspTelemetry::tick(agi::hardware::BetaflightMspBridge& bridge, double write
 		emit("transport_error", {request_code, false, {}}, bridge.errors());
 		RCLCPP_ERROR(_node.get_logger(), "%s; MSP transport latched unhealthy, restart required", error.what());
 	}
+}
+void MspTelemetry::recordWrite(const agi::hardware::BetaflightMspBridge& bridge, uint64_t command_sequence, double control_session_start) {
+	const auto& diagnostic = bridge.lastWriteDiagnostic();
+	if (diagnostic.attempt_id == 0 || diagnostic.attempt_id == _last_write_attempt) return;
+	_last_write_attempt = diagnostic.attempt_id;
+	msg::MspWriteTiming timing;
+	timing.header.stamp = _node.now();
+	timing.clock_id = _clock_id;
+	timing.session_id = _session_id;
+	timing.control_session_start = control_session_start;
+	timing.command_sequence = command_sequence;
+	timing.attempt_id = diagnostic.attempt_id;
+	timing.code = diagnostic.code;
+	timing.outcome = agi::hardware::mspWriteOutcomeName(diagnostic.outcome);
+	timing.frame_bytes = diagnostic.frame_bytes;
+	timing.bytes_written = diagnostic.bytes_written;
+	timing.system_error = diagnostic.system_error;
+	timing.started_steady_time = diagnostic.started_steady_time;
+	timing.finished_steady_time = diagnostic.finished_steady_time;
+	timing.deadline_steady_time = diagnostic.deadline_steady_time;
+	timing.elapsed_seconds = diagnostic.elapsed_seconds;
+	timing.deadline_overrun_seconds = diagnostic.deadline_overrun_seconds;
+	timing.write_syscall_seconds = diagnostic.write_syscall_seconds;
+	timing.poll_seconds = diagnostic.poll_seconds;
+	timing.thread_cpu_seconds = diagnostic.thread_cpu_seconds;
+	timing.write_calls = diagnostic.write_calls;
+	timing.eagain_count = diagnostic.eagain_count;
+	timing.failure_attempt_id = bridge.failureWriteDiagnostic().attempt_id;
+	timing.failure_code = bridge.failureWriteDiagnostic().code;
+	_write_timing->publish(timing);
 }
 }  // namespace agi_ros2

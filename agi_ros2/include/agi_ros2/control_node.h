@@ -1,6 +1,7 @@
 #ifndef AGI_ROS2_CONTROL_NODE_H_
 #define AGI_ROS2_CONTROL_NODE_H_
 
+#include <cmath>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -32,6 +33,9 @@ private:
 	void publishDecision(const agi::hardware::ControlDecision& decision, const agi::QuadState& state);
 
 	const std::string _clock_id;
+	const double _session_start;
+	double _state_receive_time = NAN;
+	double _cycle_start_time = NAN;
 	std::string _mode;
 	bool _shadow_only = false;
 	bool _simulation_time = false;

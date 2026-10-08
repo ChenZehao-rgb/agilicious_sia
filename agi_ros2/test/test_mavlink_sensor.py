@@ -21,7 +21,7 @@ from pymavlink.dialects.v20 import common as mav
 from sensor_msgs.msg import FluidPressure, Imu, NavSatFix, Temperature
 from geometry_msgs.msg import TwistStamped, QuaternionStamped
 from diagnostic_msgs.msg import DiagnosticArray
-from agi_ros2.msg import Barometer, Heading, Navigation
+from agi_ros2.msg import Barometer, Heading, ImuTiming, Navigation
 
 
 class Harness:
@@ -46,11 +46,12 @@ class Harness:
         self.commands = []
         self.ack_result_by_id = {}
         self.next_imu = self.next_gps = self.next_attitude = self.next_baro = 0
-        self.values = {k: [] for k in ('imu', 'fix', 'velocity', 'attitude', 'heading', 'navigation',
+        self.values = {k: [] for k in ('imu', 'imu_timing', 'fix', 'velocity', 'attitude', 'heading', 'navigation',
                                      'pressure', 'temperature', 'barometer', 'status')}
         self.node = rclpy.create_node('test_' + uuid.uuid4().hex)
         self.namespace = '/mavtest_' + uuid.uuid4().hex
         topics = [('imu', Imu, 'sensors/imu'), ('fix', NavSatFix, 'sensors/gps/fix'),
+                  ('imu_timing', ImuTiming, 'sensors/imu/timing'),
                   ('velocity', TwistStamped, 'sensors/gps/velocity'),
                   ('attitude', QuaternionStamped, 'sensors/fc_attitude'),
                   ('heading', Heading, 'sensors/fc_heading'),
@@ -158,6 +159,14 @@ class SensorTests(unittest.TestCase):
         h = self.h
         h.drive(2)
         self.assertGreater(len(h.values['imu']), 100)
+        samples = {(v.header.stamp.sec, v.header.stamp.nanosec) for v in h.values['imu']}
+        self.assertTrue(h.values['imu_timing'])
+        for timing in h.values['imu_timing']:
+            self.assertIn((timing.header.stamp.sec, timing.header.stamp.nanosec), samples)
+            self.assertEqual(timing.clock_id, Path('/proc/sys/kernel/random/boot_id').read_text().strip())
+            self.assertGreater(timing.fc_time_usec, 0)
+            self.assertLessEqual(timing.receive_steady_time, timing.published_steady_time)
+            self.assertLessEqual(timing.published_steady_time, timing.publish_return_steady_time)
         v = h.values['imu'][-1]
         self.assertEqual(v.header.frame_id, 'base_link')
         self.assertAlmostEqual(v.linear_acceleration.x, 1)

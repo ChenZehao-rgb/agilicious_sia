@@ -11,3 +11,11 @@ geometry_msgs/Vector3 body_rates
 bool permit_override
 uint8 mode
 agi_ros2/SafetyEvidence evidence
+# Observability only; these fields never refresh safety evidence.
+# All steady times use the clock_id host's CLOCK_MONOTONIC, also in SITL.
+float64 control_session_start
+builtin_interfaces/Time state_stamp
+float64 state_published_steady_time
+float64 state_received_steady_time
+float64 control_start_steady_time
+float64 published_steady_time

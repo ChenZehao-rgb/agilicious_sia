@@ -19,7 +19,7 @@ import uuid
 
 import rclpy
 from rclpy.qos import QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
-from agi_ros2.msg import Authority, ControlCommand, FusedState, Health, OutputStatus, Rtk
+from agi_ros2.msg import Authority, ControlCommand, FusedState, Health, MspWriteTiming, OutputStatus, OutputTiming, Rtk
 from sensor_msgs.msg import Imu
 from std_msgs.msg import String
 from nav_msgs.msg import Odometry
@@ -431,7 +431,7 @@ class NodePipelineTest(unittest.TestCase):
     def test_fusion_control_output_and_sensor_loss(self):
         h = self.h
         for topic, cls in [('fused_state', FusedState), ('control_command', ControlCommand),
-                           ('status', String), ('output_status', OutputStatus)]:
+                           ('status', String), ('output_status', OutputStatus), ('output_timing', OutputTiming)]:
             h.subscribe(topic, cls)
         for executable in ('state_fusion_node', 'control_node', 'command_output_node'):
             h.start(executable)
@@ -449,6 +449,22 @@ class NodePipelineTest(unittest.TestCase):
         self.assertTrue(active, [s.data for s in h.received['status'][-5:]])
         self.assertTrue(any(s.override_active for s in h.received['output_status']), [s.reason for s in h.received['output_status'][-10:]])
         self.assertTrue(all(math.isfinite(c.total_thrust) and c.total_thrust > 0 for c in active))
+        for command in active:
+            self.assertGreater(command.control_session_start, 0)
+            times = [command.state_published_steady_time, command.state_received_steady_time,
+                     command.control_start_steady_time, command.published_steady_time]
+            self.assertGreater(times[0], 0)
+            self.assertEqual(times, sorted(times))
+        command_by_id = {(c.control_session_start, c.sequence): c for c in h.received['control_command']}
+        outputs = [o for o in h.received['output_timing'] if o.override_active]
+        self.assertTrue(outputs)
+        for output in outputs:
+            command = command_by_id[(output.control_session_start, output.command_sequence)]
+            self.assertEqual(output.state_stamp, command.state_stamp)
+            self.assertEqual(output.command_published_steady_time, command.published_steady_time)
+            times = [output.command_published_steady_time, output.command_received_steady_time,
+                     output.output_check_steady_time, output.output_finished_steady_time]
+            self.assertEqual(times, sorted(times))
         h.imu_enabled = False
         h.run(0.15, sensors=True)
         self.assertFalse(h.received['control_command'][-1].permit_override)
@@ -533,6 +549,7 @@ class NodePipelineTest(unittest.TestCase):
     def test_msp_pseudo_uart_aetr_only_and_kill(self):
         h = self.h
         h.subscribe('output_status', OutputStatus)
+        h.subscribe('msp/write_timing', MspWriteTiming)
         h.start('command_output_node', hardware=True)
         h.run(0.8, commands=True)
         h.clear()
@@ -553,8 +570,17 @@ class NodePipelineTest(unittest.TestCase):
                 self.assertEqual(size, 0)
                 self.assertIn(code, (108,105,150,110,130,106))
         self.assertTrue(frames)
+        writes = [v for v in h.received['msp/write_timing'] if v.code == 200]
+        self.assertTrue(writes)
+        for write in writes:
+            self.assertEqual(write.clock_id, CLOCK_ID)
+            self.assertEqual(write.bytes_written, 14)
+            self.assertEqual(write.frame_bytes, 14)
+            self.assertEqual(write.outcome, 'complete')
+            self.assertGreater(write.command_sequence, 0)
+            self.assertLessEqual(write.started_steady_time, write.finished_steady_time)
         self.assertGreater(frames[-1][0], 1500)
-        self.assertLess(frames[-1][1], 1500)  # FLU -> hardware FRD.
+        self.assertGreater(frames[-1][1], 1500)  # Pitch uses the same axis as the returned gyro.
         self.assertGreater(frames[-1][3], 1500)
         h.kill = True
         h.run(0.08, commands=True)

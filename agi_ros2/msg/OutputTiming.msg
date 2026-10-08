@@ -1,0 +1,14 @@
+# One record per accepted control-command callback, including rejected output.
+std_msgs/Header header
+string clock_id
+float64 control_session_start
+uint64 command_sequence
+builtin_interfaces/Time state_stamp
+float64 command_published_steady_time
+float64 command_received_steady_time
+float64 output_check_steady_time
+float64 output_finished_steady_time
+float64 imu_receive_steady_time
+bool override_active
+uint64 fault_count
+string reason

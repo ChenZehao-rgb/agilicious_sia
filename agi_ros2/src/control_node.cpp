@@ -25,6 +25,7 @@ using agi::hardware::SafetyGate;
 ControlNode::ControlNode()
         : Node("flight_control"),
           _clock_id(readClockId()),
+          _session_start(monotonicSeconds()),
           _previous_clock(kUnknownTime),
           _authority_receive_time(kUnknownTime),
           _health_receive_time(kUnknownTime),
@@ -118,6 +119,7 @@ ControlNode::ControlNode()
 }
 
 void ControlNode::onState(msg::FusedState::ConstSharedPtr message) {
+	const double received = monotonicSeconds();
 	if (message->clock_id != _clock_id) {
 		return;
 	}
@@ -125,6 +127,7 @@ void ControlNode::onState(msg::FusedState::ConstSharedPtr message) {
 		_output_fault = true;
 	}
 	_state = *message;
+	_state_receive_time = received;
 }
 
 void ControlNode::onOutputStatus(msg::OutputStatus::ConstSharedPtr message) {
@@ -140,6 +143,7 @@ void ControlNode::onOutputStatus(msg::OutputStatus::ConstSharedPtr message) {
 
 void ControlNode::tick() {
 	const auto cycle_start = std::chrono::steady_clock::now();
+	_cycle_start_time = monotonicSeconds();
 	const auto timely = [this](double now, double sample, double limit) {
 		return SafetyGate::fresh(now, sample, limit, _timing_checks);
 	};
@@ -236,6 +240,12 @@ void ControlNode::publishDecision(const agi::hardware::ControlDecision& decision
 	command.permit_override = !_shadow_only && decision.permit_override;
 	command.mode = static_cast<uint8_t>(decision.mode);
 	command.evidence = encodeEvidence(decision.evidence);
+	command.control_session_start = _session_start;
+	command.state_stamp = _state.header.stamp;
+	command.state_published_steady_time = _state.published_steady_time;
+	command.state_received_steady_time = _state_receive_time;
+	command.control_start_steady_time = _cycle_start_time;
+	command.published_steady_time = monotonicSeconds();
 	_command_pub->publish(command);
 	msg::ComputationStatus computation;
 	computation.header = command.header;

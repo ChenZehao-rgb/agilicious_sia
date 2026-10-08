@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "agi_ros2/msg/msp_event.hpp"
+#include "agi_ros2/msg/msp_write_timing.hpp"
 #include "agilib/bridge/betaflight/betaflight_msp_bridge.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/string.hpp"
@@ -16,6 +17,7 @@ public:
 	explicit MspTelemetry(rclcpp::Node& node);
 	void tick(agi::hardware::BetaflightMspBridge& bridge, double write_deadline, double write_budget = .002);
 	void sentRc(const std::array<uint16_t, 4>& channels, uint64_t errors);
+	void recordWrite(const agi::hardware::BetaflightMspBridge& bridge, uint64_t command_sequence = 0, double control_session_start = 0);
 	bool healthy() const { return _healthy; }
 
 private:
@@ -34,6 +36,9 @@ private:
 	rclcpp::Node& _node;
 	std::vector<Poll> _polls;
 	rclcpp::Publisher<msg::MspEvent>::SharedPtr _events;
+	rclcpp::Publisher<msg::MspWriteTiming>::SharedPtr _write_timing;
+	uint64_t _last_write_attempt = 0;
+	std::string _clock_id;
 	rclcpp::Publisher<std_msgs::msg::String>::SharedPtr _config;
 	double _next_config{0};
 	double _timeout;

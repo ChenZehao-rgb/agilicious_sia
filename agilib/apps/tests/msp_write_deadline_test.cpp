@@ -87,10 +87,20 @@ void failedWriteTests(Injection failure, bool control) {
 	if (failure == Injection::IoError) require(bridge.lastWriteDiagnostic().system_error == EIO, "errno was lost");
 	// A failed write flushes the kernel queue; delivery of any prefix is unknown.
 	const auto diagnostic = bridge.lastWriteDiagnostic();
-	require(!bridge.sendRequest(150, agi::hardware::monotonicSeconds() + .05), "failed transport automatically recovered");
-	require(bridge.lastWriteDiagnostic().bytes_written == diagnostic.bytes_written &&
-	                bridge.lastWriteDiagnostic().system_error == diagnostic.system_error,
-	        "latched failure diagnostic was overwritten");
+	require(diagnostic.code == (control ? 200 : 150) && diagnostic.write_calls == 1, "wrong failing operation identity");
+	require(diagnostic.finished_steady_time >= diagnostic.started_steady_time && diagnostic.thread_cpu_seconds >= 0,
+	        "invalid write timing");
+	require(!bridge.sendRequest(105, agi::hardware::monotonicSeconds() + .05), "failed transport automatically recovered");
+	const auto& blocked = bridge.lastWriteDiagnostic();
+	require(blocked.outcome == agi::hardware::MspWriteOutcome::TransportLatched && blocked.code == 105 && blocked.bytes_written == 0 &&
+	                blocked.frame_bytes == 6 && blocked.system_error == 0 && blocked.write_calls == 0 && blocked.elapsed_seconds == 0 &&
+	                blocked.attempt_id > diagnostic.attempt_id,
+	        "blocked request reused previous write diagnostic");
+	const auto& cause = bridge.failureWriteDiagnostic();
+	require(cause.attempt_id == diagnostic.attempt_id && cause.code == diagnostic.code &&
+	                cause.bytes_written == diagnostic.bytes_written && cause.system_error == diagnostic.system_error,
+	        "original failure diagnostic was lost");
+	require(bridge.errors() == 1, "blocked request counted as a new serial failure");
 }
 }  // namespace
 

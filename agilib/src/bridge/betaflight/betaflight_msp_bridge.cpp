@@ -12,6 +12,11 @@
 
 namespace agi::hardware {
 namespace {
+double threadCpuSeconds() {
+	timespec value{};
+	if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &value)) return NAN;
+	return value.tv_sec + value.tv_nsec * 1e-9;
+}
 uint8_t crc8(uint8_t crc, uint8_t value) {
   crc ^= value;
   for (int i = 0; i < 8; ++i)
@@ -39,6 +44,23 @@ bool waitFd(int fd, short events, double deadline, int* system_error = nullptr) 
 	}
 	return false;
 }
+}
+const char* mspWriteOutcomeName(MspWriteOutcome outcome) {
+	switch (outcome) {
+		case MspWriteOutcome::Failed:
+			return "failed";
+		case MspWriteOutcome::Deferred:
+			return "deferred";
+		case MspWriteOutcome::Complete:
+			return "complete";
+		case MspWriteOutcome::CompleteLate:
+			return "complete_late";
+		case MspWriteOutcome::TransportLatched:
+			return "transport_latched";
+		case MspWriteOutcome::GateRejected:
+			return "gate_rejected";
+	}
+	return "unknown";
 }
 double monotonicSeconds() {
   timespec ts{};
@@ -136,9 +158,19 @@ void BetaflightMspBridge::checkOwner() const {
 }
 bool BetaflightMspBridge::writeFrame(uint16_t code, const std::vector<uint8_t>& payload, double deadline, bool read_only) {
 	checkOwner();
-	if (failed_) return false;
 	_last_write_diagnostic = {};
+	last_write_seconds_ = NAN;
 	const double start = monotonicSeconds();
+	_last_write_diagnostic.attempt_id = ++_write_attempt_count;
+	_last_write_diagnostic.code = code;
+	_last_write_diagnostic.frame_bytes = (code > 254 ? 9 : 6) + payload.size();
+	_last_write_diagnostic.started_steady_time = start;
+	_last_write_diagnostic.finished_steady_time = start;
+	_last_write_diagnostic.deadline_steady_time = deadline;
+	if (failed_) {
+		_last_write_diagnostic.outcome = MspWriteOutcome::TransportLatched;
+		return false;
+	}
 	if (!std::isfinite(deadline) || deadline - start > 0.1 || payload.size() > 254) return false;
 	if (deadline <= start) {
 		_last_write_diagnostic.deadline_overrun_seconds = start - deadline;
@@ -164,17 +196,26 @@ bool BetaflightMspBridge::writeFrame(uint16_t code, const std::vector<uint8_t>& 
 	for (size_t i = 3; i < bytes.size(); ++i) check = v2 ? crc8(check, bytes[i]) : check ^ bytes[i];
 	bytes.push_back(check);
 	_last_write_diagnostic.frame_bytes = bytes.size();
+	const double cpu_start = threadCpuSeconds();
 	size_t offset = 0;
 	while (offset < bytes.size() && monotonicSeconds() < deadline) {
+		const double syscall_start = monotonicSeconds();
 		const ssize_t n = write(fd_, bytes.data() + offset, bytes.size() - offset);
+		const int write_error = n < 0 ? errno : 0;
+		_last_write_diagnostic.write_syscall_seconds += monotonicSeconds() - syscall_start;
+		++_last_write_diagnostic.write_calls;
 		if (n > 0)
 			offset += static_cast<size_t>(n);
-		else if (n < 0 && errno == EINTR)
+		else if (n < 0 && write_error == EINTR)
 			continue;
-		else if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-			if (!waitFd(fd_, POLLOUT, deadline, &_last_write_diagnostic.system_error)) break;
+		else if (n < 0 && (write_error == EAGAIN || write_error == EWOULDBLOCK)) {
+			++_last_write_diagnostic.eagain_count;
+			const double poll_start = monotonicSeconds();
+			const bool writable = waitFd(fd_, POLLOUT, deadline, &_last_write_diagnostic.system_error);
+			_last_write_diagnostic.poll_seconds += monotonicSeconds() - poll_start;
+			if (!writable) break;
 		} else {
-			_last_write_diagnostic.system_error = n < 0 ? errno : EIO;
+			_last_write_diagnostic.system_error = n < 0 ? write_error : EIO;
 			break;
 		}
 	}
@@ -182,6 +223,8 @@ bool BetaflightMspBridge::writeFrame(uint16_t code, const std::vector<uint8_t>& 
 	last_write_seconds_ = finished - start;
 	_last_write_diagnostic.bytes_written = offset;
 	_last_write_diagnostic.elapsed_seconds = last_write_seconds_;
+	_last_write_diagnostic.finished_steady_time = finished;
+	_last_write_diagnostic.thread_cpu_seconds = threadCpuSeconds() - cpu_start;
 	_last_write_diagnostic.deadline_overrun_seconds = std::max(0.0, finished - deadline);
 	// No bytes means a read-only query can be deferred safely. A complete query
 	// must await its reply even if scheduling delayed the completion check.
@@ -193,6 +236,7 @@ bool BetaflightMspBridge::writeFrame(uint16_t code, const std::vector<uint8_t>& 
 	if (offset != bytes.size() || (!read_only && finished > deadline)) {
 		++errors_;
 		failed_ = true;  // Partial frames cannot be retried as another RC command.
+		_failure_write_diagnostic = _last_write_diagnostic;
 		tcflush(fd_, TCOFLUSH);
 		return false;
 	}
@@ -289,22 +333,26 @@ bool BetaflightMspBridge::sendBenchRc(
   }
   return writeFrame(200, payload, deadline);
 }
-bool BetaflightMspBridge::sendOverride(
-  const std::array<uint16_t, 4>& channels, const Evidence& evidence,
-  double deadline) {
-  checkOwner();
-  Evidence checked = evidence;
-  checked.now = monotonicSeconds(); // Never trust a producer's frozen clock.
-  checked.command_valid = checked.command_valid && std::all_of(
-    channels.begin(), channels.end(), [](uint16_t x) { return x >= 1000 && x <= 2000; });
-  if (!gate_.update(checked) || failed_) return false;
-  std::vector<uint8_t> payload;
-  for (uint16_t channel : channels) {
-    payload.push_back(channel & 255);
-    payload.push_back(channel >> 8);
-  }
-  if (!writeFrame(200, payload, deadline)) return false;
-  last_send_time_ = monotonicSeconds();
-  return true;
+bool BetaflightMspBridge::sendOverride(const std::array<uint16_t, 4>& channels, const Evidence& evidence, double deadline) {
+	checkOwner();
+	Evidence checked = evidence;
+	checked.now = monotonicSeconds();  // Never trust a producer's frozen clock.
+	checked.command_valid =
+	        checked.command_valid && std::all_of(channels.begin(), channels.end(), [](uint16_t x) { return x >= 1000 && x <= 2000; });
+	if (!gate_.update(checked)) {
+		_last_write_diagnostic = {};
+		_last_write_diagnostic.code = 200;
+		_last_write_diagnostic.outcome = MspWriteOutcome::GateRejected;
+		last_write_seconds_ = NAN;
+		return false;
+	}
+	std::vector<uint8_t> payload;
+	for (uint16_t channel : channels) {
+		payload.push_back(channel & 255);
+		payload.push_back(channel >> 8);
+	}
+	if (!writeFrame(200, payload, deadline)) return false;
+	last_send_time_ = monotonicSeconds();
+	return true;
 }
 }

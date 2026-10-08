@@ -155,6 +155,7 @@ CommandOutputNode::CommandOutputNode()
 		}
 	}
 	_status_pub = create_publisher<msg::OutputStatus>("output_status", 1);
+	_timing_pub = create_publisher<msg::OutputTiming>("output_timing", 100);
 	_command_sub = create_subscription<msg::ControlCommand>("control_command", 1,
 	                                                        std::bind(&CommandOutputNode::onCommand, this, std::placeholders::_1));
 	_authority_sub = create_subscription<msg::Authority>("authority", 1, [this](msg::Authority::ConstSharedPtr message) {
@@ -234,6 +235,7 @@ void CommandOutputNode::loadThrustTable(const std::string& filename) {
 }
 
 void CommandOutputNode::onCommand(msg::ControlCommand::ConstSharedPtr message) {
+	const double received = monotonicSeconds();
 	if (message->clock_id != evidenceClockId(_clock_id, _simulation_time) || !std::isfinite(message->evidence.now) ||
 	    (_timing_checks && _simulation_time && message->evidence.now > now().seconds() + 0.010) ||
 	    (std::isfinite(_previous_command_time) && message->evidence.now <= _previous_command_time)) {
@@ -241,8 +243,24 @@ void CommandOutputNode::onCommand(msg::ControlCommand::ConstSharedPtr message) {
 	}
 	_previous_command_time = message->evidence.now;
 	_command = *message;
-	_command_receive_time = monotonicSeconds();
+	_command_receive_time = received;
+	_output_check_time = NAN;
 	processOutput(true);
+	msg::OutputTiming timing;
+	timing.header.stamp = now();
+	timing.clock_id = _clock_id;
+	timing.control_session_start = _command.control_session_start;
+	timing.command_sequence = _command.sequence;
+	timing.state_stamp = _command.state_stamp;
+	timing.command_published_steady_time = _command.published_steady_time;
+	timing.command_received_steady_time = received;
+	timing.output_check_steady_time = _output_check_time;
+	timing.output_finished_steady_time = monotonicSeconds();
+	timing.imu_receive_steady_time = _simulation_time ? NAN : _command.evidence.imu_time;
+	timing.override_active = _override_active;
+	timing.fault_count = _fault_count;
+	timing.reason = _reason;
+	_timing_pub->publish(timing);
 }
 
 std::array<uint16_t, 4> CommandOutputNode::mapCommand() const {
@@ -258,9 +276,8 @@ std::array<uint16_t, 4> CommandOutputNode::mapCommand() const {
 	std::array<uint16_t, 4> channels = kIdleChannels;
 	const double sign = _mode == "hardware" ? -1.0 : 1.0;
 	channels[0] = _mapper->rateToPwm(_mapper->inverseActualRate(_command.body_rates.x * kRadiansToDegrees, 0), _bridge_params.deadband);
-	// Hardware is FRD. The SITL model already flips its sensor axes.
-	channels[1] = _mapper->rateToPwm(_mapper->inverseActualRate(sign * _command.body_rates.y * kRadiansToDegrees, 1),
-	                                 _bridge_params.deadband);
+	// Pitch follows the returned gyro axis. Betaflight reverses the hardware yaw RC channel internally.
+	channels[1] = _mapper->rateToPwm(_mapper->inverseActualRate(_command.body_rates.y * kRadiansToDegrees, 1), _bridge_params.deadband);
 	channels[3] = _mapper->rateToPwm(_mapper->inverseActualRate(sign * _command.body_rates.z * kRadiansToDegrees, 2),
 	                                 _bridge_params.yaw_deadband);
 	const double acceleration = _command.total_thrust / _mass;
@@ -303,6 +320,7 @@ void CommandOutputNode::processOutput(bool new_command) {
 	auto evidence = decodeEvidence(_command.evidence);
 	evidence.timing_checks = _timing_checks;
 	const double wall = monotonicSeconds();
+	_output_check_time = wall;
 	evidence.now = _simulation_time ? ros_time : wall;
 	const bool command_fresh =
 	        _command.clock_id == evidenceClockId(_clock_id, _simulation_time) && _command.header.frame_id == "base_link" &&
@@ -376,6 +394,7 @@ void CommandOutputNode::processOutput(bool new_command) {
 		// low.
 		const uint64_t previous_errors = _msp->errors();
 		const bool sent = _msp->sendOverride(channels, evidence, monotonicSeconds() + 0.002);
+		if (_telemetry) _telemetry->recordWrite(*_msp, _command.sequence, _command.control_session_start);
 		if (sent && _telemetry) _telemetry->sentRc(channels, _msp->errors());
 		if (active && !sent) {
 			reportFault("MSP output rejected or write failed");

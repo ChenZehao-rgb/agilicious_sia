@@ -12,6 +12,7 @@
 #include "agi_ros2/msg/control_command.hpp"
 #include "agi_ros2/msg/health.hpp"
 #include "agi_ros2/msg/output_status.hpp"
+#include "agi_ros2/msg/output_timing.hpp"
 #include "agi_ros2/msp_telemetry.h"
 #include "agilib/bridge/betaflight/betaflight_msp_bridge.hpp"
 #include "agilib/bridge/betaflight/betaflight_rc_mapper.hpp"
@@ -63,6 +64,7 @@ private:
 	msg::Authority _authority;
 	msg::Health _health;
 	double _command_receive_time;
+	double _output_check_time = NAN;
 	double _authority_receive_time;
 	double _health_receive_time;
 	double _previous_command_time;
@@ -80,6 +82,7 @@ private:
 	rclcpp::Subscription<msg::Authority>::SharedPtr _authority_sub;
 	rclcpp::Subscription<msg::Health>::SharedPtr _health_sub;
 	rclcpp::Publisher<msg::OutputStatus>::SharedPtr _status_pub;
+	rclcpp::Publisher<msg::OutputTiming>::SharedPtr _timing_pub;
 	rclcpp::TimerBase::SharedPtr _watchdog;
 };
 
