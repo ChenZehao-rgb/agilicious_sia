@@ -552,6 +552,41 @@ MSP 遥测写入按实际发送结果处理：未发送任何字节的预算超�
 检查无 `transport_error`/关键请求 `timeout`，以及 RC/STATUS、导航和控制时效是否持续满足门限。
 节点持续运行本身不代表通信或飞行就绪。
 
+## 室内拆桨台架：10 Hz 固定 GPS
+
+确认已拆桨后，可用显式开关运行完整 hardware 流程并测试 MSP 输出：
+
+```bash
+./agi_ros2/scripts/build.sh
+./agi_ros2/scripts/launch.sh mode:=hardware shadow_only:=false bench_fixed_gps:=true
+```
+
+`bench_fixed_gps` 默认关闭。开启后，MAVLink 节点每 100 ms 生成一次固定经纬度、固定 MSL 高度和
+零 XYZ 速度；默认经纬度/高度均为 0，GNSS adapter 建立原点后对应本地位置约 `(0, 0, 0)`。
+这里的 10 Hz 是主机定时调度目标，不是硬件实时保证；每条数据带新的主机生成时间，`device_time_usec=0`。
+可覆盖坐标，例如 `bench_gps_latitude:=31.0 bench_gps_longitude:=121.0 bench_gps_altitude_msl:=20.0`。
+坐标只是合成台架参考，不需要填入真实室内地理位置。
+
+真实 IMU、气压计、TIMESYNC、原点初始化、EKF、控制器、推力映射、录包和 MSP 输出链继续运行。
+原始 `GPS_RAW_INT`/`GLOBAL_POSITION_INT` 不参与台架定位，避免无 fix 事件覆盖合成输入。
+由于飞控的 `GLOBAL_POSITION_INT` 依赖 GPS 解算更新，台架模式额外请求至少 10 Hz 的真实 `ATTITUDE`，
+用其 yaw 转换为 ENU 航向；该消息没有磁罗盘健康标志，因此不能将这个模式的 `heading_valid` 解释为磁航向健康证明。
+无航向、航向超过 300 ms、真实 IMU 停流、时钟未同步/失效或发布器冲突，仍阻止有效接管；
+ARM/AUTO/KILL、配置回读、围栏、控制预热与命令时效检查保持原有逻辑。
+仅设置 `shadow_only:=false` 不会自动启动 MSP override，仍需全部门槛满足及实体 AUTO 低到高切换。
+
+合成输入的标称精度为水平 1 m、垂直 2 m、速度 0.1 m/s，仅用于维持原有协方差/精度检查接口，
+不是接收机测量结果。`/sensors/mavlink/status` 标出 `bench_fixed_gps=true`、
+`navigation_source=synthetic_stationary_bench` 和航向来源；导航、IMU 时序及气压计的 `source_session`
+带有 `bench_fixed_gps:` 前缀，并在飞控重启/时间同步重置时一起更新。
+`NavSatFix.altitude` 保持 NaN，避免把合成 MSL 高度冒充椭球高度。
+
+固定 GPS 不会跟随真实运动，不能用于室内起飞或位置闭环飞行。当前加权高度融合仍接收固定 GNSS 高度和
+零垂直速度，因而此模式也不用于验证真实升降响应。台架若发送起飞/轨迹命令，估计位置不会按参考移动，
+控制器可能持续增加输出；应在拆桨条件下观察 `/reference`、`/fused_state` 与 `/output_status`。
+软件回归使用两个 PTY 模拟串口验证 MSP 200 授权及撤销，不代表实机串口、电机或飞行验证。
+恢复正常 GNSS 只需移除 `bench_fixed_gps:=true` 并重启整套流程。
+
 ## 软件检查与实际验收边界
 
 ```bash
@@ -562,6 +597,7 @@ source install/agi_ros2/local_setup.bash
 /usr/bin/python3 agi_ros2/test/test_runtime_profile_nodes.py
 /usr/bin/python3 agi_ros2/test/test_shadow_support.py
 /usr/bin/python3 agi_ros2/test/test_hardware_pipeline.py
+/usr/bin/python3 agi_ros2/test/test_bench_fixed_gps_pipeline.py
 /usr/bin/python3 agi_ros2/test/test_shadow_pipeline.py
 /usr/bin/python3 agi_ros2/test/test_mavlink_sensor.py
 /usr/bin/python3 agi_ros2/test/test_msp_node.py

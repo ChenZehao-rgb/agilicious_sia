@@ -419,6 +419,10 @@ void CommandOutputNode::processOutput(bool new_command) {
 	_override_active = active;
 	if (active) {
 		_reason = "Authorized output";
+	} else if (_fault_count != _last_status_fault_count) {
+		// Publish the new fault before later conservative state summaries.
+		// A successful gate check can still be followed by a failed write.
+		_reason = _last_fault;
 	} else if (!rc_fresh) {
 		_reason = "RC timeout/link unavailable: SITL disarms; hardware releases override" + std::string(" ages=") +
 		          std::to_string(wall - _authority_receive_time) + "," +

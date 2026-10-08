@@ -181,6 +181,12 @@ mavlink:
   device: '/dev/ttyAMA2'
   baud: 921600
   gps_mode: gnss
+  # Explicit props-off bench injection; normal hardware always uses real GNSS.
+  # 10 Hz synthetic stationary navigation, real ATTITUDE yaw, IMU and pressure.
+  bench_fixed_gps: false
+  bench_gps_latitude: 0.0
+  bench_gps_longitude: 0.0
+  bench_gps_altitude_msl: 0.0
   # GPS_RAW_INT.alt is MSL in the paired FC firmware; bag diagnostics contain finite MSL.
   # This selects the height datum, not a fixed height or a barometer measurement.
   altitude_source: msl

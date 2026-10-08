@@ -36,6 +36,8 @@ class Harness:
         self.sync_delay = 0
         self.pending_sync = []
         self.streaming = True
+        self.streaming_gps = True
+        self.streaming_attitude = True
         self.streaming_baro = True
         self.fix_type = 3
         self.heading = 0
@@ -126,9 +128,9 @@ class Harness:
             if self.streaming:
                 if t >= self.next_imu:
                     self.imu(); self.next_imu = t + .002
-                if t >= self.next_gps:
+                if self.streaming_gps and t >= self.next_gps:
                     self.gps(); self.next_gps = t + .1
-                if t >= self.next_attitude:
+                if self.streaming_attitude and t >= self.next_attitude:
                     self.peer.attitude_send((self.remote() // 1000) & 0xffffffff, 0, 0, 0, 0, 0, 0)
                     self.next_attitude = t + .01
                 if self.streaming_baro and t >= self.next_baro:
@@ -212,6 +214,65 @@ class SensorTests(unittest.TestCase):
         self.assertGreater(len(h.values['velocity']), before)
         h.freeze_gps=True; h.drive(.2)
         before=len(h.values['fix']); h.drive(.3)
+        self.assertEqual(len(h.values['fix']), before)
+
+    def test_bench_fixed_gps_without_receiver_and_with_no_fix(self):
+        self.h.close()
+        self.h = Harness(bench_fixed_gps=True, altitude_source='msl', bench_gps_latitude=31.0,
+                         bench_gps_longitude=121.0, bench_gps_altitude_msl=20.0)
+        h = self.h
+        h.fix_type = 1
+        h.drive(1.8)
+        h.streaming_gps = False
+        start = len(h.values['navigation'])
+        h.drive(1.2)
+        samples = h.values['navigation'][start:]
+        self.assertGreaterEqual(len(samples), 10)
+        self.assertLessEqual(len(samples), 13)
+        for sample in samples:
+            self.assertEqual((sample.latitude, sample.longitude, sample.altitude), (31., 121., 20.))
+            self.assertEqual((sample.velocity.x, sample.velocity.y, sample.velocity.z), (0., 0., 0.))
+            self.assertEqual(sample.device_time_usec, 0)
+            self.assertEqual(sample.altitude_reference, 'msl')
+            self.assertEqual(sample.fix_type, 3)
+            self.assertTrue(sample.clock_aligned and sample.heading_valid)
+            self.assertAlmostEqual(sample.heading, math.pi / 2)
+            self.assertTrue(sample.source_session.startswith('bench_fixed_gps:'))
+        stamps = [s.header.stamp.sec + s.header.stamp.nanosec * 1e-9 for s in samples]
+        self.assertTrue(all(.09 < b - a < .15 for a, b in zip(stamps, stamps[1:])))
+        self.assertEqual(h.values['barometer'][-1].source_session, samples[-1].source_session)
+        self.assertEqual(h.status()['bench_fixed_gps'], 'true')
+        self.assertEqual(h.status()['navigation_source'], 'synthetic_stationary_bench')
+        self.assertFalse(h.status()['sensor_publisher_conflict'] == 'true')
+        self.assertGreater(len(h.values['imu']), 100)
+
+    def test_bench_fixed_gps_preserves_heading_sync_and_epoch_failures(self):
+        self.h.close()
+        self.h = Harness(bench_fixed_gps=True, altitude_source='msl')
+        h = self.h
+        h.streaming_gps = False
+        h.sync = False
+        h.drive(.8)
+        self.assertFalse(any(s.heading_valid for s in h.values['navigation']))
+        h.sync = True
+        h.drive(1.5)
+        self.assertTrue(h.values['navigation'][-1].heading_valid)
+        session = h.values['navigation'][-1].source_session
+        h.streaming_attitude = False
+        h.drive(.5)
+        self.assertFalse(h.values['navigation'][-1].heading_valid)
+        h.streaming_attitude = True
+        h.drive(.3)
+        self.assertTrue(h.values['navigation'][-1].heading_valid)
+        h.epoch = time.monotonic() - 1.
+        h.drive(1.5)
+        self.assertNotEqual(h.values['navigation'][-1].source_session, session)
+        self.assertEqual(h.values['barometer'][-1].source_session, h.values['navigation'][-1].source_session)
+        h.sync = False
+        h.drive(2.3)
+        self.assertFalse(h.values['navigation'][-1].clock_aligned)
+        before = len(h.values['fix'])
+        h.drive(.3)
         self.assertEqual(len(h.values['fix']), before)
 
     def test_sync_reboot_and_reconnect(self):

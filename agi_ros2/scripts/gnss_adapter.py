@@ -105,7 +105,8 @@ class GnssAdapter(Node):
             origin.session_id = self.session
             origin.latitude, origin.longitude, origin.altitude = self.builder.origin
             origin.altitude_reference = self.builder.basis
-            origin.heading_source = 'fc_magnetometer_assisted_yaw'
+            origin.heading_source = ('fc_attitude_yaw_bench' if msg.source_session.startswith('bench_fixed_gps:') else
+                                     'fc_magnetometer_assisted_yaw')
             origin.heading_correction_rad = self.values['heading_correction_rad']
             origin.fc_declination_applied = self.values['fc_declination_applied']
             self.origin_message = origin

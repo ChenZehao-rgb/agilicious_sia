@@ -101,6 +101,16 @@ void failedWriteTests(Injection failure, bool control) {
 	                cause.bytes_written == diagnostic.bytes_written && cause.system_error == diagnostic.system_error,
 	        "original failure diagnostic was lost");
 	require(bridge.errors() == 1, "blocked request counted as a new serial failure");
+	const auto blocked_attempt_id = blocked.attempt_id;
+	require(!bridge.readOverrideSetting("msp_override_timeout_ms", agi::hardware::monotonicSeconds() + .05),
+	        "latched native-v2 query was written");
+	const auto& blocked_setting = bridge.lastWriteDiagnostic();
+	require(blocked_setting.outcome == agi::hardware::MspWriteOutcome::TransportLatched && blocked_setting.code == 0x3010 &&
+	                blocked_setting.frame_bytes == 105 && blocked_setting.bytes_written == 0 && blocked_setting.write_calls == 0 &&
+	                blocked_setting.attempt_id > blocked_attempt_id,
+	        "latched native-v2 query reused control-frame diagnostic");
+	require(bridge.failureWriteDiagnostic().attempt_id == diagnostic.attempt_id && bridge.errors() == 1,
+	        "blocked setting replaced the first failure");
 }
 }  // namespace
 

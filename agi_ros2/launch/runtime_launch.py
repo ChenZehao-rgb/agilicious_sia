@@ -20,7 +20,8 @@ DEFAULTS = dict(mode='sitl', runtime_config='', controller='', trajectory='', th
                 mavlink_gps_rate_hz='', mavlink_attitude_rate_hz='', mavlink_baro_rate_hz='', altitude_source='',
                 heading_confirmed='', heading_correction_rad='', fc_declination_applied='',
                 aux_low='', aux_high='', params_dir='', pilot_config='', bridge_config='',
-                gps_mode='', imu_rate_hz='', gps_rate_hz='', attitude_rate_hz='', baro_rate_hz='')
+                gps_mode='', imu_rate_hz='', gps_rate_hz='', attitude_rate_hz='', baro_rate_hz='',
+                bench_fixed_gps='', bench_gps_latitude='', bench_gps_longitude='', bench_gps_altitude_msl='')
 
 
 def boolean(value):
@@ -201,6 +202,14 @@ def assemble(context, forced_shadow=False, sensor_only=False, msp_only=False):
     mavlink = dict(profile.get('mavlink', {}))
     navigation = dict(profile.get('navigation', {}))
     evidence = dict(profile.get('evidence', {}))
+    if arg('bench_fixed_gps'):
+        mavlink['bench_fixed_gps'] = boolean(arg('bench_fixed_gps'))
+    for name in ('bench_gps_latitude', 'bench_gps_longitude', 'bench_gps_altitude_msl'):
+        if arg(name):
+            mavlink[name] = float(arg(name))
+    bench_fixed_gps = boolean(mavlink.get('bench_fixed_gps', False))
+    if bench_fixed_gps and (mode != 'hardware' or msp_only):
+        raise ValueError('bench_fixed_gps requires hardware MAVLink sensors')
     for name in ('device', 'baud'):
         if arg(name):
             output[name] = int(arg(name)) if name == 'baud' else arg(name)
@@ -216,6 +225,12 @@ def assemble(context, forced_shadow=False, sensor_only=False, msp_only=False):
             mavlink[name] = int(arg('mavlink_' + name)) if name.endswith('_hz') else arg('mavlink_' + name)
     if arg('altitude_source'):
         mavlink['altitude_source'] = arg('altitude_source')
+    if bench_fixed_gps:
+        if mavlink.get('gps_mode') != 'gnss' or mavlink.get('altitude_source') != 'msl':
+            raise ValueError('bench_fixed_gps requires gps_mode=gnss and altitude_source=msl')
+        if mavlink.get('gps_rate_hz') != 10:
+            raise ValueError('bench_fixed_gps requires gps_rate_hz=10')
+        mavlink['attitude_rate_hz'] = max(10, mavlink.get('attitude_rate_hz', 0))
     for name in ('heading_confirmed', 'fc_declination_applied', 'heading_correction_rad'):
         if arg(name):
             navigation[name] = float(arg(name)) if name.endswith('_rad') else boolean(arg(name))
@@ -262,7 +277,9 @@ def assemble(context, forced_shadow=False, sensor_only=False, msp_only=False):
     actions = [LogInfo(msg=f'Runtime configuration: {path}; mode={mode}; navigation={navigation_source}; '
                            f'controller={controller}; controller_parameters={controller_parameters}; '
                            f'controller_model={controller_model}; '
-                           f'reference={trajectory or "hover"}; shadow={shadow}; diagnostic={diagnostic}')] + processes
+                           f'reference={trajectory or "hover"}; shadow={shadow}; diagnostic={diagnostic}; '
+                           f'bench_fixed_gps={bench_fixed_gps}' +
+                           (' (synthetic navigation, props-off bench only)' if bench_fixed_gps else ''))] + processes
     if boolean(flight.get('record_bag', True)):
         bag_output = resolve_data_path(path, flight.get('bag_output', ''))
         if not bag_output:

@@ -75,6 +75,24 @@ class RuntimeProfiles(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'MPC or GEO'):
             self.actions(controller='pid')
 
+    def test_bench_fixed_gps_only_changes_sensor_input(self):
+        values = dict(mode='hardware', device='/dev/null', mavlink_device='/dev/zero', shadow_only='false')
+        normal = self.actions(**values)
+        bench = self.actions(**values, bench_fixed_gps='true', bench_gps_latitude='31.0',
+                             bench_gps_longitude='121.0', bench_gps_altitude_msl='20.0')
+        self.assertEqual(set(normal), set(bench))
+        for name in normal:
+            if name != 'mavlink_sensor_node':
+                self.assertEqual(normal[name], bench[name])
+        self.assertFalse(normal['mavlink_sensor_node']['bench_fixed_gps'])
+        self.assertTrue(bench['mavlink_sensor_node']['bench_fixed_gps'])
+        self.assertEqual(bench['mavlink_sensor_node']['attitude_rate_hz'], 10)
+        self.assertEqual(bench['mavlink_sensor_node']['bench_gps_altitude_msl'], 20.)
+        for overrides in (dict(mode='sitl'), dict(mavlink_gps_rate_hz='0'),
+                          dict(mavlink_gps_mode='rtk'), dict(altitude_source='unknown')):
+            with self.subTest(overrides=overrides), self.assertRaisesRegex(ValueError, 'bench_fixed_gps'):
+                self.actions(**{**values, **overrides, 'bench_fixed_gps': 'true'})
+
     def test_profile_controller_wins_without_override(self):
         with tempfile.TemporaryDirectory() as directory:
             _, profile = runtime.load_profile('sitl')

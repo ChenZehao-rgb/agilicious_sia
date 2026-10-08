@@ -546,6 +546,31 @@ class NodePipelineTest(unittest.TestCase):
         h.run(0.1, commands=True)
         self.assertFalse(h.received['output_status'][-1].override_active)
 
+    def test_msp_mapping_failure_preserves_first_output_reason(self):
+        h = self.h
+        h.subscribe('output_status', OutputStatus)
+        h.subscribe('output_timing', OutputTiming)
+        h.start('command_output_node', hardware=True)
+        h.run(0.8, commands=True)
+        h.auto = True
+        h.run(0.15, commands=True)
+        self.assertTrue(h.received['output_status'][-1].override_active)
+        first_status = len(h.received['output_status'])
+        first_timing = len(h.received['output_timing'])
+        h.total_thrust = float('nan')
+        h.run(0.08, commands=True)
+        faults = [v for v in h.received['output_status'][first_status:] if v.fault_count]
+        self.assertTrue(faults)
+        self.assertEqual(faults[0].reason, 'Nonfinite or negative thrust/rates command')
+        self.assertEqual(faults[0].reason, faults[0].last_fault)
+        rejected = [v for v in h.received['output_timing'][first_timing:] if v.fault_count]
+        self.assertTrue(rejected)
+        self.assertEqual(rejected[0].reason, faults[0].last_fault)
+        self.assertFalse(rejected[0].override_active)
+        h.clear()
+        h.run(0.08, commands=True)
+        self.assertFalse(any(frame[4] == 200 for frame in h.serial_frames))
+
     def test_msp_pseudo_uart_aetr_only_and_kill(self):
         h = self.h
         h.subscribe('output_status', OutputStatus)

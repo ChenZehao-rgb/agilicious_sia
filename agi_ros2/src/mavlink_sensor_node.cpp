@@ -67,6 +67,21 @@ public:
 		_gps_hz = rate("gps_rate_hz", 10, 50);
 		_attitude_hz = rate("attitude_rate_hz", 0, 100);
 		_baro_hz = rate("baro_rate_hz", 40, 500);
+		_bench_fixed_gps = declare_parameter<bool>("bench_fixed_gps", false, desc);
+		_bench_gps_latitude = declare_parameter<double>("bench_gps_latitude", 0., desc);
+		_bench_gps_longitude = declare_parameter<double>("bench_gps_longitude", 0., desc);
+		_bench_gps_altitude_msl = declare_parameter<double>("bench_gps_altitude_msl", 0., desc);
+		if (_bench_fixed_gps) {
+			if (_gps_mode != "gnss" || _altitude_source != "msl" || _gps_hz != 10)
+				throw std::invalid_argument("bench_fixed_gps requires gnss, msl and gps_rate_hz=10");
+			if (!std::isfinite(_bench_gps_latitude) || std::abs(_bench_gps_latitude) > 90 ||
+			    !std::isfinite(_bench_gps_longitude) || std::abs(_bench_gps_longitude) > 180 ||
+			    !std::isfinite(_bench_gps_altitude_msl))
+				throw std::invalid_argument("Invalid fixed bench GPS coordinates");
+			_attitude_hz = std::max(10, _attitude_hz);
+			RCLCPP_WARN(get_logger(),
+			            "Props-off bench: synthetic 10 Hz GPS/zero velocity; real ATTITUDE yaw has no mag-health flag");
+		}
 		_rate_requests = {{{MAVLINK_MSG_ID_HIGHRES_IMU, _imu_hz},
 		                   {MAVLINK_MSG_ID_GPS_RAW_INT, _gps_hz},
 		                   {MAVLINK_MSG_ID_GLOBAL_POSITION_INT, _gps_hz},
@@ -152,7 +167,9 @@ private:
 		_baro_pub->publish(out);
 	}
 	void resetEpoch(const std::string& reason) {
-		_source_session = std::to_string(steady());
+		_source_session = (_bench_fixed_gps ? "bench_fixed_gps:" : "") + std::to_string(steady());
+		_next_bench_gps = 0;
+		_last_imu_receive = 0;
 		_sync_count = 0;
 		_offset = nan;
 		_last_remote_ns = 0;
@@ -314,7 +331,10 @@ private:
 		}
 		configureRates(t);
 		flush();
-		pairGps();
+		if (_bench_fixed_gps)
+			publishBenchGps(t);
+		else
+			pairGps();
 	}
 	void configureRates(double t) {
 		if (_command_index >= _rate_requests.size()) return;
@@ -483,7 +503,7 @@ private:
 			_imu_timing_pub->publish(timing);
 			++_counts[0];
 			_last_imu_receive = steady();
-		} else if (m.msgid == MAVLINK_MSG_ID_GPS_RAW_INT && _gps_hz) {
+		} else if (m.msgid == MAVLINK_MSG_ID_GPS_RAW_INT && _gps_hz && !_bench_fixed_gps) {
 			mavlink_gps_raw_int_t v{};
 			mavlink_msg_gps_raw_int_decode(&m, &v);
 			sensor_msgs::msg::NavSatFix out;
@@ -514,7 +534,7 @@ private:
 			++_counts[1];
 			_fixes.push_back({v, steady()});
 			if (_fixes.size() > 16) _fixes.pop_front();
-		} else if (m.msgid == MAVLINK_MSG_ID_GLOBAL_POSITION_INT && _gps_hz) {
+		} else if (m.msgid == MAVLINK_MSG_ID_GLOBAL_POSITION_INT && _gps_hz && !_bench_fixed_gps) {
 			mavlink_global_position_int_t v{};
 			mavlink_msg_global_position_int_decode(&m, &v);
 			agi_ros2::msg::Heading heading;
@@ -550,7 +570,67 @@ private:
 			out.quaternion.z = k * (w - z);
 			_attitude_pub->publish(out);
 			++_counts[3];
+			if (_bench_fixed_gps) {
+				agi_ros2::msg::Heading heading;
+				heading.header = out.header;
+				heading.heading = std::remainder(pi / 2 - v.yaw, 2 * pi);
+				heading.valid = true;  // Bench yaw only; ATTITUDE does not carry magnetometer health.
+				_heading_pub->publish(heading);
+				_bench_heading = heading.heading;
+				_bench_heading_stamp = heading.header.stamp;
+				_heading_valid = true;
+				_last_heading_receive = received;
+				++_counts[4];
+			}
 		}
+	}
+	void publishBenchGps(double t) {
+		if (t < _next_bench_gps || _fd < 0 || _publisher_conflict || _sync_count < 5 || t - _last_sync >= 2 ||
+		    t - _last_imu_receive >= .1)
+			return;
+		_next_bench_gps = t + .1;
+		agi_ros2::msg::Navigation navigation;
+		// New host-generated observations, never retimestamped receiver fixes.
+		navigation.header.stamp = now();
+		navigation.header.frame_id = "gps_enu";
+		navigation.source_session = _source_session;
+		navigation.device_time_usec = 0;  // Synthetic GPS has no FC acquisition timestamp.
+		navigation.fix_type = 3;
+		navigation.latitude = _bench_gps_latitude;
+		navigation.longitude = _bench_gps_longitude;
+		navigation.altitude = _bench_gps_altitude_msl;
+		navigation.altitude_reference = "msl";
+		const double heading_age = now().seconds() - rclcpp::Time(_bench_heading_stamp).seconds();
+		navigation.heading_valid = _heading_valid && t - _last_heading_receive < .3 && heading_age >= -.01 && heading_age < .3;
+		navigation.heading = navigation.heading_valid ? _bench_heading : nan;
+		// Nominal bench noise, explicitly synthetic; these are not measured GNSS accuracies.
+		navigation.horizontal_accuracy = 1.;
+		navigation.vertical_accuracy = 2.;
+		navigation.velocity_accuracy = .1;
+		navigation.clock_aligned = true;
+		_navigation_pub->publish(navigation);
+		sensor_msgs::msg::NavSatFix fix;
+		fix.header = navigation.header;
+		fix.header.frame_id = "gps_link";
+		fix.status.status = sensor_msgs::msg::NavSatStatus::STATUS_FIX;
+		fix.status.service = sensor_msgs::msg::NavSatStatus::SERVICE_GPS;
+		fix.latitude = navigation.latitude;
+		fix.longitude = navigation.longitude;
+		fix.altitude = nan;  // NavSatFix requires ellipsoid altitude; bench height is MSL.
+		fix.position_covariance[0] = fix.position_covariance[4] = 1.;
+		fix.position_covariance[8] = 4.;
+		fix.position_covariance_type = sensor_msgs::msg::NavSatFix::COVARIANCE_TYPE_APPROXIMATED;
+		_fix_pub->publish(fix);
+		geometry_msgs::msg::TwistStamped velocity;
+		velocity.header = navigation.header;
+		_velocity_pub->publish(velocity);
+		++_counts[1];
+		++_counts[2];
+		_gps_fix_type = 3;
+		_last_fix_receive = t;
+		_velocity_valid = _accuracy_valid = true;
+		_ellipsoid_valid = false;
+		_msl = _bench_gps_altitude_msl;
 	}
 	void pairGps() {
 		double t = steady();
@@ -626,6 +706,8 @@ private:
 		        !synchronized || _commands_failed || (_imu_hz && steady() - _last_imu_receive > .1) || (_baro_hz && !_baro_valid);
 		s.level = _fd < 0 || _publisher_conflict ? s.ERROR : degraded ? s.WARN : s.OK;
 		s.message = _fd >= 0 && synchronized ? "Receiving; timestamps are FC update times, not hardware PPS" : _reason;
+		if (_bench_fixed_gps && _fd >= 0 && synchronized)
+			s.message = "Props-off bench: synthetic 10 Hz GPS, host generation timestamps, real ATTITUDE yaw";
 		auto add = [&](const std::string &key, const std::string &value) {
 			diagnostic_msgs::msg::KeyValue kv;
 			kv.key = key;
@@ -650,8 +732,12 @@ private:
 		add("baro_stale", std::to_string(_baro_stale));
 		add("baro_duplicates", std::to_string(_baro_duplicates));
 		add("baro_invalid", std::to_string(_baro_invalid));
-		add("heading_source", "GLOBAL_POSITION_INT.hdg / FC attitude yaw");
-		add("heading_valid", _heading_valid && steady() - _last_heading_receive < .5 ? "true" : "false");
+		add("heading_source",
+		    _bench_fixed_gps ? "ATTITUDE.yaw (bench; no magnetometer health)" : "GLOBAL_POSITION_INT.hdg / FC attitude yaw");
+		add("bench_fixed_gps", _bench_fixed_gps ? "true" : "false");
+		add("navigation_source", _bench_fixed_gps ? "synthetic_stationary_bench" : "receiver_gnss");
+		const double heading_max_age = _bench_fixed_gps ? .3 : .5;
+		add("heading_valid", _heading_valid && steady() - _last_heading_receive < heading_max_age ? "true" : "false");
 		add("gps_mode", _gps_mode);
 		add("gps_fix_type", std::to_string(_gps_fix_type));
 		bool gps_fresh = steady() - _last_fix_receive < .5;
@@ -678,6 +764,10 @@ private:
 		_status_pub->publish(out);
 	}
 	bool _heading_valid{false};
+	bool _bench_fixed_gps{false};
+	double _bench_gps_latitude, _bench_gps_longitude, _bench_gps_altitude_msl;
+	double _next_bench_gps{0}, _bench_heading{nan};
+	builtin_interfaces::msg::Time _bench_heading_stamp;
 	double _last_heading_receive{0};
 	rclcpp::Publisher<agi_ros2::msg::Heading>::SharedPtr _heading_pub;
 	rclcpp::Publisher<agi_ros2::msg::Navigation>::SharedPtr _navigation_pub;
