@@ -33,16 +33,16 @@ pilot:
         MPC:
           # Ideal rate/thrust model: no motor or inner-loop response prediction.
           timing: true
-          Q_pos_x: 200
-          Q_pos_y: 200
-          Q_pos_z: 500
-          Q_att_x: 5
-          Q_att_y: 5
-          Q_att_z: 200
-          Q_vel: 1.0
+          Q_pos_x: 50
+          Q_pos_y: 50
+          Q_pos_z: 100
+          Q_att_x: 10
+          Q_att_y: 10
+          Q_att_z: 50
+          Q_vel: 5.0
           # Conservative initial weights from generic plant simulation; not verified on real hardware.
-          R_collective_thrust: 0.1
-          R_body_rates: [50.0, 50.0, 50.0]
+          R_collective_thrust: 1.0
+          R_body_rates: [100.0, 100.0, 100.0]
           exp_decay: 1.0
         # Illustrative conservative starting gains, not validated on the real vehicle.
         # Tune and verify in shadow and on the CM5 before allowing hardware output.
@@ -67,7 +67,7 @@ pilot:
   quadrotor:
     # Operator-reported takeoff mass including battery/payload, 2026-09-24: 734 g.
     mass: 0.734
-    omega_max: [5.0, 5.0, 3.0]
+    omega_max: [1.0, 1.0, 0.5]
     thrust_min: 0.0
     thrust_max: 3.599
   dt_min: 0.01
