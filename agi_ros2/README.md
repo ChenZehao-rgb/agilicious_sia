@@ -461,7 +461,7 @@ RC 输入到全机总推力关系。以克力记录时用 `N = gf × 0.00980665`
   通过 `evidence.arm_aux/auto_aux/kill_aux` 可选其他三条 AUX。默认范围 `[1700,2100)`，
   每模式单个直接 OR 范围，不接受链接/AND 模式。
 - ACTUAL rates/deadband/min_check 与配置一致；AUTO 时拒绝 ANGLE/HORIZON 等会改变控制解释的模式。
-- RC/STATUS 新鲜、实体 AUX 与 FC ARM/AUTO/FAILSAFE 模式一致、FC IMU 状态可用。
+- 已确认有效的实体 AUX 与 FC ARM/AUTO/FAILSAFE 模式，FC IMU 状态可用。
 
 MSP RC/STATUS_EX 默认 25 Hz、电池 2 Hz、配置 1 Hz。`MSP_RC` 的 AETR 可能已被 Override，
 程序只把确认不在覆盖 mask 内的 AUX 当作实体开关证据。`config_verified` 表示回读匹配，
@@ -469,10 +469,17 @@ MSP RC/STATUS_EX 默认 25 Hz、电池 2 Hz、配置 1 Hz。`MSP_RC` 的 AETR �
 
 MSP 查询在同一串口上最多等待一个响应，收到响应后再发送下一条。已到期的查询按下一更新期限排序，
 使 RC/STATUS 的高频读取优先于启动时积压的配置读取；错过的周期直接跳过，不集中补发。
-实际频率取决于飞控响应速度；无响应的查询仍按原有 100 ms 默认期限超时，同消息码停止查询，
-迟到回复不作为新请求的证据。关键查询失败仍要求重启会话。
+实际频率取决于飞控响应速度。硬件模式值在同一会话内保持，不因 RC/STATUS 读数变旧而退出 AUTO。
+RC/STATUS 查询超过 100 ms 记为非致命 `mode_timeout` 并继续轮询；超时后无法确定回复属于哪次请求，
+后续模式回复标为 `mode_rx_unmatched`，请求时间和延迟保持未知，按串口接收顺序解码 AUX/状态。
+其他查询的超时仍停止同消息码查询，关键配置/电池查询失败及串口传输故障仍要求重启会话。
+`msp_evidence` 订阅独立的 `msp/rc`、`msp/status`、`msp/battery` 和低流量 `msp/evidence_events`；
+模式主题使用深度 10 的可靠小队列，完整 `msp/events` 继续记录。`Authority.receiver_valid` 区分尚未确认与已确认模式，`session_id` 改变清除旧授权。
+硬件在明确 AUTO 低时结束当前 AUTO 并返回手动预热；KILL、ARM 低或明确 RX failsafe 停止求解与接管，
+恢复后需要 AUTO 低→高重新授权。启动未确认模式或 AUTO 已高不自动接管；ARM 高且 AUTO 低时预热至少 50 周期。
+IMU/导航、控制指令、健康节点存活及写入期限继续执行原保护。SITL 保留原 RC 实时输入检查。
 只读 monitor 的单次写入预算为 10 ms，为主机启动调度留出余量；bench 和控制输出路径的
-2 ms 写入预算及 RC 截止时间保持原策略。写入预算限制内核接受数据的等待，不保证线上发送完成。
+2 ms 写入预算及控制指令期限保持原策略。写入预算限制内核接受数据的等待，不保证线上发送完成。
 
 ## 融合、时效与故障定位
 
@@ -487,7 +494,7 @@ GPS 配对观测经 GNSS adapter 转成固定本地 `odom` ENU。ENU yaw 从东�
 才输出有效 MAVLink 航向，否则 `hdg=UINT16_MAX`。固件没有持久化的“标定质量合格”布尔证据；
 “校准流程已结束”也不代表标定成功。这些运行检查不能自动证明磁标定质量，COG 也不能替代静止机头航向。
 
-GNSS 融合在新鲜、未 ARM 的实体授权下采集静止 IMU，默认至少 3 秒/1000 样本；
+GNSS 融合在已确认、未 ARM 的实体授权下采集静止 IMU，默认至少 3 秒/1000 样本；
 检查陀螺偏置/方差、加速度方差和重力模长。初始化只确定初始倾角、gyro bias 与导航状态；
 不会声称完成六面加速度标定。随后 `EkfImu` 传播 p/v/q/bias，用原始测量时间进行 GPS/航向更新，
 检验导航创新、连续接受更新数和后验协方差。IMU 实时预测缓存与后验历史分开，查询不反复重放全部历史。
@@ -530,7 +537,7 @@ TIMESYNC 是近似时钟对齐，仍包括 FC 滤波和 GPS 串口/解算延迟�
 融合 readiness、控制节点、输出和 MSP 共同 SafetyGate 使用同一 profile 的本地只读排序窗口；
 窗口必须有限且在 0–250 ms 内，消息不能修改预算。`FusedState.navigation_sample_stamp` 是最新原始采样时间，
 `rtk_stamp` 是最后已接受观测时间，`rtk_receive_time` 是最新原始接收时间；转发到 `SafetyEvidence` 时仍保留这些时间。
-RC 100 ms、计算预算 8 ms 和 50 个连续健康预热周期保持不变。
+SITL RC 100 ms、计算预算 8 ms 和 50 个连续健康预热周期保持不变；硬件 RC 模式使用同会话保持策略。
 输出还检查 25 ms 命令年龄；SITL 有独立 250 ms 墙钟停流保护。消息证据时间不会在转发/看门狗时刷新。
 硬件 health 只缓存最新融合样本，按 50 Hz 定时汇总，MSP 错误事件立即汇总；诊断融合缓存期限为 25 ms。
 控制节点使用当前融合状态检查估计器、导航和围栏，health 提供 FC 配置、接收机、传输、电池和独立的

@@ -29,6 +29,8 @@ private:
 		std::string setting;
 		builtin_interfaces::msg::Time stamp;
 		bool critical{false};
+		// After a missed mode reply, MSP cannot identify later query/reply pairs.
+		bool ambiguous{false};
 	};
 	void emit(const std::string& event, const agi::hardware::MspFrame& frame, uint64_t errors, double latency = NAN,
 	          const Poll* request = nullptr);
@@ -36,6 +38,7 @@ private:
 	rclcpp::Node& _node;
 	std::vector<Poll> _polls;
 	rclcpp::Publisher<msg::MspEvent>::SharedPtr _events;
+	rclcpp::Publisher<msg::MspEvent>::SharedPtr _evidence_events;
 	rclcpp::Publisher<msg::MspWriteTiming>::SharedPtr _write_timing;
 	uint64_t _last_write_attempt = 0;
 	std::string _clock_id;

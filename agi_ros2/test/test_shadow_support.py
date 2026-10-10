@@ -125,7 +125,7 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(d.snapshot(10.04)['battery_voltage'], 16.)
         for _ in range(10):
             self.assertEqual(d.snapshot(10.04)['rc_stamp'], 10.)
-        self.assertTrue(d.snapshot(10.11)['kill'])
+        self.assertFalse(d.snapshot(10.11)['kill'])
         self.assertTrue(math.isnan(d.snapshot(11.1)['battery_voltage']))
 
     def test_bad_versions_ranges_and_mask(self):
@@ -238,7 +238,7 @@ class EvidenceTests(unittest.TestCase):
         waiting = d.snapshot(10.03)
         self.assertFalse(waiting['kill'])
         self.assertFalse(waiting['auto_switch'])
-        self.assertEqual(waiting['rc_stamp'], 10.)
+        self.assertEqual(waiting['rc_stamp'], 10.02)
         d.accept(150, status_frame(auto=True), 10.04, 'one')
         self.assertTrue(d.snapshot(10.05)['auto_switch'])
         self.assertFalse(d.snapshot(10.05)['kill'])
@@ -252,17 +252,66 @@ class EvidenceTests(unittest.TestCase):
         d = ready_decoder()
         d.accept(105, high, 10.02, 'one')
         self.assertTrue(d.snapshot(10.03)['kill'])
-        # A coherent old low also cannot be stretched past its original age.
+        # A confirmed low persists regardless of age, without refreshing its timestamp.
         d = ready_decoder()
         d.snapshot(10.01)
         d.accept(105, high, 10.02, 'one')
         d.accept(150, status_frame(), 10.08, 'one')
-        self.assertTrue(d.snapshot(10.11)['kill'])
+        self.assertFalse(d.snapshot(10.11)['kill'])
         # KILL arriving during the pair wait is never deferred.
         d = ready_decoder()
         d.snapshot(10.01)
         d.accept(105, struct.pack('<7H', 1500, 1500, 1000, 1500, 1800, 1800, 1800), 10.02, 'one')
         self.assertTrue(d.snapshot(10.03)['kill'])
+
+    def test_latched_modes_age_gaps_and_session_reset(self):
+        d = ready_decoder()
+        d.snapshot(10.01)
+        high = struct.pack('<7H', 1500, 1500, 1000, 1500, 1800, 1800, 1000)
+        d.accept(105, high, 10.02, 'one')
+        d.accept(150, status_frame(auto=True), 10.04, 'one')
+        self.assertTrue(d.snapshot(10.05)['auto_switch'])
+        for gap in (.15, .5, 5.):
+            t = 10.05 + gap
+            # Only mode input is interrupted: other configuration remains healthy.
+            for code, payload in config_frames().items():
+                d.accept(code, payload, t, 'one')
+            for name, (value, _) in list(d.settings.items()):
+                d.accept(0x3010, f'{name} = {value}'.encode(), t, 'one', name)
+            d.accept(105, b'', t, 'one', event='mode_timeout')
+            result = d.snapshot(t)
+            self.assertTrue(result['receiver_valid'] and result['auto_switch'] and result['armed'], result)
+            self.assertFalse(result['kill'])
+            self.assertTrue(result['transport_healthy'])
+            self.assertEqual((result['rc_stamp'], result['status_stamp']), (10.02, 10.04))
+        d.accept(150, status_frame(auto=True), 16., 'two')
+        result = d.snapshot(16.01)
+        self.assertFalse(result['receiver_valid'])
+        d.accept(105, high, 16.02, 'one')  # Retired session cannot restore old authorization.
+        self.assertEqual(d.session, 'two')
+        self.assertFalse(d.snapshot(16.03)['receiver_valid'])
+
+    def test_physical_fall_and_unmatched_reply_do_not_fabricate_edges(self):
+        d = ready_decoder()
+        d.snapshot(10.01)
+        high = struct.pack('<7H', 1500, 1500, 1000, 1500, 1800, 1800, 1000)
+        low = struct.pack('<7H', 1500, 1500, 1000, 1500, 1800, 1000, 1000)
+        d.accept(105, high, 10.02, 'one')
+        d.accept(150, status_frame(auto=True), 10.03, 'one')
+        self.assertTrue(d.snapshot(10.04)['auto_switch'])
+        d.accept(150, status_frame(auto=False), 10.05, 'one')
+        self.assertTrue(d.snapshot(10.06)['auto_switch'], 'STATUS low manufactured physical AUTO low')
+        d.accept(150, status_frame(auto=True), 10.07, 'one')
+        d.snapshot(10.08)
+        d.accept(105, low, 0., 'one', event='mode_rx_unmatched', observed_steady=100.)
+        self.assertFalse(d.snapshot(10.09)['auto_switch'])
+        self.assertEqual(d.snapshot(10.09)['rc_stamp'], 0.)
+        d.accept(105, high, 0., 'one', event='mode_rx_unmatched', observed_steady=100.1)
+        self.assertFalse(d.snapshot(10.10)['auto_switch'], 'Old FC high reused after physical low')
+        d.accept(150, status_frame(auto=True), 0., 'one', event='mode_rx_unmatched', observed_steady=100.2)
+        self.assertTrue(d.snapshot(10.11)['auto_switch'])
+        d.accept(105, low, 0., 'one', event='mode_rx_unmatched', observed_steady=99.)
+        self.assertTrue(d.snapshot(10.12)['auto_switch'], 'Out-of-order mode event applied')
 
     def test_configurable_authority_aux_indices(self):
         expected = dict(EXPECTED, arm_aux=7, auto_aux=4, kill_aux=13)

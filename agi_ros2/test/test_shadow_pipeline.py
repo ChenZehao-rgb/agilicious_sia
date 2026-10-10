@@ -38,6 +38,8 @@ class ShadowHarness(Harness):
         self.driver = lambda: None
         self.codes = []
         self.drop_code = None
+        self.drop_codes = set()
+        self.response_failsafe = False
         self.response_auto = False
         self.response_kill = False
         self.response_armed = True
@@ -104,7 +106,7 @@ class ShadowHarness(Harness):
             check = crc8(frame[3:-1]) if v2 else __import__('functools').reduce(int.__xor__, frame[3:-1], 0)
             assert check == frame[-1]
             self.codes.append((time.monotonic(), code, frame[header:-1]))
-            if code == self.drop_code:
+            if code == self.drop_code or code in self.drop_codes:
                 continue
             if code == 0x3010:
                 payload = frame[header:-1]
@@ -120,7 +122,7 @@ class ShadowHarness(Harness):
                                     1800 if self.response_auto else 1000,
                                     1800 if self.response_kill else 1000)
             elif code == 150:
-                reply = status_frame(self.response_armed, self.response_auto, self.response_kill,
+                reply = status_frame(self.response_armed, self.response_auto, self.response_kill or self.response_failsafe,
                                      pid_profile=self.response_pid_profile, rate_profile=self.response_rate_profile)
                 if self.response_conflicting_mode:
                     reply[6] |= 8
@@ -161,6 +163,8 @@ class ShadowHarness(Harness):
         now = time.monotonic()
         if now - self.last_rc > .02:
             authority = Authority()
+            authority.receiver_valid = True
+            authority.session_id = "test-authority"
             authority.header.stamp = self.stamp()
             authority.armed = self.response_armed
             authority.rc_link = True
@@ -195,6 +199,8 @@ class ShadowHarness(Harness):
         s.reset_counter = 1
         self.publisher('fused_state', FusedState).publish(s)
         a = Authority()
+        a.receiver_valid = True
+        a.session_id = "test-authority"
         a.header.stamp = self.stamp()
         a.armed = self.response_armed
         a.auto_switch = self.response_auto
@@ -248,7 +254,8 @@ class ShadowTests(unittest.TestCase):
         h.run(2.5)
         self.assertTrue(any(m.config_verified for m in h.received['msp/decoded_state']),
                         [m.reason for m in h.received['msp/decoded_state'][-5:]])
-        self.assertTrue(any(m.armed and m.rc_link and not m.kill for m in h.received['authority']))
+        self.assertTrue(any(m.armed and m.rc_link and not m.kill for m in h.received['authority']),
+                        [str(m) for m in h.received['msp/decoded_state'][-3:]])
         self.assertTrue(any(m.battery_voltage == 16. for m in h.received['health']))
         self.assertTrue(all(not m.converged and not m.imu_calibrated for m in h.received['health']))
         h.response_auto = True
@@ -276,6 +283,7 @@ class ShadowTests(unittest.TestCase):
         h.drop_code = 150
         h.run(.3)
         self.assertTrue(h.received['authority'][-1].kill)
+        # The already asserted KILL appears as FC failsafe; the gap preserves it.
         self.assertFalse(h.received['authority'][-1].rc_link)
         # Restart while physical AUTO is held high: output remains impossible.
         h.processes[0].send_signal(signal.SIGINT)
@@ -430,7 +438,10 @@ class ShadowTests(unittest.TestCase):
             health.imu_ready = health.estimator_ready = health.navigation_ready = health.geofence_ok = False
             h.publisher('health', Health).publish(health)
             authority = Authority()
+            authority.receiver_valid = True
+            authority.session_id = "test-authority"
             authority.header.stamp = h.stamp()
+            authority.armed = True
             authority.rc_link = True
             h.publisher('authority', Authority).publish(authority)
             output = OutputStatus()

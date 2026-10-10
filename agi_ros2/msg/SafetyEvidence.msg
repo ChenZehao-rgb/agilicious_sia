@@ -31,6 +31,7 @@ bool geofence_ok
 bool msp_healthy
 bool command_valid
 bool controller_warm
+bool receiver_valid
 bool armed
 bool auto_switch
 bool kill

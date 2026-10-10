@@ -82,7 +82,8 @@ ControlNode::ControlNode()
 	            _params->pipeline_cfg_.outer_controller_cfg.type.c_str());
 	_pilot = std::make_unique<agi::hardware::HardwarePilot>(
 	        *_params, [this] { return _control_time; }, [this] { return _simulation_time ? _control_time : monotonicSeconds(); },
-	        _navigation_policy, _observation_delay);
+	        _navigation_policy, _observation_delay,
+	        _mode == "hardware" ? agi::hardware::ReceiverPolicy::LatchedSwitches : agi::hardware::ReceiverPolicy::FreshSamples);
 	if (!trajectory.empty()) {
 		const auto rows = agi::trajectory_csv::readTrajectoryRows(trajectory);
 		const auto points = agi::trajectory_csv::loadTrajectory(rows, 0, agi::Vector<3>::Zero(), 0,
@@ -96,6 +97,7 @@ ControlNode::ControlNode()
 	}
 	_state_sub = create_subscription<msg::FusedState>("fused_state", 1, std::bind(&ControlNode::onState, this, std::placeholders::_1));
 	_authority_sub = create_subscription<msg::Authority>("authority", 1, [this](msg::Authority::ConstSharedPtr message) {
+		if (_mode == "hardware" && _authority.session_id != message->session_id) _output_fault = true;
 		_authority = *message;
 		_authority_receive_time = monotonicSeconds();
 	});
@@ -178,8 +180,11 @@ void ControlNode::tick() {
 	evidence.navigation_sample_time =
 	        _state.initialized ? safety_now - (_control_time - stampSeconds(_state.navigation_sample_stamp)) : kUnknownTime;
 	evidence.navigation_receive_time = _simulation_time ? evidence.navigation_sample_time : _state.rtk_receive_time;
-	evidence.rc_time = safety_now - (_control_time - stampSeconds(_authority.header.stamp));
-	evidence.rc_link = _authority.rc_link && timely(wall, _authority_receive_time, _simulation_time ? kSitlWallTimeout : 0.1);
+	evidence.rc_time = stampSeconds(_authority.header.stamp) > 0 ? safety_now - (_control_time - stampSeconds(_authority.header.stamp))
+	                                                             : kUnknownTime;
+	evidence.receiver_valid = _authority.receiver_valid && !_authority.session_id.empty();
+	evidence.rc_link = _authority.rc_link &&
+	                   (_mode == "hardware" || timely(wall, _authority_receive_time, _simulation_time ? kSitlWallTimeout : 0.1));
 	evidence.armed = _authority.armed;
 	evidence.auto_switch = _authority.auto_switch;
 	evidence.kill = _authority.kill;

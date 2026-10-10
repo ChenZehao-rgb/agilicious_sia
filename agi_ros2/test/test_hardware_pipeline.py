@@ -9,13 +9,15 @@ import math
 from pathlib import Path
 import pty
 import time
+import threading
 import unittest
 
 import rclpy
 import yaml
 from pymavlink.dialects.v20 import common as mav
 from std_msgs.msg import String
-from agi_ros2.msg import ComputationStatus, FusedState, Health, MspState, OutputStatus
+from agi_ros2.msg import Authority, ControlCommand, ComputationStatus, FusedState, Health, MspState, OutputStatus
+from nav_msgs.msg import Odometry
 from test_shadow_pipeline import ShadowHarness
 from test_runtime_profile_nodes import dump_profile
 
@@ -118,7 +120,7 @@ class HardwareHarness(ShadowHarness):
             computation = self.received['computation_status']
             if (health and computation and health[-1].imu_ready and health[-1].estimator_ready and
                     health[-1].navigation_ready and health[-1].config_verified and health[-1].geofence_ok and
-                    computation[-1].warm_cycles >= 50):
+                    (not self.response_armed or computation[-1].warm_cycles >= 50)):
                 return
         raise AssertionError('hardware pipeline did not become ready: ' + str(self.snapshot()))
 
@@ -145,6 +147,100 @@ class HardwarePipelineTests(unittest.TestCase):
         self.addCleanup(h.close)
         return h
 
+    def test_mode_gaps_hold_reference_and_output_but_explicit_faults_stop(self):
+        h = self.harness(controller='GEO')
+        # Emulated IMU generation must continue while the observer checks ROS
+        # messages; assertion formatting must not masquerade as sensor loss.
+        sensor_stop = threading.Event()
+        sensor_errors = []
+        def feed_sensors():
+            try:
+                while not sensor_stop.is_set():
+                    h.drive_sensors()
+                    sensor_stop.wait(.0003)
+            except Exception as error:
+                sensor_errors.append(error)
+        worker = threading.Thread(target=feed_sensors, daemon=True)
+        h.driver = lambda: None
+        worker.start()
+        def stop_sensors():
+            sensor_stop.set()
+            worker.join(timeout=2.)
+        self.addCleanup(stop_sensors)
+        h.subscribe('reference', Odometry)
+        h.subscribe('authority', Authority)
+        h.subscribe('control_command', ControlCommand)
+        h.wait_ready()
+        self.assertFalse(h.received['computation_status'][-1].controller_success, 'Disarmed hardware still solved')
+        h.response_armed = True
+        h.wait_ready()
+        h.response_auto = True
+        h.run(.25)
+        self.assertTrue(h.received['output_status'][-1].override_active, h.received['output_status'][-1].last_fault)
+        captured = h.received['reference'][-1].pose.pose
+        for gap in (.15, .5, 5.):
+            with self.subTest(gap=gap):
+                start = {topic: len(h.received[topic]) for topic in
+                         ('output_status', 'computation_status', 'reference', 'control_command')}
+                elapsed = h.received['computation_status'][-1].reference_elapsed
+                fault_count = h.received['output_status'][-1].fault_count
+                authority_stamp = h.received['authority'][-1].header.stamp
+                h.drop_codes = {105, 150}
+                h.run(gap)
+                self.assertTrue(all(s.override_active and s.fault_count == fault_count
+                                    for s in h.received['output_status'][start['output_status']:]), h.received['output_status'][-1].last_fault)
+                computations = h.received['computation_status'][start['computation_status']:]
+                self.assertTrue(computations)
+                self.assertTrue(all(s.controller_success and s.trajectory_active and s.warm_cycles == 50
+                                    for s in computations), h.received['output_status'][-1].last_fault)
+                self.assertGreater(computations[-1].reference_elapsed, elapsed + gap - .05)
+                self.assertTrue(all(s.pose.pose == captured for s in h.received['reference'][start['reference']:]))
+                self.assertTrue(all(s.evidence.command_valid and s.permit_override
+                                    for s in h.received['control_command'][start['control_command']:]))
+                self.assertEqual(h.received['authority'][-1].header.stamp, authority_stamp)
+                h.drop_codes.clear()
+                h.run(.25)
+                self.assertTrue(h.received['output_status'][-1].override_active, h.received['output_status'][-1].last_fault)
+        # AUX falling must be observed promptly even after reply correlation was lost.
+        changed = time.monotonic()
+        h.response_auto = False
+        while time.monotonic() - changed < .1 and h.received['output_status'][-1].override_active:
+            h.run(.002)
+        self.assertFalse(h.received['output_status'][-1].override_active, h.received['output_status'][-1].last_fault)
+        self.assertLess(time.monotonic() - changed, .1)
+        h.run(.05)
+        self.assertFalse(h.received['computation_status'][-1].trajectory_active)
+        self.assertTrue(h.received['computation_status'][-1].controller_success)
+        for field, fault in (('response_kill', True), ('response_armed', False), ('response_failsafe', True)):
+            with self.subTest(field=field):
+                h.response_auto = False
+                h.wait_ready()
+                h.run(.05)
+                h.response_auto = True
+                h.run(.2)
+                self.assertTrue(h.received['output_status'][-1].override_active, h.received['output_status'][-1].last_fault)
+                setattr(h, field, fault)
+                changed = time.monotonic()
+                while time.monotonic() - changed < .1 and h.received['output_status'][-1].override_active:
+                    h.run(.002)
+                self.assertFalse(h.received['output_status'][-1].override_active, h.received['output_status'][-1].last_fault)
+                self.assertLess(time.monotonic() - changed, .1)
+                h.run(.05)
+                computation = h.received['computation_status'][-1]
+                self.assertFalse(computation.controller_success or computation.trajectory_active)
+                self.assertEqual(computation.warm_cycles, 0)
+                setattr(h, field, not fault)
+                h.run(.8)
+                self.assertFalse(h.received['output_status'][-1].override_active, 'Fault automatically reauthorized AUTO')
+        h.response_auto = False
+        h.wait_ready()
+        h.run(.05)
+        h.response_auto = True
+        h.run(.2)
+        self.assertTrue(h.received['output_status'][-1].override_active, h.received['output_status'][-1].last_fault)
+
+        self.assertFalse(sensor_errors)
+
     def test_real_gnss_hover_authorization_and_recovery(self):
         self.check_real_gnss_hover('MPC')
 
@@ -162,7 +258,7 @@ class HardwarePipelineTests(unittest.TestCase):
         self.assertFalse(output.thrust_calibrated)
         self.assertEqual(output.thrust_model_source, 'manufacturer_estimate')
         h.response_armed = True
-        h.run(.15)
+        h.run(.8)
         h.response_auto = True
         h.run(.3)
         self.assertTrue(h.has_output(), h.snapshot())
@@ -176,7 +272,7 @@ class HardwarePipelineTests(unittest.TestCase):
         h = self.harness(controller='GEO', thrust_model='quadratic')
         h.wait_ready()
         h.response_armed = True
-        h.run(.15)
+        h.run(.8)
         h.response_auto = True
         h.run(.3)
         self.assertTrue(h.has_output(), h.snapshot())
@@ -198,7 +294,7 @@ class HardwarePipelineTests(unittest.TestCase):
         h.response_auto = True
         h.run(.15)
         h.response_armed = True
-        h.run(.3)
+        h.run(.8)
         self.assertFalse(h.has_output())
         h.response_auto = False
         h.wait_ready()

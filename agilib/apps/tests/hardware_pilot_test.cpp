@@ -33,9 +33,67 @@ Evidence health(double now, bool automatic = false) {
 	e.synchronized = e.converged = e.config_verified = e.thrust_calibrated = true;
 	e.thrust_mapping_ready = true;
 	e.geofence_ok = e.msp_healthy = e.rc_link = e.armed = true;
+	e.receiver_valid = true;
 	e.kill = false;
 	e.auto_switch = automatic;
 	return e;
+}
+void latchedModeTests() {
+	double now = 10;
+	HardwarePilot runtime(configuration(), [&] { return now; }, {}, NavigationPolicy::Rtk, 0.0, ReceiverPolicy::LatchedSwitches);
+	QuadState state;
+	state.setZero();
+	state.p = Vector<3>(2, 3, 4);
+	const auto step = [&](bool automatic, bool armed = true, bool kill = false, bool link = true, bool valid = true) {
+		now += .01;
+		state.t = now;
+		auto evidence = health(now, automatic);
+		evidence.rc_time = 10;  // No new mode samples throughout this test.
+		evidence.armed = armed;
+		evidence.kill = kill;
+		evidence.rc_link = link;
+		evidence.receiver_valid = valid;
+		return runtime.tick(state, evidence);
+	};
+	for (int i = 0; i < 5; ++i) {
+		const auto stopped = step(false, false);
+		require(!stopped.evidence.command_valid && runtime.warmCycles() == 0, "ARM low still solved MPC");
+	}
+	for (int i = 0; i < 80; ++i) step(true);
+	require(!step(true).permit_override, "startup AUTO high authorized latched modes");
+	step(false);
+	auto decision = step(true);
+	require(decision.permit_override, "latched AUTO rise rejected");
+	const Vector<3> captured = decision.reference.p;
+	double elapsed = 0;
+	state.p.x() += .01;
+	for (int ticks : {15, 50, 500}) {
+		for (int i = 0; i < ticks; ++i) {
+			decision = step(true);
+			elapsed += .01;
+			require(decision.permit_override && decision.evidence.command_valid, "mode gap revoked AUTO or skipped MPC");
+			require(decision.reference.p.isApprox(captured), "mode gap recaptured AUTO position");
+			require(std::abs(decision.reference_elapsed - elapsed) < 1e-8, "mode gap reset reference clock");
+			require(runtime.warmCycles() == 50, "mode gap reset controller warmup");
+		}
+	}
+	for (int fault = 0; fault < 4; ++fault) {
+		decision = step(true, fault != 0, fault == 1, fault != 2, fault != 3);
+		require(!decision.evidence.command_valid && !decision.permit_override && !decision.trajectory_active,
+		        "explicit receiver fault did not stop MPC/reference/output");
+		require(runtime.warmCycles() == 0, "explicit receiver fault retained warmup");
+		for (int i = 0; i < 80; ++i) require(!step(true).permit_override, "receiver fault automatically reauthorized");
+		step(false);
+		require(step(true).permit_override, "receiver fault recovery rejected genuine low/high");
+	}
+	decision = step(false);
+	require(!decision.permit_override && !decision.trajectory_active && decision.evidence.command_valid,
+	        "physical AUTO low did not return to manual warmup");
+	SafetyGate legacy;
+	auto evidence = health(now);
+	evidence.rc_time = now - .15;
+	require(!legacy.canEnterAuto(evidence), "legacy RC freshness disabled");
+	require(SafetyGate::inputFailure(evidence) != nullptr, "SITL freshness policy changed");
 }
 void stateFreshnessTests() {
 	auto config = configuration();
@@ -101,6 +159,7 @@ void referenceAndWatchdogTests() {
 int main() {
   try {
 	  referenceAndWatchdogTests();
+	  latchedModeTests();
 	  double now = 10;
 	  HardwarePilot runtime(configuration(), [&] { return now; });
 	  QuadState state;

@@ -47,7 +47,7 @@ private:
 class BetaflightMspBridge {
 public:
 	explicit BetaflightMspBridge(const std::string& device, int baud = 921600, NavigationPolicy policy = NavigationPolicy::Rtk,
-	                             double observation_delay = 0.0);
+	                             double observation_delay = 0.0, ReceiverPolicy receiver_policy = ReceiverPolicy::FreshSamples);
 	~BetaflightMspBridge();
 	BetaflightMspBridge(const BetaflightMspBridge&) = delete;
 	BetaflightMspBridge& operator=(const BetaflightMspBridge&) = delete;

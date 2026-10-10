@@ -137,17 +137,40 @@ class MspEvidence:
         self.reason = 'Waiting for configuration readback'
         self.last_event = float('nan')
         self.receiver_snapshot = None
+        self.retired_sessions = set()
+        self.mode_order = {}
+        self.mode_versions = {105: 0, 150: 0}
+        self.low_rc_version = -1
+        self.low_status_version = -1
 
-    def accept(self, code, payload, stamp, session, name='', event='rx'):
+    def accept(self, code, payload, stamp, session, name='', event='rx', observed_steady=None):
+        if session in self.retired_sessions:
+            return
         if session != self.session:
+            if self.session is not None:
+                self.retired_sessions.add(self.session)
             self.session = session
             self.frames.clear()
             self.settings.clear()
             self.failed = False
             self.receiver_snapshot = None
+            self.mode_order.clear()
+            self.mode_versions = {105: 0, 150: 0}
+            self.low_rc_version = self.low_status_version = -1
         if event in ('error', 'timeout', 'transport_error'):
             self.failed = True
             self.reason = 'MSP transport/request failure; restart required'
+            return
+        mode = code in (105, 150) and event in ('rx', 'mode_rx_unmatched')
+        if mode:
+            order = stamp if observed_steady is None else observed_steady
+            if not math.isfinite(order) or order <= self.mode_order.get(code, 0.):
+                return
+            if event == 'rx' and (not math.isfinite(stamp) or stamp <= 0.):
+                return
+            self.mode_order[code] = order
+            self.mode_versions[code] += 1
+            self.frames[code] = bytes(payload), stamp if event == 'rx' else 0.
             return
         if event != 'rx' or not math.isfinite(stamp) or stamp <= 0:
             return
@@ -237,9 +260,12 @@ class MspEvidence:
         verified, reason = self.configuration(now)
         result = dict(config_verified=verified, receiver_valid=False, armed=False, auto_switch=False,
                       kill=True, rc_link=False, battery_voltage=float('nan'), rc_stamp=0., status_stamp=0.,
-                      battery_stamp=0., transport_healthy=not self.failed and fresh(now, self.last_event, .2),
+                      battery_stamp=0., transport_healthy=not self.failed,
                       imu_ready=False, control_mode_ok=False, pid_profile=255, rate_profile=255,
                       override_timeout_ms=0, reason=reason)
+        if self.receiver_snapshot is not None:
+            # Invalid evidence never impersonates an explicit physical switch change.
+            result.update({key: value for key, value in self.receiver_snapshot.items() if key != 'receiver_valid'})
         if 'msp_override_timeout_ms' in self.settings:
             try:
                 value = int(self.settings['msp_override_timeout_ms'][0])
@@ -259,9 +285,7 @@ class MspEvidence:
         rc, rt = self.frames[105]
         status, st = self.frames[150]
         result.update(rc_stamp=rt, status_stamp=st)
-        if not verified or not fresh(now, rt, .1) or not fresh(now, st, .1):
-            if verified:
-                result['reason'] = 'RC/STATUS stale'
+        if not verified:
             return result
         try:
             if len(rc) < 2 * (5 + max(self.aux_indices)) or len(rc) % 2 or len(status) < 16:
@@ -292,26 +316,33 @@ class MspEvidence:
             kill = high(self.kill_channel) or mode(27) or not rc_link
             sensor_mask = u16(status, 4)
             imu_ready = (sensor_mask & 0x21) == 0x21 and not (flags & ((1 << 12) | (1 << 23)))
-            # RC and STATUS are separate requests. On a rising transition, keep
-            # the last coherent physical low until both agree. Never manufacture
-            # a low at startup or renew the old snapshot's acquisition times.
-            # Falling transitions, KILL, ARM low and RX loss revoke immediately.
-            if high(self.auto_channel) != mode(50):
-                previous = self.receiver_snapshot
-                if (not kill and rc_link and imu_ready and
-                        previous is not None and not previous['auto_switch'] and not previous['kill'] and
-                        fresh(now, previous['rc_stamp'], .1) and fresh(now, previous['status_stamp'], .1) and
-                        (not previous['armed'] or (high(self.arm_channel) and mode(0)))):
-                    result.update(previous)
-                    result.update(imu_ready=imu_ready, control_mode_ok=True,
-                                  reason='Waiting for coherent AUTO rise; retaining fresh physical low')
-                    return result
-                raise ValueError('AUX/FC AUTO disagreement')
+            physical_auto = high(self.auto_channel)
+            previous = self.receiver_snapshot
+            if not physical_auto and self.low_rc_version != self.mode_versions[105]:
+                # A later AUTO rise must not reuse FC-high evidence from before this low.
+                self.low_rc_version = self.mode_versions[105]
+                self.low_status_version = self.mode_versions[150]
+            auto_switch = physical_auto
+            waiting = False
+            if physical_auto and (previous is None or not previous['auto_switch']):
+                coherent_rise = mode(50) and self.mode_versions[150] > self.low_status_version
+                if not coherent_rise:
+                    if previous is None:
+                        result['reason'] = 'Waiting for initial coherent receiver modes'
+                        return result
+                    auto_switch = False
+                    waiting = True
+            elif not physical_auto and mode(50) and previous is None:
+                result['reason'] = 'Waiting for initial coherent receiver modes'
+                return result
+            # AUX low is authoritative immediately, including while FC STATUS is
+            # still high. STATUS low alone must not invent a physical AUTO edge.
             conflicting = sorted(box for box in self.CONFLICTING_MODES if box in ids and mode(box))
             control_mode_ok = not high(self.auto_channel) or not conflicting
-            result.update(receiver_valid=True, armed=high(self.arm_channel) and mode(0), auto_switch=high(self.auto_channel),
+            result.update(receiver_valid=True, armed=high(self.arm_channel) and mode(0), auto_switch=auto_switch,
                           kill=kill, rc_link=rc_link, imu_ready=imu_ready, control_mode_ok=control_mode_ok,
-                          reason=('Physical receiver evidence decoded' if control_mode_ok else
+                          reason=(('Waiting for coherent AUTO rise; retaining confirmed physical low' if waiting else
+                                   'Physical receiver modes held until a new readback') if control_mode_ok else
                                   'AUTO conflicts with FC mode IDs: ' + ','.join(map(str, conflicting))))
             self.receiver_snapshot = {key: result[key] for key in (
                 'receiver_valid', 'armed', 'auto_switch', 'kill', 'rc_link', 'rc_stamp', 'status_stamp')}

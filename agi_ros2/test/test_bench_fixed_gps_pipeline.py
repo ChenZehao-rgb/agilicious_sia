@@ -66,7 +66,7 @@ class BenchPipelineTests(unittest.TestCase):
         self.assertEqual(status['gnss_baro_height_active'], 1)
         self.assertFalse(h.has_output())
         h.response_armed = True
-        h.run(.2)
+        h.run(.8)
         self.assertFalse(h.has_output())
         h.response_auto = True
         h.run(.3)

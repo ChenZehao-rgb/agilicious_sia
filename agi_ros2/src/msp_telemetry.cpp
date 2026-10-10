@@ -10,6 +10,7 @@ using agi::hardware::monotonicSeconds;
 MspTelemetry::MspTelemetry(rclcpp::Node& node) : _node(node) {
 	_config = node.create_publisher<std_msgs::msg::String>("msp/config", rclcpp::QoS(1).reliable().transient_local());
 	_events = node.create_publisher<msg::MspEvent>("msp/events", rclcpp::QoS(1000).reliable());
+	_evidence_events = node.create_publisher<msg::MspEvent>("msp/evidence_events", rclcpp::QoS(100).reliable());
 	_write_timing = node.create_publisher<msg::MspWriteTiming>("msp/write_timing", 100);
 	rcl_interfaces::msg::ParameterDescriptor descriptor;
 	descriptor.read_only = true;
@@ -61,7 +62,12 @@ void MspTelemetry::emit(const std::string& event, const agi::hardware::MspFrame&
 		message.request_name = request->setting;
 	}
 	_events->publish(message);
-	if (event == "rx")
+	const bool configuration_reply = event == "rx" && (frame.code == 1 || frame.code == 2 || frame.code == 3 || frame.code == 34 ||
+	                                                   frame.code == 238 || frame.code == 64 || frame.code == 44 || frame.code == 119 ||
+	                                                   frame.code == 111 || frame.code == 125 || frame.code == 0x3010);
+	if (configuration_reply || event == "error" || event == "timeout" || event == "transport_error" || event == "mode_timeout")
+		_evidence_events->publish(message);
+	if (event == "rx" || event == "mode_rx_unmatched")
 		for (auto& p : _polls)
 			if (p.code == frame.code && p.publisher) p.publisher->publish(message);
 }
@@ -78,6 +84,11 @@ void MspTelemetry::expireRequests(double now, uint64_t errors) {
 		if (!p.pending || now - p.sent < _timeout) continue;
 		p.pending = false;
 		++_timeouts;
+		if (p.code == 105 || p.code == 150) {
+			p.ambiguous = true;
+			emit("mode_timeout", {p.code, false, {}}, errors, NAN, &p);
+			continue;
+		}
 		if (p.critical) _healthy = false;
 		emit(p.critical ? "timeout" : "optional_timeout", {p.code, false, {}}, errors, NAN, &p);
 		// MSP has no transaction ID. Do not match a late reply to a newer query,
@@ -108,10 +119,16 @@ void MspTelemetry::tick(agi::hardware::BetaflightMspBridge& bridge, double write
 			std::string event = frame.error ? "error" : "rx";
 			double latency = NAN;
 			Poll* matched = nullptr;
+			bool unmatched_mode = false;
 			for (auto& p : _polls) {
-				if (p.code != frame.code || !p.pending) continue;
-				matched = &p;
-				latency = received - p.sent;
+				if (p.code != frame.code) continue;
+				if ((p.code == 105 || p.code == 150) && p.ambiguous) {
+					unmatched_mode = true;
+				} else {
+					if (!p.pending) continue;
+					matched = &p;
+					latency = received - p.sent;
+				}
 				p.pending = false;
 				if (frame.error) {
 					p.hz = 0;
@@ -122,8 +139,11 @@ void MspTelemetry::tick(agi::hardware::BetaflightMspBridge& bridge, double write
 				}
 				break;
 			}
-			if (!matched) {
-				event = frame.code == 200 ? (frame.error ? "error" : "ack") : "late";
+			if (unmatched_mode && !frame.error) {
+				event = "mode_rx_unmatched";
+			} else if (!matched) {
+				event = frame.error && unmatched_mode ? "error"
+				                                      : (frame.code == 200 ? (frame.error ? "error" : "ack") : "late");
 				if (frame.code == 200 && frame.error) _healthy = false;
 			}
 			emit(event, frame, bridge.errors(), latency, matched);

@@ -57,6 +57,7 @@ private:
 
 	const std::string _clock_id;
 	bool _timing_checks = true;
+	bool _latched_receiver = false;
 	agi::QuadState _state;
 	std::unique_ptr<agi::EkfImu> _ekf;
 	std::shared_ptr<agi::EkfImuParameters> _ekf_parameters;

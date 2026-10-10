@@ -49,6 +49,7 @@ StateFusionNode::StateFusionNode()
 	if (mode != "sitl" && mode != "hardware") throw std::invalid_argument("mode must be sitl or hardware");
 	if (mode == "hardware" && get_parameter("use_sim_time").as_bool())
 		throw std::invalid_argument("Hardware fusion requires use_sim_time=false");
+	_latched_receiver = mode == "hardware";
 	const auto profile = loadRuntimeConfig(*this, mode);
 	const auto configured = [this, &descriptor, &profile](const char* name, auto fallback) {
 		using Value = decltype(fallback);
@@ -392,9 +393,11 @@ void StateFusionNode::processBarometer(const Observation& observation, double re
 	if (!_baro_reference->ready()) {
 		agi::QuadState aligned;
 		const auto quality = _ekf->navigationQuality();
-		const bool disarmed = SafetyGate::fresh(received, _authority_receive_time, 0.1) &&
-		                      SafetyGate::fresh(now().seconds(), stampSeconds(_authority.header.stamp), 0.1) &&
-		                      _authority.rc_link && !_authority.armed;
+		const bool disarmed =
+		        _authority.rc_link && !_authority.armed &&
+		        (_latched_receiver ? (_authority.receiver_valid && !_authority.session_id.empty())
+		                           : SafetyGate::fresh(received, _authority_receive_time, 0.1) &&
+		                                     SafetyGate::fresh(now().seconds(), stampSeconds(_authority.header.stamp), 0.1));
 		const auto reference_imu = std::lower_bound(_reference_imus.begin(), _reference_imus.end(), observation.time,
 		                                            [](const agi::ImuSample& imu, double time) { return imu.t < time; });
 		const bool imu_covered = reference_imu != _reference_imus.end() && reference_imu->t - observation.time <= 0.025;
@@ -402,7 +405,7 @@ void StateFusionNode::processBarometer(const Observation& observation, double re
 		if (!_ekf->getAt(observation.time, &aligned) || !aligned.valid() || !quality.valid)
 			reference_blocker = "Reference requires a valid predicted state and covariance";
 		else if (!disarmed)
-			reference_blocker = "Reference requires fresh disarmed authority";
+			reference_blocker = "Reference requires confirmed disarmed authority";
 		else if (!_imu_ready || !_rtk.heading_valid || !SafetyGate::fresh(observation.time, _last_rtk_time, 0.3, _timing_checks))
 			reference_blocker = "Reference requires initialized IMU and fresh navigation with heading";
 		else if (!imu_covered)
@@ -722,9 +725,11 @@ void StateFusionNode::onImu(sensor_msgs::msg::Imu::ConstSharedPtr message) {
 	if (!_ekf->healthy()) {
 		_state.t = time;
 		if (_navigation_source == "gnss") {
-			const bool disarmed = SafetyGate::fresh(received, _authority_receive_time, 0.1) &&
-			                      SafetyGate::fresh(now().seconds(), stampSeconds(_authority.header.stamp), 0.1) &&
-			                      _authority.rc_link && !_authority.armed;
+			const bool disarmed = _authority.rc_link && !_authority.armed &&
+			                      (_latched_receiver ? (_authority.receiver_valid && !_authority.session_id.empty())
+			                                         : SafetyGate::fresh(received, _authority_receive_time, 0.1) &&
+			                                                   SafetyGate::fresh(now().seconds(),
+			                                                                     stampSeconds(_authority.header.stamp), 0.1));
 			if (!disarmed || !navigation_fresh || !heading_valid || !position.allFinite() || !velocity.allFinite() ||
 			    velocity.norm() > _initialization_max_speed) {
 				_imu_initialization->reset();

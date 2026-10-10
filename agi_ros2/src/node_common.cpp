@@ -70,6 +70,7 @@ msg::SafetyEvidence encodeEvidence(const agi::hardware::Evidence& evidence) {
 	message.auto_switch = evidence.auto_switch;
 	message.kill = evidence.kill;
 	message.rc_link = evidence.rc_link;
+	message.receiver_valid = evidence.receiver_valid;
 	return message;
 }
 
@@ -105,6 +106,7 @@ agi::hardware::Evidence decodeEvidence(const msg::SafetyEvidence& message) {
 	evidence.auto_switch = message.auto_switch;
 	evidence.kill = message.kill;
 	evidence.rc_link = message.rc_link;
+	evidence.receiver_valid = message.receiver_valid;
 	return evidence;
 }
 

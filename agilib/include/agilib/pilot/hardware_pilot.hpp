@@ -22,7 +22,8 @@ struct ControlDecision {
 class HardwarePilot {
 public:
 	explicit HardwarePilot(const PilotParams& params, TimeFunction clock, TimeFunction steady_clock = {},
-	                       NavigationPolicy policy = NavigationPolicy::Rtk, double observation_delay = 0.0);
+	                       NavigationPolicy policy = NavigationPolicy::Rtk, double observation_delay = 0.0,
+	                       ReceiverPolicy receiver_policy = ReceiverPolicy::FreshSamples);
 	bool setTrajectory(const SetpointVector& relative_setpoints);
 	ControlDecision tick(const QuadState& fused_state, Evidence evidence, bool shadow_only = false, bool navigation_valid = false);
 	void reportOutputFault();
@@ -35,6 +36,7 @@ private:
 	const TimeFunction _steady_clock;
 	const NavigationPolicy _navigation_policy;
 	const double _observation_delay;
+	const ReceiverPolicy _receiver_policy;
 	const std::thread::id _owner;
 	std::unique_ptr<Pilot> _pilot;
 	std::shared_ptr<BridgeBase> _sink;

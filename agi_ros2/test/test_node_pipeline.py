@@ -63,6 +63,8 @@ class Harness:
         self.drop_telemetry = False
         self.packets = []
         self.sequence = 0
+        self.authority_session = "test-authority"
+        self.receiver_valid = True
         self.armed = True
         self.auto = False
         self.kill = False
@@ -152,6 +154,8 @@ class Harness:
         wall = self.sim_time_ns / 1e9 if self.simulation else time.monotonic()
         if self.rc_enabled and wall - self.last_rc >= 0.02:
             rc = Authority()
+            rc.receiver_valid = self.receiver_valid
+            rc.session_id = self.authority_session
             rc.header.stamp = self.stamp()
             rc.armed, rc.auto_switch, rc.kill, rc.rc_link = self.armed, self.auto, self.kill, True
             rc.manual_aetr = [1500, 1500, 1000, 1500]
@@ -211,7 +215,7 @@ class Harness:
             for field in ('rtk_fixed', 'heading_valid', 'accuracy_ok', 'imu_calibrated',
                           'synchronized', 'converged', 'config_verified',
                           'geofence_ok', 'msp_healthy',
-                          'controller_warm', 'rc_link', 'imu_ready', 'estimator_ready',
+                          'controller_warm', 'rc_link', 'receiver_valid', 'imu_ready', 'estimator_ready',
                           'navigation_ready', 'clock_aligned', 'accuracy_known'):
                 setattr(evidence, field, True)
             evidence.thrust_calibrated = self.thrust_calibrated
@@ -326,6 +330,35 @@ class NodePipelineTest(unittest.TestCase):
 
     def rc_frames(self):
         return [struct.unpack('<4H', frame[5:-1]) for frame in self.h.serial_frames if frame[4] == 200]
+
+    def test_hardware_authority_session_and_validity_require_new_auto_edge(self):
+        h = self.start_quadratic_output()
+        h.auto = True
+        h.run(.15, commands=True)
+        self.assertTrue(h.received['output_status'][-1].override_active)
+        h.rc_enabled = False
+        h.run(.5, commands=True)
+        self.assertTrue(h.received['output_status'][-1].override_active, 'Hardware authority receipt age revoked output')
+        h.rc_enabled = True
+        h.authority_session = 'test-authority-restarted'
+        h.run(.15, commands=True)
+        self.assertFalse(h.received['output_status'][-1].override_active)
+        h.auto = False
+        h.run(.05, commands=True)
+        h.auto = True
+        h.run(.1, commands=True)
+        self.assertTrue(h.received['output_status'][-1].override_active)
+        h.receiver_valid = False
+        h.run(.08, commands=True)
+        self.assertFalse(h.received['output_status'][-1].override_active)
+        h.receiver_valid = True
+        h.run(.1, commands=True)
+        self.assertFalse(h.received['output_status'][-1].override_active)
+        h.auto = False
+        h.run(.05, commands=True)
+        h.auto = True
+        h.run(.1, commands=True)
+        self.assertTrue(h.received['output_status'][-1].override_active)
 
     def test_quadratic_mapping_voltage_independence_and_battery_interlock(self):
         h = self.start_quadratic_output()
@@ -616,7 +649,9 @@ class NodePipelineTest(unittest.TestCase):
         # Telemetry remains available after KILL; no synthetic RC/AUX frame.
         self.assertTrue(h.serial_frames)
         h.drop_telemetry = True
-        h.run(0.35, commands=True)
+        # Mode reads are nonfatal. Wait for the independently polled 2 Hz
+        # critical battery request to expire after queued mode read timeouts.
+        h.run(1.4, commands=True)
         self.assertFalse(h.received['output_status'][-1].transport_healthy)
 
     def test_gnss_output_separates_raw_age_and_accepted_age_with_local_delay(self):

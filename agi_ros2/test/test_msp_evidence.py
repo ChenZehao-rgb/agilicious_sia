@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Deterministic health freshness checks with real messages and MSP decoding."""
+import struct
 from pathlib import Path
 from types import SimpleNamespace
 import sys
@@ -7,7 +8,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
-from agi_ros2.msg import FusedState, OutputStatus
+from agi_ros2.msg import FusedState, MspEvent, OutputStatus
 from builtin_interfaces.msg import Time
 from msp_evidence import EvidenceNode
 from test_shadow_support import ready_decoder
@@ -61,6 +62,40 @@ class HealthFreshnessTest(unittest.TestCase):
 
     def test_future_state_remains_rejected(self):
         self.assertFalse(self.health(-.001).navigation_ready)
+
+
+
+class ModeEventTest(unittest.TestCase):
+    def node_and_event(self, event='rx', request=95., request_steady=995.):
+        node = SimpleNamespace(decoder=ready_decoder(), clock_id='test-boot', publish=lambda: None,
+                               get_clock=lambda: SimpleNamespace(now=lambda: SimpleNamespace(nanoseconds=100_000_000_000)))
+        message = MspEvent(code=105, event=event, session_id='test-boot:1',
+                           steady_time=999.9, request_steady_time=request_steady,
+                           request_stamp=Time(sec=int(request)),
+                           payload=list(struct.pack('<7H', 1500, 1500, 1000, 1500, 1800, 1000, 1000)))
+        message.header.stamp = Time(sec=99, nanosec=900_000_000)
+        return node, message
+
+    def test_mode_request_age_is_not_a_transport_failure(self):
+        node, message = self.node_and_event()
+        with patch('msp_evidence.time.monotonic', return_value=1000.):
+            EvidenceNode.on_event(node, message)
+        self.assertFalse(node.decoder.failed)
+        self.assertEqual(node.decoder.frames[105][1], 95.)
+
+    def test_unmatched_reply_keeps_request_time_unknown(self):
+        node, message = self.node_and_event('mode_rx_unmatched', 0., 0.)
+        with patch('msp_evidence.time.monotonic', return_value=1000.):
+            EvidenceNode.on_event(node, message)
+        self.assertFalse(node.decoder.failed)
+        self.assertEqual(node.decoder.frames[105][1], 0.)
+
+    def test_future_or_different_clock_evidence_still_fails(self):
+        for request, steady in ((101., 1001.), (95., 994.)):
+            node, message = self.node_and_event(request=request, request_steady=steady)
+            with patch('msp_evidence.time.monotonic', return_value=1000.):
+                EvidenceNode.on_event(node, message)
+            self.assertTrue(node.decoder.failed)
 
 
 if __name__ == '__main__':

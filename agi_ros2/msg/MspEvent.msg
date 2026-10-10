@@ -2,6 +2,8 @@
 std_msgs/Header header
 float64 steady_time
 # tx, rx, error, timeout, late, transport_error, write_deferred, write_late
+# mode_timeout is nonfatal; mode_rx_unmatched has unknown request times/latency.
+# Mode reply correlation remains unknown after a timeout until the session ends.
 # write_deferred sends no bytes and has no request identity. write_late marks a
 # complete read-only write; its reply still uses the original tx request time.
 string event

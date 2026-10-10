@@ -217,7 +217,7 @@ navigation:
   velocity_stddev: 0.1
   heading_stddev: 0.17453292519943295
   max_horizontal_accuracy: 2.0
-  max_vertical_accuracy: 2.0
+  max_vertical_accuracy: 5.0
   max_velocity_accuracy: 2.0
 evidence:
   # Zero-based AUX indices: AUX1=0, ..., AUX14=13; choose three distinct channels.

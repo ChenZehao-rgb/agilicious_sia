@@ -6,6 +6,7 @@
 namespace agi::hardware {
 enum class Mode { Boot, SensorCheck, ReadyManual, AutoStandby, AutoActive, ManualFallback };
 enum class NavigationPolicy { Rtk, Gnss };
+enum class ReceiverPolicy { FreshSamples, LatchedSwitches };
 
 // Times share CLOCK_MONOTONIC on hardware, or the explicitly selected SITL clock.
 // Unknown evidence is false. GNSS clock alignment is not RTK/PPS synchronization.
@@ -22,6 +23,7 @@ struct Evidence {
 	bool config_verified{false}, thrust_calibrated{false}, geofence_ok{false};
 	bool thrust_mapping_ready{false};  // A usable mapping may still be an uncalibrated estimate.
 	bool msp_healthy{false}, command_valid{false}, controller_warm{false};
+	bool receiver_valid{false};
 	bool armed{false}, auto_switch{false}, kill{true}, rc_link{false};
 };
 
@@ -33,13 +35,14 @@ public:
 		if (!std::isfinite(observation_delay) || observation_delay < 0 || observation_delay > 0.250) return NAN;
 		return kNavigationSourceMaxAge + observation_delay;
 	}
-	explicit SafetyGate(NavigationPolicy policy = NavigationPolicy::Rtk, double observation_delay = 0.0)
-	        : _policy(policy), _observation_delay(observation_delay) {
+	explicit SafetyGate(NavigationPolicy policy = NavigationPolicy::Rtk, double observation_delay = 0.0,
+	                    ReceiverPolicy receiver_policy = ReceiverPolicy::FreshSamples)
+	        : _policy(policy), _observation_delay(observation_delay), _receiver_policy(receiver_policy) {
 		if (!std::isfinite(acceptedNavigationMaxAge(observation_delay)))
 			throw std::invalid_argument("Invalid navigation observation delay");
 	}
-	static const char* inputFailure(const Evidence& e, NavigationPolicy policy = NavigationPolicy::Rtk,
-	                                double observation_delay = 0.0) {
+	static const char* inputFailure(const Evidence& e, NavigationPolicy policy = NavigationPolicy::Rtk, double observation_delay = 0.0,
+	                                ReceiverPolicy receiver_policy = ReceiverPolicy::FreshSamples) {
 		if (!fresh(e.now, e.imu_time, .010, e.timing_checks)) return "IMU stale/future";
 		const double accepted_max_age = acceptedNavigationMaxAge(observation_delay);
 		if (!std::isfinite(accepted_max_age)) return "navigation timing policy invalid";
@@ -50,7 +53,12 @@ public:
 				return "navigation source receive stale/future";
 		}
 		if (!fresh(e.now, e.rtk_time, accepted_max_age, e.timing_checks)) return "navigation stale/future";
-		if (!fresh(e.now, e.rc_time, .100, e.timing_checks) || !e.rc_link) return "RC timeout/future/link unavailable";
+		if (receiver_policy == ReceiverPolicy::LatchedSwitches) {
+			if (!e.receiver_valid) return "receiver mode unavailable";
+			if (!e.rc_link) return "receiver reports RX failsafe";
+		} else if (!fresh(e.now, e.rc_time, .100, e.timing_checks) || !e.rc_link) {
+			return "RC timeout/future/link unavailable";
+		}
 		if (!e.heading_valid) return "heading unavailable";
 		if (!e.accuracy_ok) return "navigation accuracy rejected";
 		if (policy == NavigationPolicy::Gnss) {
@@ -69,15 +77,16 @@ public:
 		if (!e.msp_healthy) return "output transport unavailable";
 		return nullptr;
 	}
-	static bool inputsHealthy(const Evidence& e, NavigationPolicy policy = NavigationPolicy::Rtk, double observation_delay = 0.0) {
-		return inputFailure(e, policy, observation_delay) == nullptr;
+	static bool inputsHealthy(const Evidence& e, NavigationPolicy policy = NavigationPolicy::Rtk, double observation_delay = 0.0,
+	                          ReceiverPolicy receiver_policy = ReceiverPolicy::FreshSamples) {
+		return inputFailure(e, policy, observation_delay, receiver_policy) == nullptr;
 	}
 	bool canEnterAuto(const Evidence& e) const {
 		return _low_seen && e.armed && e.auto_switch && !e.kill && e.controller_warm &&
-		       inputsHealthy(e, _policy, _observation_delay);
+		       inputsHealthy(e, _policy, _observation_delay, _receiver_policy);
 	}
 	bool update(const Evidence& e) {
-		const char* failure = inputFailure(e, _policy, _observation_delay);
+		const char* failure = inputFailure(e, _policy, _observation_delay, _receiver_policy);
 		const bool command_ok = fresh(e.now, e.command_time, .025, e.timing_checks) && e.command_valid &&
 		                        std::isfinite(e.solve_seconds) && e.solve_seconds >= 0 &&
 		                        (!e.timing_checks || e.solve_seconds <= .008);
@@ -88,6 +97,12 @@ public:
 			          : e.kill             ? "receiver KILL"
 			          : !e.controller_warm ? "controller warming"
 			                               : "command invalid/expired";
+			return false;
+		}
+		if (_receiver_policy == ReceiverPolicy::LatchedSwitches && !e.armed) {
+			_low_seen = false;
+			_mode = Mode::ReadyManual;
+			_reason = "physical ARM is low";
 			return false;
 		}
 		if (!e.auto_switch) {
@@ -137,6 +152,7 @@ public:
 private:
 	const NavigationPolicy _policy;
 	const double _observation_delay;
+	const ReceiverPolicy _receiver_policy;
 	Mode _mode{Mode::Boot};
 	bool _low_seen{false};
 	std::string _reason{"boot"};

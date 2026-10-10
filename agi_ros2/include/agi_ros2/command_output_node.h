@@ -71,6 +71,7 @@ private:
 	double _previous_ros_time;
 	bool _transport_healthy = true;
 	bool _override_active = false;
+	bool _authority_session_changed = false;
 	uint64_t _fault_count = 0;
 	std::string _reason = "Waiting for control and authority";
 	std::string _last_fault;

@@ -111,8 +111,9 @@ bool MspDecoder::next(MspFrame* frame) {
   }
   return false;
 }
-BetaflightMspBridge::BetaflightMspBridge(const std::string& device, int baud, NavigationPolicy policy, double observation_delay)
-	: owner_(std::this_thread::get_id()), gate_(policy, observation_delay) {
+BetaflightMspBridge::BetaflightMspBridge(const std::string& device, int baud, NavigationPolicy policy, double observation_delay,
+                                         ReceiverPolicy receiver_policy)
+        : owner_(std::this_thread::get_id()), gate_(policy, observation_delay, receiver_policy) {
 	speed_t speed;
 	switch (baud) {
 		case 115200:

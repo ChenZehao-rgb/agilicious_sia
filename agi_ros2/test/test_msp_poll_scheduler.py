@@ -80,7 +80,8 @@ class MonitorHarness:
     def on_event(self, event):
         self.events.append(event)
         stamp = event.request_stamp.sec + event.request_stamp.nanosec * 1e-9
-        self.decoder.accept(event.code, event.payload, stamp, event.session_id, event.request_name, event.event)
+        self.decoder.accept(event.code, event.payload, stamp, event.session_id, event.request_name, event.event,
+                            observed_steady=event.steady_time)
 
     def snapshot(self):
         return self.decoder.snapshot(self.node.get_clock().now().nanoseconds * 1e-9)
@@ -292,8 +293,24 @@ class MspPollSchedulerTests(unittest.TestCase):
         if code == 0x3010:
             self.assertEqual(timeouts[0].request_name, fault['payload'].rstrip(b'\x00').decode('ascii'))
 
-    def test_critical_receiver_timeout_latches_unhealthy_and_quarantines_late_reply(self):
-        self.assert_timeout_isolated(105, critical=True)
+    def test_mode_timeouts_keep_polling_without_claiming_request_correlation(self):
+        for code in (105, 150):
+            with self.subTest(code=code):
+                h = self.harness()
+                h.wait_until(lambda: h.snapshot()['config_verified'] and h.snapshot()['receiver_valid'])
+                h.fault_code = code
+                h.wait_until(lambda: h.fault_request is not None)
+                h.run(1.2)
+                fault_time = h.fault_request['time']
+                events = [event for event in h.events if event.code == code and event.steady_time >= fault_time]
+                self.assertTrue(any(event.event == 'mode_timeout' for event in events))
+                replies = [event for event in events if event.event == 'mode_rx_unmatched']
+                self.assertGreater(len(replies), 5)
+                self.assertTrue(all(event.request_steady_time == 0. and event.request_stamp.sec == 0 and
+                                    math.isnan(event.latency_seconds) for event in replies))
+                self.assertGreater(sum(item['code'] == code and item['time'] >= fault_time for item in h.requests), 5)
+                self.assertFalse(h.decoder.failed)
+                self.assertTrue(h.snapshot()['transport_healthy'] and h.snapshot()['receiver_valid'], h.snapshot())
 
     def test_uart_disconnect_latches_unhealthy_without_exiting_or_retries(self):
         h = self.harness()
@@ -334,12 +351,12 @@ class MspPollSchedulerTests(unittest.TestCase):
         h.resume()
         h.run(1.2)
         subsequent = [item for item in h.requests if item['time'] >= request['time']]
-        self.assertEqual(sum(item['code'] == 105 for item in subsequent), 1)
+        self.assertGreater(sum(item['code'] == 105 for item in subsequent), 5)
         events = h.events[event_start:]
-        timeouts = [event for event in events if event.code == 105 and event.event == 'timeout']
-        late = [event for event in events if event.code == 105 and event.event == 'late']
+        timeouts = [event for event in events if event.code == 105 and event.event == 'mode_timeout']
+        late = [event for event in events if event.code == 105 and event.event == 'mode_rx_unmatched']
         self.assertEqual(len(timeouts), 1, [(event.event, event.code) for event in events])
-        self.assertEqual(len(late), 1, [(event.event, event.code) for event in events])
+        self.assertGreater(len(late), 5)
         self.assertLess(timeouts[0].steady_time, late[0].steady_time)
         self.assertGreaterEqual(timeouts[0].steady_time - timeouts[0].request_steady_time, .1)
         self.assertEqual(late[0].request_steady_time, 0.)
@@ -349,8 +366,8 @@ class MspPollSchedulerTests(unittest.TestCase):
                              and event.request_steady_time == timeouts[0].request_steady_time for event in events))
         self.assertTrue(any(event.event == 'rx' and event.code != 105
                             and event.steady_time > late[0].steady_time for event in events))
-        self.assertTrue(h.decoder.failed)
-        self.assertFalse(h.snapshot()['transport_healthy'], h.snapshot())
+        self.assertFalse(h.decoder.failed)
+        self.assertTrue(h.snapshot()['transport_healthy'] and h.snapshot()['receiver_valid'], h.snapshot())
 
 
 if __name__ == '__main__':

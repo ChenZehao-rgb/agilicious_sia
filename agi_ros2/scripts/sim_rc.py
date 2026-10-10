@@ -21,6 +21,8 @@ class SimRc(Node):
 
     def tick(self):
         msg = Authority()
+        msg.receiver_valid = True
+        msg.session_id = "sim_rc"
         msg.header.stamp = self.get_clock().now().to_msg()
         for name in ('armed', 'auto_switch', 'kill', 'rc_link'):
             setattr(msg, name, self.get_parameter(name).value)

@@ -54,7 +54,9 @@ CommandOutputNode::CommandOutputNode()
 	if (navigation != "gnss" && navigation != "rtk") throw std::invalid_argument("navigation_source must be gnss or rtk");
 	const auto policy = navigation == "gnss" ? agi::hardware::NavigationPolicy::Gnss : agi::hardware::NavigationPolicy::Rtk;
 	_navigation_policy = policy;
-	_gate = std::make_unique<SafetyGate>(policy, _observation_delay);
+	const auto receiver_policy =
+	        _mode == "hardware" ? agi::hardware::ReceiverPolicy::LatchedSwitches : agi::hardware::ReceiverPolicy::FreshSamples;
+	_gate = std::make_unique<SafetyGate>(policy, _observation_delay, receiver_policy);
 	if (_shadow_only && _mode != "hardware") throw std::invalid_argument("shadow_only requires hardware mode");
 	if (_mode != "sitl" && _mode != "hardware") {
 		throw std::invalid_argument("mode must be sitl or hardware");
@@ -142,7 +144,7 @@ CommandOutputNode::CommandOutputNode()
 		if (!_thrust && !_quadratic_thrust && !_shadow_only) {
 			throw std::invalid_argument("Hardware output requires a thrust_table");
 		}
-		_msp = std::make_unique<agi::hardware::BetaflightMspBridge>(device, baud, policy, _observation_delay);
+		_msp = std::make_unique<agi::hardware::BetaflightMspBridge>(device, baud, policy, _observation_delay, receiver_policy);
 	} else {
 		_destination.sin_family = AF_INET;
 		_destination.sin_port = htons(_bridge_params.port);
@@ -159,7 +161,9 @@ CommandOutputNode::CommandOutputNode()
 	_command_sub = create_subscription<msg::ControlCommand>("control_command", 1,
 	                                                        std::bind(&CommandOutputNode::onCommand, this, std::placeholders::_1));
 	_authority_sub = create_subscription<msg::Authority>("authority", 1, [this](msg::Authority::ConstSharedPtr message) {
-		const bool revoke = message->kill || !message->armed || message->auto_switch != _authority.auto_switch || !message->rc_link;
+		_authority_session_changed = _mode == "hardware" && _authority.session_id != message->session_id;
+		const bool revoke = _authority_session_changed || (_mode == "hardware" && !message->receiver_valid) || message->kill ||
+		                    !message->armed || message->auto_switch != _authority.auto_switch || !message->rc_link;
 		_authority = *message;
 		_authority_receive_time = monotonicSeconds();
 		if (revoke) {
@@ -326,8 +330,11 @@ void CommandOutputNode::processOutput(bool new_command) {
 	        _command.clock_id == evidenceClockId(_clock_id, _simulation_time) && _command.header.frame_id == "base_link" &&
 	        timely(wall, _command_receive_time, _simulation_time ? kSitlWallTimeout : 0.025) &&
 	        timely(evidence.now, _command.evidence.now, 0.025) && timely(ros_time, stampSeconds(_command.header.stamp), 0.025);
-	const bool rc_fresh = timely(wall, _authority_receive_time, _simulation_time ? kSitlWallTimeout : 0.1) &&
-	                      timely(ros_time, stampSeconds(_authority.header.stamp), 0.1) && _authority.rc_link;
+	const bool receiver_valid = _authority.receiver_valid && !_authority.session_id.empty() && !_authority_session_changed;
+	const bool rc_fresh = _authority.rc_link &&
+	                      (_mode == "hardware" ? receiver_valid
+	                                           : timely(wall, _authority_receive_time, _simulation_time ? kSitlWallTimeout : 0.1) &&
+	                                                     timely(ros_time, stampSeconds(_authority.header.stamp), 0.1));
 	const bool health_fresh = timely(wall, _health_receive_time, _simulation_time ? kSitlWallTimeout : 0.2) &&
 	                          timely(ros_time, stampSeconds(_health.header.stamp), 0.2);
 	// New authority can revoke old commands immediately, but never authorize a
@@ -341,6 +348,8 @@ void CommandOutputNode::processOutput(bool new_command) {
 		publishStatus();
 		return;
 	}
+	evidence.receiver_valid = evidence.receiver_valid && receiver_valid;
+	_authority_session_changed = false;
 	evidence.rc_link = evidence.rc_link && rc_fresh;
 	evidence.kill = evidence.kill || _authority.kill;
 	evidence.armed = evidence.armed && _authority.armed;
@@ -424,8 +433,8 @@ void CommandOutputNode::processOutput(bool new_command) {
 		// A successful gate check can still be followed by a failed write.
 		_reason = _last_fault;
 	} else if (!rc_fresh) {
-		_reason = "RC timeout/link unavailable: SITL disarms; hardware releases override" + std::string(" ages=") +
-		          std::to_string(wall - _authority_receive_time) + "," +
+		_reason = (_mode == "hardware" ? "Receiver mode unavailable or RX failsafe" : "RC timeout/link unavailable: SITL disarms") +
+		          std::string(" ages=") + std::to_string(wall - _authority_receive_time) + "," +
 		          std::to_string(ros_time - stampSeconds(_authority.header.stamp));
 	} else if (_authority.kill || !_authority.armed) {
 		_reason = "Receiver KILL or ARM low";
