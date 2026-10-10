@@ -32,6 +32,27 @@ def mode_key(data, session):
         'imu_ready', 'control_mode_ok', 'config_verified'))
 
 
+def output_freshness(output, clock_id, ros_now, steady_now, received_steady=None):
+    """Expose the exact cached evidence used by the unchanged 50 ms interlock."""
+    def age(now, sample):
+        value = now - sample
+        return value if math.isfinite(value) else None
+
+    result = dict(available=output is not None, clock_matches=False,
+                  ros_age_seconds=None, steady_age_seconds=None,
+                  cache_age_seconds=None, fresh=False)
+    if output is None:
+        return result
+    result.update(clock_matches=output.clock_id == clock_id,
+                  ros_age_seconds=age(ros_now, seconds(output.header.stamp)),
+                  steady_age_seconds=age(steady_now, output.steady_time),
+                  cache_age_seconds=age(steady_now, received_steady) if received_steady is not None else None)
+    result['fresh'] = (result['clock_matches'] and
+                       fresh(ros_now, seconds(output.header.stamp), .05) and
+                       fresh(steady_now, output.steady_time, .05))
+    return result
+
+
 class EvidenceNode(Node):
     def __init__(self):
         super().__init__('msp_evidence')
@@ -68,12 +89,15 @@ class EvidenceNode(Node):
             raise ValueError('geofence requires three finite coordinates')
         self.clock_id = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
         self.output = None
+        self.output_received_steady = None
         self.fused = None
         # Keep switch updates independent of high-rate control tx/ACK diagnostics.
         self.create_subscription(MspEvent, 'msp/evidence_events', self.on_event, 100)
         for topic in ('msp/rc', 'msp/status', 'msp/battery'):
             self.create_subscription(MspEvent, topic, self.on_event, 10)
-        self.create_subscription(OutputStatus, 'output_status', self.on_output, 10)
+        # OutputStatus is a current snapshot, not an event history. Retaining
+        # old snapshots can keep this cache stale after a scheduling stall.
+        self.create_subscription(OutputStatus, 'output_status', self.on_output, 1)
         self.create_subscription(FusedState, 'fused_state', self.on_state, 1)
         self.authority_pub = self.create_publisher(Authority, 'authority', 1)
         self.health_pub = self.create_publisher(Health, 'health', 1)
@@ -83,6 +107,7 @@ class EvidenceNode(Node):
 
     def on_output(self, message):
         self.output = message
+        self.output_received_steady = time.monotonic()
 
     def on_state(self, message):
         self.fused = message
@@ -148,12 +173,20 @@ class EvidenceNode(Node):
         health.config_verified = data['config_verified'] and data['control_mode_ok']
         health.transport_healthy = data['transport_healthy']
         health.battery_voltage = data['battery_voltage']
-        output_fresh = (self.output is not None and self.output.clock_id == self.clock_id and
-                        fresh(now, seconds(self.output.header.stamp), .05) and
-                        fresh(time.monotonic(), self.output.steady_time, .05))
-        health.thrust_calibrated = bool(output_fresh and self.output.thrust_calibrated)
-        health.thrust_mapping_ready = bool(output_fresh and self.output.thrust_mapping_ready)
-        health.transport_healthy = bool(health.transport_healthy and output_fresh and self.output.transport_healthy)
+        output_diagnostic = output_freshness(self.output, self.clock_id, now, time.monotonic(),
+                                             getattr(self, 'output_received_steady', None))
+        # Mapping is configuration, not a heartbeat. Control checks the output
+        # process heartbeat directly; feeding its 50 ms diagnostic cache back
+        # into Health can spuriously revoke an otherwise current command.
+        output_known = (output_diagnostic['clock_matches'] and
+                        output_diagnostic['ros_age_seconds'] is not None and
+                        output_diagnostic['ros_age_seconds'] >= 0. and
+                        output_diagnostic['steady_age_seconds'] is not None and
+                        output_diagnostic['steady_age_seconds'] >= 0.)
+        health.thrust_calibrated = bool(output_known and self.output.thrust_calibrated)
+        health.thrust_mapping_ready = bool(output_known and self.output.thrust_mapping_ready)
+        # MSP readback failures remain authoritative. The output process checks
+        # its own write health without this asynchronous summary round trip.
         configured = all(a < b for a, b in zip(self.minimum, self.maximum))
         # A diagnostic cache has a 25 ms lifetime. Control checks its own latest
         # 15 ms state and consumes FC readiness independently of this summary.
@@ -189,7 +222,8 @@ class EvidenceNode(Node):
             reasons.append('Battery unavailable/stale')
         health.reason = '; '.join(reasons)
         self.health_pub.publish(health)
-        self.status_pub.publish(String(data=json.dumps(dict(reasons=reasons, session=decoded.session_id))))
+        self.status_pub.publish(String(data=json.dumps(dict(reasons=reasons, session=decoded.session_id,
+                                                           output=output_diagnostic))))
 
 
 def main():

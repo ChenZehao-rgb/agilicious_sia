@@ -173,11 +173,13 @@ CommandOutputNode::CommandOutputNode()
 	_health_sub = create_subscription<msg::Health>("health", 1, [this](msg::Health::ConstSharedPtr message) {
 		_health = *message;
 		_health_receive_time = monotonicSeconds();
-		const bool navigation_ready = _navigation_policy == agi::hardware::NavigationPolicy::Gnss
-		                                      ? (_health.imu_ready && _health.estimator_ready && _health.navigation_ready)
-		                                      : (_health.imu_calibrated && _health.converged);
-		if (!navigation_ready || !_health.config_verified || !_health.thrust_mapping_ready || !_health.geofence_ok ||
-		    !_health.transport_healthy ||
+		const bool navigation_ready =
+		        _navigation_policy == agi::hardware::NavigationPolicy::Gnss
+		                ? (_mode == "hardware" ? _health.fc_imu_ready
+		                                      : (_health.imu_ready && _health.estimator_ready && _health.navigation_ready))
+		                : (_health.imu_calibrated && _health.converged);
+		if (!navigation_ready || !_health.config_verified || !_health.thrust_mapping_ready ||
+		    (_mode != "hardware" && !_health.geofence_ok) || !_health.transport_healthy ||
 		    (_mode == "hardware" && (!std::isfinite(_health.battery_voltage) || _health.battery_voltage <= 0)))
 			processOutput();
 	});

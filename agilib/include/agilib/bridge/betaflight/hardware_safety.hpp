@@ -31,6 +31,9 @@ class SafetyGate {
 public:
 	static constexpr double kNavigationSourceMaxAge = 0.300;
 	static constexpr double kStateMaxAge = 0.015;
+	// Hardware rechecks a command between control ticks and before UART writes.
+	// Its source IMU must outlive the 25 ms command lease plus state/solve delay.
+	static constexpr double kHardwareImuMaxAge = 0.050;
 	static double acceptedNavigationMaxAge(double observation_delay) {
 		if (!std::isfinite(observation_delay) || observation_delay < 0 || observation_delay > 0.250) return NAN;
 		return kNavigationSourceMaxAge + observation_delay;
@@ -43,7 +46,8 @@ public:
 	}
 	static const char* inputFailure(const Evidence& e, NavigationPolicy policy = NavigationPolicy::Rtk, double observation_delay = 0.0,
 	                                ReceiverPolicy receiver_policy = ReceiverPolicy::FreshSamples) {
-		if (!fresh(e.now, e.imu_time, .010, e.timing_checks)) return "IMU stale/future";
+		const double imu_max_age = receiver_policy == ReceiverPolicy::LatchedSwitches ? kHardwareImuMaxAge : .010;
+		if (!fresh(e.now, e.imu_time, imu_max_age, e.timing_checks)) return "IMU stale/future";
 		const double accepted_max_age = acceptedNavigationMaxAge(observation_delay);
 		if (!std::isfinite(accepted_max_age)) return "navigation timing policy invalid";
 		if (policy == NavigationPolicy::Gnss || observation_delay > 0) {

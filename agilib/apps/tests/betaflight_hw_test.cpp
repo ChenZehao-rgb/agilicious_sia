@@ -89,6 +89,31 @@ void safetyTests() {
 		require(!g.update(e));
 	}
 }
+void hardwareImuLeaseTests() {
+	auto e = healthy();
+	e.receiver_valid = true;
+	SafetyGate gate(NavigationPolicy::Rtk, 0.0, ReceiverPolicy::LatchedSwitches);
+	require(!gate.update(e));
+	e.auto_switch = true;
+	require(gate.update(e));
+	// Reproduce the asynchronous recheck of a valid 8 ms command with 11 ms IMU.
+	e.now += .011;
+	e.command_time = e.now - .008;
+	require(gate.update(e));
+	require(!SafetyGate::inputsHealthy(e));  // SITL retains its original limit.
+	e.imu_time = e.now - .049;
+	require(gate.update(e));
+	e.imu_time = e.now - .051;
+	require(!gate.update(e));
+	e.imu_time = e.now;
+	require(!gate.update(e));  // An actual outage still requires AUTO recovery.
+	e.auto_switch = false;
+	require(!gate.update(e));
+	e.auto_switch = true;
+	require(gate.update(e));
+	e.imu_time = e.now + .001;
+	require(!gate.update(e));
+}
 void thrustMappingReadinessTests() {
 	Evidence e = healthy();
 	e.thrust_calibrated = false;
@@ -275,6 +300,7 @@ void transportTests() {
 int main() {
 	try {
 		safetyTests();
+		hardwareImuLeaseTests();
 		thrustMappingReadinessTests();
 		gnssPolicyTests();
 		navigationTimingTests();
