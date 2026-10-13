@@ -14,6 +14,9 @@ Examples:
 For compatibility with the existing trajectory reader, CSVs have the legacy
 14-field header and 30 numeric columns, exactly as generate_helix.py does.
 JSON sidecars include the complete ordered column names and constraint checks.
+Printed peak rates and accelerations use the dense verification samples across
+all legs. Linear acceleration excludes gravity and uses the CSV world frame;
+angular velocity and angular acceleration use the body frame.
 """
 
 import argparse
@@ -140,6 +143,8 @@ def solve(args, quad, speed):
     matrix = np.concatenate(matrices)
     thrust = np.concatenate([leg[7] for leg in legs])
     omega = np.concatenate([leg[4] for leg in legs])
+    acceleration = np.concatenate([leg[5] for leg in legs])
+    angular_acceleration = np.concatenate([leg[6] for leg in legs])
     actual_speed = float(max(np.linalg.norm(leg[3], axis=1).max() for leg in legs))
     if actual_speed > speed * (1 + 1e-10):
         raise ValueError("Maximum speed verification failed")
@@ -164,7 +169,12 @@ def solve(args, quad, speed):
                     thrust_max_fraction=THRUST_MAX_FRACTION,
                     rotor_thrust_limit_N=THRUST_MAX_FRACTION * quad["thrust_max"],
                     min_rotor_thrust_N=float(thrust.min()), max_rotor_thrust_N=float(thrust.max()),
+                    max_body_rate_rad_s=float(np.linalg.norm(omega, axis=1).max()),
                     max_abs_body_rate_rad_s=np.abs(omega).max(axis=0).tolist(),
+                    max_acceleration_mps2=float(np.linalg.norm(acceleration, axis=1).max()),
+                    max_abs_acceleration_mps2=np.abs(acceleration).max(axis=0).tolist(),
+                    max_body_angular_acceleration_rad_s2=float(np.linalg.norm(angular_acceleration, axis=1).max()),
+                    max_abs_body_angular_acceleration_rad_s2=np.abs(angular_acceleration).max(axis=0).tolist(),
                     csv_columns=COLUMNS, quad_parameters=quad,
                     model="ideal rigid body, static rotor limits; no aerodynamic drag or motor lag",
                     duration_search="8% time increments; 12001 samples, verified at >=24001 samples per leg",
@@ -239,6 +249,16 @@ def main():
             result = solve(args, quad, speed)
             print(f"{result['file']}: T={result['duration_s']:.6f} s, "
                   f"peak={result['max_speed_mps']:.6f} m/s (limit={speed:g} m/s)")
+            body_rates = ", ".join(f"{value:.6f}" for value in result["max_abs_body_rate_rad_s"])
+            acceleration = ", ".join(f"{value:.6f}" for value in result["max_abs_acceleration_mps2"])
+            angular_acceleration = ", ".join(
+                f"{value:.6f}" for value in result["max_abs_body_angular_acceleration_rad_s2"])
+            print(f"  Max body angular velocity: norm={result['max_body_rate_rad_s']:.6f} rad/s; "
+                  f"abs [x,y,z]=[{body_rates}] rad/s")
+            print(f"  Max linear acceleration (excluding gravity): norm={result['max_acceleration_mps2']:.6f} m/s^2; "
+                  f"abs [x,y,z]=[{acceleration}] m/s^2 (CSV world frame)")
+            print(f"  Max body angular acceleration: norm={result['max_body_angular_acceleration_rad_s2']:.6f} rad/s^2; "
+                  f"abs [x,y,z]=[{angular_acceleration}] rad/s^2")
     except (ValueError, KeyError, TypeError, OSError, yaml.YAMLError, np.linalg.LinAlgError) as error:
         parser.error(str(error))
 

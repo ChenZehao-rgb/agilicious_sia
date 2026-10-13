@@ -1,0 +1,136 @@
+{
+  "file": "LINE_ROUND_TRIP_L20_5mps.csv",
+  "kind": "line",
+  "start_m": [
+    0,
+    0,
+    0
+  ],
+  "end_m": [
+    20.0,
+    0.0,
+    0.0
+  ],
+  "length_m": 20.0,
+  "round_trip": true,
+  "requested_max_speed_mps": 5.0,
+  "max_speed_mps": 5.0,
+  "speed_limited": false,
+  "duration_s": 19.6875,
+  "samples": 4001,
+  "max_dt_s": 0.004921875000000853,
+  "verification_samples_per_leg": 24001,
+  "thrust_max_fraction": 0.7,
+  "rotor_thrust_limit_N": 5.348,
+  "min_rotor_thrust_N": 1.3228060536051287,
+  "max_rotor_thrust_N": 1.3508851543653835,
+  "max_body_rate_rad_s": 0.16837520831875155,
+  "max_abs_body_rate_rad_s": [
+    0.0,
+    0.16837520831875155,
+    0.0
+  ],
+  "max_acceleration_mps2": 1.9343720934879367,
+  "max_abs_acceleration_mps2": [
+    1.9343720934879367,
+    0.0,
+    0.0
+  ],
+  "max_body_angular_acceleration_rad_s2": 0.13056176244656825,
+  "max_abs_body_angular_acceleration_rad_s2": [
+    0.0,
+    0.13056176244656825,
+    0.0
+  ],
+  "csv_columns": [
+    "t",
+    "p_x",
+    "p_y",
+    "p_z",
+    "q_w",
+    "q_x",
+    "q_y",
+    "q_z",
+    "v_x",
+    "v_y",
+    "v_z",
+    "w_x",
+    "w_y",
+    "w_z",
+    "a_lin_x",
+    "a_lin_y",
+    "a_lin_z",
+    "a_rot_x",
+    "a_rot_y",
+    "a_rot_z",
+    "u_1",
+    "u_2",
+    "u_3",
+    "u_4",
+    "jerk_x",
+    "jerk_y",
+    "jerk_z",
+    "snap_x",
+    "snap_y",
+    "snap_z"
+  ],
+  "quad_parameters": {
+    "mass": 0.54,
+    "tbm_fr": [
+      0.13,
+      -0.22,
+      0.0
+    ],
+    "tbm_bl": [
+      -0.13,
+      0.2,
+      0.0
+    ],
+    "tbm_br": [
+      -0.13,
+      -0.2,
+      0.0
+    ],
+    "tbm_fl": [
+      0.13,
+      0.22,
+      0.0
+    ],
+    "inertia": [
+      0.0065,
+      0.006,
+      0.0115
+    ],
+    "motor_omega_min": 0.0,
+    "motor_omega_max": 2394.3,
+    "motor_tau": 0.012,
+    "omega_max": [
+      17.45,
+      17.45,
+      17.45
+    ],
+    "thrust_map": [
+      1.332e-06,
+      0.0,
+      0.0
+    ],
+    "kappa": 0.1,
+    "thrust_min": 0.0,
+    "thrust_max": 7.64,
+    "rotors_config": "cross",
+    "aero_coeff_1": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "aero_coeff_3": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "aero_coeff_h": 0.0
+  },
+  "model": "ideal rigid body, static rotor limits; no aerodynamic drag or motor lag",
+  "duration_search": "8% time increments; 12001 samples, verified at >=24001 samples per leg",
+  "gazebo_tracking_validated": false
+}

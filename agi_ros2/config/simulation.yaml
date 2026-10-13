@@ -3,7 +3,7 @@
 # An empty trajectory captures the current hover point on authorized AUTO entry.
 mode: sitl
 flight:
-  trajectory: '/home/sia/agilicious_internal-main/miscellaneous/datasets/ref_trajs/open_source/CPC33_Z1.csv'
+  trajectory: '/home/sia/agilicious_internal-main/miscellaneous/datasets/ref_trajs/open_source/CIRCLE_R5_N1_CCW_8mps.csv'
   thrust_table: ''
   sitl_delay_test: false
   shadow_only: false
