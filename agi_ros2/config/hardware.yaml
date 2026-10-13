@@ -222,7 +222,7 @@ navigation:
 evidence:
   # Zero-based AUX indices: AUX1=0, ..., AUX14=13; choose three distinct channels.
   arm_aux: 0
-  auto_aux: 5
+  auto_aux: 3
   kill_aux: 4
   aux_low: 1875
   aux_high: 2100

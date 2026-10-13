@@ -52,6 +52,39 @@ python3 betaflight_sitl/run.py --gazebo --arm \
 - 轨迹整体会被抬高，保证最低点距起飞点不低于 `--ground-clearance`（默认 0.8 m）。
 - `--log FILE` 记录参考与实际状态的逐周期 CSV，供 `validate.py` 评分。
 
+## 生成直线与水平圆轨迹
+
+`generate_line_circle.py` 依赖 NumPy 和 PyYAML，可生成单程直线、往返直线和水平圆：
+
+```bash
+# 从默认起点 (0, 0, 0) 沿 +X 单程飞行 20 m，最大速度 10 m/s
+python3 betaflight_sitl/generate_line_circle.py line --length 20 --max-speed 10
+
+# 指定起终点，在目标点静止后返回起点
+python3 betaflight_sitl/generate_line_circle.py line \
+  --start 0 0 2 --end 10 5 2 --round-trip --max-speed 8
+
+# 圆心 (0, 0, 2)、半径 5 m 的水平圆，最大速度 8 m/s
+python3 betaflight_sitl/generate_line_circle.py circle \
+  --center 0 0 2 --radius 5 --max-speed 8
+```
+
+直线的 `--length` 与 `--end` 二选一；长度表示从起点沿世界坐标 +X 的距离，默认 20 m。
+圆周从圆心沿 +X 偏移一个半径的位置出发，默认逆时针一圈（从 +Z 向下看）；
+`--clockwise` 改为顺时针，`--turns N` 指定圈数。圆周仅在整个轨迹起终点静止。
+`--max-speed`（别名 `--speeds`）可接受多个值，分别生成文件。
+
+轨迹采用与 `generate_helix.py` 相同的平滑进度多项式、理想刚体模型、单桨最大推力的
+70% 上限、最小推力和机体系角速度约束。固定长度或半径下如果速度过高，脚本以 8%
+增量延长时间，直到两个方向均通过约束检查（往返时分别检查），并对每段至少 24001
+个采样点进行复核；实际峰值可能低于指定上限。这里的约束检查不等于 Gazebo 跟踪验证。
+
+默认输出到 `miscellaneous/datasets/ref_trajs/open_source`，每条轨迹包含 CSV 和 JSON。
+可用 `--output DIR`、`--quad FILE`、`--dt 0.005` 指定输出目录、机体参数和最大采样间隔。
+CSV 保留现有读取器要求的 14 列表头与 30 列数值格式；JSON 记录完整列名、几何参数、
+实际峰值速度、推力与角速度检查结果。相同几何尺寸、模式和速度对应相同文件名，重复
+运行会覆盖文件；不同起点或圆心的轨迹需要保留时，请指定不同输出目录。
+
 ## 全部参考轨迹的验证
 
 ```bash
