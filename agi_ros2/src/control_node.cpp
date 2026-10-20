@@ -176,15 +176,25 @@ void ControlNode::tick() {
 	evidence.timing_checks = _timing_checks;
 	evidence.now = safety_now;
 	evidence.imu_time = _state.clock_id == _clock_id ? (_simulation_time ? state.t : _state.imu_receive_time) : kUnknownTime;
+	evidence.imu_sample_time = _state.clock_id == _clock_id && _state.initialized
+	                                   ? (_simulation_time ? state.t : _state.imu_sample_steady_time)
+	                                   : kUnknownTime;
 	evidence.rtk_time = _state.initialized ? safety_now - (_control_time - stampSeconds(_state.rtk_stamp)) : kUnknownTime;
 	evidence.navigation_sample_time =
 	        _state.initialized ? safety_now - (_control_time - stampSeconds(_state.navigation_sample_stamp)) : kUnknownTime;
 	evidence.navigation_receive_time = _simulation_time ? evidence.navigation_sample_time : _state.rtk_receive_time;
-	evidence.rc_time = stampSeconds(_authority.header.stamp) > 0 ? safety_now - (_control_time - stampSeconds(_authority.header.stamp))
-	                                                             : kUnknownTime;
-	evidence.receiver_valid = _authority.receiver_valid && !_authority.session_id.empty();
+	if (_mode == "hardware") {
+		evidence.rc_time = _authority.clock_id == _clock_id ? _authority.rc_request_steady_time : kUnknownTime;
+		evidence.status_time = _authority.clock_id == _clock_id ? _authority.status_request_steady_time : kUnknownTime;
+	} else {
+		const double rc_stamp = stampSeconds(_authority.header.stamp);
+		evidence.rc_time = rc_stamp > 0 ? safety_now - (_control_time - rc_stamp) : kUnknownTime;
+		evidence.status_time = evidence.rc_time;
+	}
+	evidence.receiver_valid =
+	        _authority.receiver_valid && !_authority.session_id.empty() && (_mode != "hardware" || _authority.clock_id == _clock_id);
 	evidence.rc_link = _authority.rc_link &&
-	                   (_mode == "hardware" || timely(wall, _authority_receive_time, _simulation_time ? kSitlWallTimeout : 0.1));
+	                   timely(wall, _authority_receive_time, _simulation_time ? kSitlWallTimeout : SafetyGate::kReceiverEvidenceMaxAge);
 	evidence.armed = _authority.armed;
 	evidence.auto_switch = _authority.auto_switch;
 	evidence.kill = _authority.kill;

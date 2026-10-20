@@ -1,8 +1,10 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <deque>
 #include <limits>
+#include <memory>
 #include <mutex>
 
 #include "agilib/estimator/ekf_imu/ekf_imu_params.hpp"
@@ -24,7 +26,10 @@ class EkfImu : public EstimatorBase {
 public:
 	enum class NavigationMeasurementMode { kFull3d, kHorizontal };
 	enum class NavigationUpdateReason { kNotAttempted, kAccepted, kInvalidInput, kTimestamp, kInnovation, kNumericalFailure };
-	static constexpr uint8_t kHorizontalGroup = 1;
+	static constexpr uint8_t kPositionGroup = 1;
+	static constexpr uint8_t kVelocityGroup = 8;
+	static constexpr uint8_t kHeadingGroup = 16;
+	static constexpr uint8_t kHorizontalGroup = kPositionGroup | kVelocityGroup;
 	static constexpr uint8_t kHeightGroup = 2;
 	static constexpr uint8_t kVerticalVelocityGroup = 4;
 
@@ -32,7 +37,8 @@ public:
 		Scalar stamp{NAN};  // Last accepted observation.
 		Scalar observation_stamp{NAN};
 		Scalar innovation_squared{NAN};
-		// Horizontal order: px, py, vx, vy, heading. Scalar groups use element zero.
+		Scalar innovation_limit{NAN};
+		// Horizontal aggregate order: px, py, vx, vy (four DOF). Scalar groups use element zero.
 		Vector<5> measurement_variance = Vector<5>::Constant(NAN);
 		uint64_t accepted_updates{0};
 		uint64_t rejected_updates{0};
@@ -59,8 +65,33 @@ public:
 		uint32_t observation_dimensions{0};
 		bool valid{false};
 		NavigationGroupQuality horizontal;
+		NavigationGroupQuality position;
+		NavigationGroupQuality velocity;
+		NavigationGroupQuality heading;
 		NavigationGroupQuality height;
 		NavigationGroupQuality vertical_velocity;
+	};
+	// Observation order: px, py, pz, vx, vy, vz, yaw. State order: p, quaternion(wxyz), v, bw, ba, baro bias.
+	// residual = h(x_prior) - z, with wrapped yaw. Group order: position XY, velocity XY, heading, height, vertical velocity.
+	struct NavigationDiagnostics {
+		Scalar stamp{NAN};
+		bool valid{false};
+		Vector<17> prior_state = Vector<17>::Constant(NAN);
+		Vector<17> posterior_state = Vector<17>::Constant(NAN);
+		Matrix<17, 17> prior_covariance = Matrix<17, 17>::Constant(NAN);
+		Matrix<17, 17> posterior_covariance = Matrix<17, 17>::Constant(NAN);
+		Vector<7> measurement = Vector<7>::Constant(NAN);
+		Vector<7> prediction = Vector<7>::Constant(NAN);
+		Vector<7> residual = Vector<7>::Constant(NAN);
+		Matrix<7, 17> observation = Matrix<7, 17>::Constant(NAN);
+		Matrix<7, 7> measurement_covariance = Matrix<7, 7>::Constant(NAN);
+		Matrix<7, 7> innovation_covariance = Matrix<7, 7>::Constant(NAN);
+		// Each column is L^-1 residual for a group embedded in seven rows; inactive rows are zero.
+		Matrix<7, 5> whitened_innovation = Matrix<7, 5>::Constant(NAN);
+		// Column i is -K.col(i) * residual(i), before quaternion normalization.
+		Matrix<17, 7> correction_contributions = Matrix<17, 7>::Zero();
+		std::array<NavigationGroupQuality, 5> groups;
+		NavigationUpdateResult result;
 	};
 	struct BarometerQuality {
 		// Last accepted barometer time; bias and variance describe the current posterior.
@@ -82,7 +113,13 @@ public:
            std::shared_ptr<EkfImuParameters>());
   ~EkfImu();
 
-  bool getAt(const Scalar t, QuadState* const state) override;
+	bool getAt(const Scalar t, QuadState* const state) override;
+	// State and covariance share one predicted epoch; querying never advances the delayed-update posterior.
+	bool getAt(Scalar time, QuadState* state, NavigationQuality* quality);
+	void setNavigationDiagnosticsEnabled(bool enabled);
+	NavigationDiagnostics navigationDiagnostics();
+	// Same diagnostic envelope; pressure uses observation row 2 and group 3 (height).
+	NavigationDiagnostics barometerDiagnostics();
 
   bool initialize(const QuadState& state) override;
 
@@ -97,12 +134,14 @@ public:
 	            const Vector<3>& position_variance, const Vector<3>& velocity_variance, Scalar heading_variance,
 	            Scalar max_innovation_squared = std::numeric_limits<Scalar>::infinity(),
 	            NavigationMeasurementMode mode = NavigationMeasurementMode::kFull3d);
-	// Gate XY/heading, height and vertical velocity separately using one propagated prior.
-	// All accepted rows are fused jointly and committed once. Aggregate navigation counters describe XY/heading.
+	// Gate position XY, velocity XY, heading, height and vertical velocity independently from one prior.
+	// horizontal_nis_limit is retained for aggregate diagnostics only; it does not veto the independent groups.
+	// Aggregate navigation acceptance requires position and velocity, while heading readiness is a caller policy.
 	NavigationUpdateResult addNavigation(Scalar time, const Vector<3>& position, const Vector<3>& velocity, Scalar heading,
 	                                     bool heading_valid, const Vector<3>& position_variance, const Vector<3>& velocity_variance,
 	                                     Scalar heading_variance, Scalar horizontal_nis_limit, Scalar height_nis_limit,
-	                                     Scalar vertical_velocity_nis_limit);
+	                                     Scalar vertical_velocity_nis_limit, Scalar position_nis_limit = 13.815510557964274,
+	                                     Scalar velocity_nis_limit = 13.815510557964274, Scalar heading_nis_limit = 10.827566170662733);
 
 	// Posterior covariance and innovation at stamp; not a claim of convergence.
 	NavigationQuality navigationQuality();
@@ -167,11 +206,12 @@ private:
   static constexpr int SRIMU = 6;   // Size of IMU measurement.
 
 
-  bool init(const QuadState& state);
-  bool process();
-  bool updatePose(const Pose& pose);
-  bool propagatePrior(const Scalar time);
-  bool propagatePriorAndCovariance(const Scalar time);
+	bool init(const QuadState& state);
+	bool process();
+	bool updatePose(const Pose& pose);
+	bool propagatePrior(const Scalar time);
+	bool propagatePriorAndCovariance(const Scalar time);
+	NavigationQuality qualityAt(Scalar time, const StateVector& state, const StateMatrix& covariance) const;
 	bool normalizeCorrection(StateVector* state, StateMatrix* covariance) const;
 	template <int Columns>
 	void constrainReferenceGain(Matrix<IDX::SIZE, Columns>* gain) const {
@@ -180,11 +220,8 @@ private:
 		gain->row(POSZ) += gain->row(BARO_BIAS);
 		gain->row(BARO_BIAS).setZero();
 	}
-  bool vectorToState(const Scalar t, const StateVector& x,
-                     QuadState* const state) const;
-  bool stateToVector(const QuadState& state, Scalar* const t,
-                     StateVector* const x) const;
-
+	bool vectorToState(const Scalar t, const StateVector& x, QuadState* const state) const;
+	bool stateToVector(const QuadState& state, Scalar* const t, StateVector* const x) const;
 
   // Parameters
   std::shared_ptr<EkfImuParameters> params_;
@@ -199,9 +236,13 @@ private:
   StateVector prior_ = StateVector::Zero();
   StateVector posterior_ = StateVector::Zero();
   StateMatrix P_ = StateMatrix::Zero();
-	// State-only prediction is independent of the posterior/covariance workspace.
+	// Prediction state and covariance are independent of the delayed posterior workspace.
 	Scalar _prediction_time{NAN};
 	StateVector _prediction = StateVector::Zero();
+	StateMatrix _prediction_covariance = StateMatrix::Zero();
+	bool _prediction_has_covariance{false};
+	std::unique_ptr<NavigationDiagnostics> _navigation_diagnostics;
+	std::unique_ptr<NavigationDiagnostics> _barometer_diagnostics;
 	NavigationQuality _navigation_quality;
 	BarometerQuality _barometer_quality;
 	Scalar _last_rtk_time{NAN};

@@ -52,6 +52,7 @@ class BarometerHarness(Harness):
         self.navigation_velocity_variance = [0.01, 0.01, 0.04]
         self.navigation_valid = True
         self.navigation_heading = 0.0
+        self.navigation_heading_valid = True
         self.navigation_heading_rate = 0.0
         self.navigation_epoch = self.sim_time_ns * 1e-9
         self.navigation_delay = 0.0
@@ -106,7 +107,8 @@ class BarometerHarness(Harness):
             setattr(message.position, axis, self.navigation_position[index] + elapsed * position_rate[index])
             setattr(message.velocity, axis, self.navigation_velocity[index])
         message.heading = self.navigation_heading + elapsed * self.navigation_heading_rate
-        message.heading_valid = message.accuracy_ok = True
+        message.heading_valid = self.navigation_heading_valid
+        message.accuracy_ok = True
         if self.navigation_source == 'gnss':
             message.observation_valid = self.navigation_valid
             message.clock_aligned = message.accuracy_known = True
@@ -359,7 +361,7 @@ class GnssBarometerFusionTest(unittest.TestCase):
             'max_vertical_position_stddev': 5.0, 'max_velocity_stddev': 1.0,
             'max_heading_stddev': 1.0})
         self.addCleanup(self.h.close)
-        self.wait_for_policy(active=1, dimensions=5)
+        self.wait_for_policy(active=1, dimensions=4)
         self.h.drive(0.4)
         self.assertTrue(self.h.state().initialized)
         self.assertTrue(self.h.state().estimator_ready, self.h.state().readiness_reason)
@@ -399,13 +401,13 @@ class GnssBarometerFusionTest(unittest.TestCase):
         self.assertAlmostEqual(yaw, expected.heading, delta=0.04)
         self.assertGreater(yaw, 0.12)
         self.assertEqual(status['gnss_baro_height_active'], 1)
-        self.assertEqual(status['navigation_nis_dimensions'], 5)
+        self.assertEqual(status['navigation_nis_dimensions'], 4)
         self.assertEqual(status['reference_resets'], before['reference_resets'])
         self.assertGreater(status['accepted_updates'], before['accepted_updates'] + 20)
 
     def assert_gnss_height_fallback_and_pressure_recovery(self, require_disarmed_reference=False):
         h = self.h
-        self.wait_for_policy(active=0, dimensions=7)
+        self.wait_for_policy(active=0, dimensions=4)
         accepted_before = h.status()['accepted_updates']
         navigation_before = stamp_seconds(h.state().rtk_stamp)
         height_before = h.state().position.z
@@ -416,17 +418,17 @@ class GnssBarometerFusionTest(unittest.TestCase):
         self.assertGreater(h.state().position.z, height_before + 0.15, h.state())
         self.assertGreater(stamp_seconds(h.state().rtk_stamp), navigation_before + 0.5)
         self.assertEqual(h.status()['gnss_baro_height_active'], 0)
-        self.assertEqual(h.status()['navigation_nis_dimensions'], 7)
+        self.assertEqual(h.status()['navigation_nis_dimensions'], 4)
         h.pressure = 101325.0
         h.pressure_enabled = True
         if require_disarmed_reference:
             h.drive(1.5)
             self.assertEqual(h.status()['reference_valid'], 0, h.status())
             self.assertEqual(h.status()['gnss_baro_height_active'], 0)
-            self.assertEqual(h.status()['navigation_nis_dimensions'], 7)
+            self.assertEqual(h.status()['navigation_nis_dimensions'], 4)
             self.assertIn('disarmed', h.status()['message'])
             h.armed = False
-        self.wait_for_policy(active=1, dimensions=5)
+        self.wait_for_policy(active=1, dimensions=4)
         self.assertGreater(h.status()['accepted_updates'], accepted_before)
         self.assertEqual(h.status()['reference_valid'], 1)
         self.assertTrue(h.state().initialized)
@@ -443,7 +445,7 @@ class GnssBarometerFusionTest(unittest.TestCase):
         h = self.h
         before = h.status()
         h.pressure = 80000.0
-        self.wait_for_policy(active=0, dimensions=7)
+        self.wait_for_policy(active=0, dimensions=4)
         failed = h.status()
         self.assertGreater(failed['rejected_updates'], before['rejected_updates'])
         self.assertGreater(failed['nis'], 10.828)
@@ -459,7 +461,7 @@ class GnssBarometerFusionTest(unittest.TestCase):
         self.assertEqual(h.status()['gnss_baro_height_active'], 1)
         self.assertTrue(h.state().estimator_ready, h.state().readiness_reason)
         accepted_stamp = stamp_seconds(h.state().rtk_stamp)
-        rejections = h.state().navigation_rejections
+        height_rejections = h.status()['gnss_height_rejected_updates']
         h.pressure_enabled = False
         h.drive(1.5)
         state = h.state()
@@ -467,8 +469,9 @@ class GnssBarometerFusionTest(unittest.TestCase):
         expected = h.navigation(state.header.stamp)
         self.assertEqual(status['gnss_baro_height_active'], 0)
         self.assertEqual(status['gnss_vertical_recovery_pending'], 1)
-        self.assertEqual(status['navigation_nis_dimensions'], 5)
-        self.assertGreater(state.navigation_rejections, rejections)
+        self.assertEqual(status['navigation_nis_dimensions'], 4)
+        self.assertGreater(status['gnss_height_rejected_updates'], height_rejections)
+        self.assertEqual(status['gnss_horizontal_accepted'], 1)
         self.assertGreater(stamp_seconds(state.rtk_stamp), accepted_stamp + 0.4)
         self.assertAlmostEqual(state.position.x, expected.position.x, delta=0.10)
         self.assertAlmostEqual(state.position.y, expected.position.y, delta=0.10)
@@ -529,6 +532,19 @@ class WeightedGnssBarometerFusionTest(unittest.TestCase):
         self.assertEqual(status['gnss_vertical_velocity_reason'], 'innovation')
         self.assertTrue(h.state().estimator_ready, h.state().readiness_reason)
         self.assertAlmostEqual(h.state().velocity.z, 0.0, delta=0.1)
+
+        # Variance floors must not turn unknown/negative component evidence into
+        # a usable measurement while the other GNSS groups remain valid.
+        h.set_navigation((0.0, 0.0, 3.0))
+        h.navigation_position_variance[2] = math.nan
+        h.navigation_velocity_variance[2] = -1.0
+        status = self.wait_for_status(gnss_height_accepted=0, gnss_vertical_velocity_accepted=0,
+                                      gnss_horizontal_accepted=1)
+        self.assertEqual(status['gnss_height_reason'], 'invalid_input')
+        self.assertEqual(status['gnss_vertical_velocity_reason'], 'invalid_input')
+        self.assertTrue(h.state().initialized)
+        h.navigation_position_variance[2] = 4.0
+        h.navigation_velocity_variance[2] = 0.04
 
         h.set_navigation((100.0, 0.0, 3.0))
         status = self.wait_for_status(gnss_horizontal_accepted=0, gnss_height_accepted=1,
@@ -689,6 +705,44 @@ class NavigationTimingFusionTest(unittest.TestCase):
     def tearDownClass(cls):
         rclpy.shutdown()
 
+    def test_bad_heading_retains_gnss_and_recovers_without_state_reset(self):
+        h = BarometerHarness(navigation_source='gnss', parameters={
+            'height_fusion_mode': 'baro_gnss_weighted', 'navigation_ready_updates': 3,
+            'navigation_recovery_updates': 2,
+            'ekf_process_noise_model': 'continuous_psd', 'ekf_integration_step': 0.001,
+            'imu_acceleration_variance': 1.0e-5, 'imu_angular_velocity_variance': 1.0e-8,
+            'max_horizontal_position_stddev': 2.0, 'max_vertical_position_stddev': 3.0,
+            'max_velocity_stddev': 0.6, 'max_heading_stddev': 0.5})
+        self.addCleanup(h.close)
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline and (not h.received['fused_state'] or not h.state().estimator_ready):
+            h.drive(0.2)
+        self.assertTrue(h.state().estimator_ready, h.state().readiness_reason)
+        reset_counter = h.state().reset_counter
+        previous = h.status()['gnss_position_accepted_updates']
+        h.navigation_heading = 3.0
+        h.drive(1.0)
+        self.assertEqual(h.status()['gnss_heading_accepted'], 0)
+        self.assertEqual(h.status()['gnss_position_accepted'], 1)
+        self.assertEqual(h.status()['gnss_velocity_accepted'], 1)
+        self.assertGreater(h.status()['gnss_position_accepted_updates'], previous)
+        self.assertFalse(h.state().heading_trusted or h.state().estimator_ready)
+        self.assertEqual(h.state().reset_counter, reset_counter)
+        # Numeric heading absence also retains valid position and velocity.
+        h.navigation_heading_valid = False
+        h.navigation_heading = math.nan
+        h.drive(0.8)
+        self.assertEqual(h.status()['gnss_position_accepted'], 1)
+        self.assertFalse(h.state().heading_trusted or h.state().estimator_ready)
+        h.navigation_heading_valid = True
+        h.navigation_heading = 0.0
+        h.drive(1.2)
+        self.assertTrue(h.state().estimator_ready, h.state().readiness_reason)
+        self.assertEqual(h.state().reset_counter, reset_counter)
+        self.assertEqual(h.state().covariance_stamp, h.state().header.stamp)
+        self.assertGreater(stamp_seconds(h.state().covariance_stamp) -
+                           stamp_seconds(h.state().posterior_covariance_stamp), 0.15)
+
     def test_reorder_delay_preserves_readiness_but_raw_outage_revokes(self):
         h = BarometerHarness(navigation_source='gnss', parameters={
             'height_fusion_mode': 'baro_gnss_weighted', 'navigation_ready_updates': 3,
@@ -725,10 +779,10 @@ class HeightFusionConfigurationTest(unittest.TestCase):
 
     def test_legacy_boolean_mapping_and_explicit_mode_precedence(self):
         for parameters, mode, dimensions in (
-                ({'gnss_use_baro_height': False}, 'legacy_full3d', 7),
-                ({'gnss_use_baro_height': True}, 'baro_primary', 5),
-                ({'gnss_use_baro_height': True, 'height_fusion_mode': 'legacy_full3d'}, 'legacy_full3d', 7),
-                ({'gnss_use_baro_height': False, 'height_fusion_mode': 'baro_gnss_weighted'}, 'baro_gnss_weighted', 5)):
+                ({'gnss_use_baro_height': False}, 'legacy_full3d', 4),
+                ({'gnss_use_baro_height': True}, 'baro_primary', 4),
+                ({'gnss_use_baro_height': True, 'height_fusion_mode': 'legacy_full3d'}, 'legacy_full3d', 4),
+                ({'gnss_use_baro_height': False, 'height_fusion_mode': 'baro_gnss_weighted'}, 'baro_gnss_weighted', 4)):
             with self.subTest(parameters=parameters):
                 h = BarometerHarness(navigation_source='gnss', parameters=parameters)
                 try:
@@ -758,7 +812,7 @@ class HeightFusionConfigurationTest(unittest.TestCase):
                 break
         status = h.status()
         state = h.state()
-        self.assertTrue(state.navigation_ready)
+        self.assertFalse(state.navigation_ready)  # Current covariance also bounds navigation readiness.
         self.assertEqual(state.navigation_accepted_updates, 3)
         self.assertGreater(state.position_variance[2], 0.01)
         self.assertGreater(status['absolute_height_variance_m2'], status['relative_height_variance_m2'])

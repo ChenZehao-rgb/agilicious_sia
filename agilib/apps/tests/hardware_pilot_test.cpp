@@ -28,7 +28,7 @@ PilotParams configuration() {
 }
 Evidence health(double now, bool automatic = false) {
 	Evidence e;
-	e.now = e.imu_time = e.rtk_time = e.rc_time = now;
+	e.now = e.imu_sample_time = e.status_time = e.imu_time = e.rtk_time = e.rc_time = now;
 	e.rtk_fixed = e.heading_valid = e.accuracy_ok = e.imu_calibrated = true;
 	e.synchronized = e.converged = e.config_verified = e.thrust_calibrated = true;
 	e.thrust_mapping_ready = true;
@@ -48,7 +48,7 @@ void latchedModeTests() {
 		now += .01;
 		state.t = now;
 		auto evidence = health(now, automatic);
-		evidence.rc_time = 10;  // No new mode samples throughout this test.
+		evidence.rc_time = evidence.status_time = now - .040;  // Normal 25 Hz readback evidence.
 		evidence.armed = armed;
 		evidence.kill = kill;
 		evidence.rc_link = link;
@@ -71,10 +71,11 @@ void latchedModeTests() {
 		for (int i = 0; i < ticks; ++i) {
 			decision = step(true);
 			elapsed += .01;
-			require(decision.permit_override && decision.evidence.command_valid, "mode gap revoked AUTO or skipped MPC");
-			require(decision.reference.p.isApprox(captured), "mode gap recaptured AUTO position");
-			require(std::abs(decision.reference_elapsed - elapsed) < 1e-8, "mode gap reset reference clock");
-			require(runtime.warmCycles() == 50, "mode gap reset controller warmup");
+			require(decision.permit_override && decision.evidence.command_valid,
+			        "fresh mode evidence revoked AUTO or skipped MPC");
+			require(decision.reference.p.isApprox(captured), "fresh mode evidence recaptured AUTO position");
+			require(std::abs(decision.reference_elapsed - elapsed) < 1e-8, "fresh mode evidence reset reference clock");
+			require(runtime.warmCycles() == 50, "fresh mode evidence reset controller warmup");
 		}
 	}
 	for (int fault = 0; fault < 4; ++fault) {

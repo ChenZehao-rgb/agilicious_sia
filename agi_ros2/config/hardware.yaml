@@ -103,13 +103,19 @@ bridge:
   hover_throttle: 0.5
   min_check: 1050
 fusion:
-  # Keep the relative pressure reference and fuse GNSS XY/heading, height and vertical velocity independently.
+  # One common prior, independent XY position / XY velocity / heading / height / vertical-velocity gates.
   # Healthy pressure reduces GNSS height weight; unavailable pressure restores its raw reported variance.
   # Initial pressure noise/delay values require dynamic validation; flight readiness gates still apply.
   baro_enabled: true
   height_fusion_mode: baro_gnss_weighted
-  # 99.9% chi-square limit for XY position, XY velocity and heading (five observations).
-  navigation_horizontal_nis_threshold: 20.515
+  # Four-row XY position/velocity diagnostic only (99.9%); it does not veto independent groups.
+  navigation_horizontal_nis_threshold: 18.46682695290317
+  # 99.9% chi-square: two degrees of freedom for each XY group, one for heading.
+  navigation_position_nis_threshold: 13.815510557964274
+  navigation_velocity_nis_threshold: 13.815510557964274
+  navigation_heading_nis_threshold: 10.827566170662733
+  # Full prior/posterior matrices are opt-in; replay always enables them.
+  navigation_diagnostics: false
   # Separate 99.9% one-dimensional gates for height and vertical velocity.
   navigation_height_nis_threshold: 10.828
   navigation_vertical_velocity_nis_threshold: 10.828
@@ -133,15 +139,22 @@ fusion:
   # all later observations preserve this datum instead of letting its bias wander.
   baro_bias_random_walk: 0.0
   baro_reference_variance: 0.25
-  imu_acceleration_variance: 0.1
-  imu_angular_velocity_variance: 0.0001
-  ekf_process_position_variance: [1.0e-6, 1.0e-6, 1.0e-6]
-  ekf_process_attitude_variance: [1.0e-6, 1.0e-6, 1.0e-6, 1.0e-6]
-  ekf_process_velocity_variance: [0.001, 0.001, 0.001]
-  # Tuned with stationary bag hardware_20260930_112052_319876.
-  # Values require the current dt^2 noise injection and 0.1 ms integration substeps.
-  ekf_process_gyro_bias_variance: [0.0001, 0.0001, 0.0001]
-  ekf_process_acceleration_bias_variance: [0.1, 0.1, 0.1]
+  # Explicit units v2: IMU keys are continuous PSD, (m/s^2)^2*s and (rad/s)^2*s.
+  # Q_* keys are state-variance rates /s, bias entries are random-walk variance rates.
+  # Migration = old per-substep number * 0.0001 s; preserves the old nominal noise
+  # budget at 0.1 ms, NOT a sensor calibration or evidence of statistical consistency.
+  # One held 500 Hz sample is integrated; internal substeps do not create independent measurements.
+  ekf_process_noise_model: continuous_psd
+  # 1 ms agrees with finer steps in covariance/dynamic tests and avoids repeated
+  # 0.2 s covariance prediction exceeding 15 ms on the test host; CM5 still needs timing validation.
+  ekf_integration_step: 0.001
+  imu_acceleration_variance: 1.0e-5
+  imu_angular_velocity_variance: 1.0e-8
+  ekf_process_position_variance: [1.0e-10, 1.0e-10, 1.0e-10]
+  ekf_process_attitude_variance: [1.0e-10, 1.0e-10, 1.0e-10, 1.0e-10]
+  ekf_process_velocity_variance: [1.0e-7, 1.0e-7, 1.0e-7]
+  ekf_process_gyro_bias_variance: [1.0e-8, 1.0e-8, 1.0e-8]
+  ekf_process_acceleration_bias_variance: [1.0e-5, 1.0e-5, 1.0e-5]
   ekf_initial_attitude_variance: [0.01, 0.01, 0.01, 0.01]
   ekf_initial_gyro_bias_variance: [0.001, 0.001, 0.001]
   ekf_initial_acceleration_bias_variance: [0.01, 0.01, 0.01]
@@ -158,6 +171,9 @@ fusion:
   imu_gravity_tolerance: 0.7
   imu_initialization_max_speed: 0.3
   navigation_ready_updates: 30
+  # Recovery uses five ordinary accepted full observations, fresh heading and current P.
+  # A single non-heading rejection permits bounded prediction only while all age/P limits hold.
+  navigation_recovery_updates: 5
   navigation_nis_threshold: 24.322
   max_horizontal_position_stddev: 1.0
   max_vertical_position_stddev: 1.0

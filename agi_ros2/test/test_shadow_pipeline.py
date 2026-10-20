@@ -166,6 +166,9 @@ class ShadowHarness(Harness):
             authority.receiver_valid = True
             authority.session_id = "test-authority"
             authority.header.stamp = self.stamp()
+            authority.rc_stamp = authority.status_stamp = authority.header.stamp
+            authority.clock_id = CLOCK_ID
+            authority.rc_request_steady_time = authority.status_request_steady_time = now
             authority.armed = self.response_armed
             authority.rc_link = True
             authority.kill = self.response_kill
@@ -190,7 +193,7 @@ class ShadowHarness(Harness):
         s.position.z = 2.
         s.orientation.w = 1.
         s.clock_id = CLOCK_ID
-        s.published_steady_time = s.imu_receive_time = s.rtk_receive_time = now
+        s.published_steady_time = s.imu_receive_time = s.imu_sample_steady_time = s.rtk_receive_time = now
         s.rtk_stamp = self.stamp()
         s.navigation_sample_stamp = s.rtk_stamp
         s.initialized = s.navigation_valid = s.clock_aligned = s.heading_valid = True
@@ -202,6 +205,9 @@ class ShadowHarness(Harness):
         a.receiver_valid = True
         a.session_id = "test-authority"
         a.header.stamp = self.stamp()
+        a.rc_stamp = a.status_stamp = a.header.stamp
+        a.clock_id = CLOCK_ID
+        a.rc_request_steady_time = a.status_request_steady_time = now
         a.armed = self.response_armed
         a.auto_switch = self.response_auto
         a.kill = self.response_kill
@@ -388,6 +394,7 @@ class ShadowTests(unittest.TestCase):
         self.assertEqual(revoked.navigation_accepted_updates, 0)
         self.assertEqual(revoked.header.stamp, previous.header.stamp)
         self.assertEqual(revoked.imu_receive_time, previous.imu_receive_time)
+        self.assertEqual(revoked.imu_sample_steady_time, previous.imu_sample_steady_time)
         self.assertEqual(revoked.rtk_stamp, previous.rtk_stamp)
         self.assertIn('heading', revoked.readiness_reason)
         h.driver = h.sensors
@@ -401,10 +408,15 @@ class ShadowTests(unittest.TestCase):
     def test_unconfirmed_heading_does_not_initialize(self):
         h = self.h
         h.subscribe_sensor('sensors/local_navigation', LocalNavigation)
+        h.subscribe('fused_state', FusedState)
         h.start_node('gnss_adapter.py', origin_duration=.2, origin_samples=2)
+        h.start_node('state_fusion_node', navigation_source='gnss',
+                     imu_initialization_duration=.2, imu_initialization_samples=30)
         h.driver = h.sensors
         h.run(1.2)
-        self.assertFalse(h.received['sensors/local_navigation'])
+        self.assertTrue(h.received['sensors/local_navigation'])
+        self.assertTrue(all(m.observation_valid and not m.heading_valid for m in h.received['sensors/local_navigation']))
+        self.assertFalse(any(m.initialized or m.estimator_ready for m in h.received['fused_state']))
 
     def test_hardware_control_uses_latest_fusion_and_independent_fc_health(self):
         h = self.h
@@ -413,16 +425,21 @@ class ShadowTests(unittest.TestCase):
         h.start_node('control_node', shadow_only=False, geofence_min=[-3.0]*3, geofence_max=[3.0]*3)
         fc_ready = True
         position = 2.0
+        fixed_imu_sample = None
+        sample_ros_age = 0.
 
         def inputs():
             now = time.monotonic()
             state = FusedState()
             state.header.stamp = h.stamp()
+            stamp_ns = state.header.stamp.sec * 1_000_000_000 + state.header.stamp.nanosec - int(sample_ros_age * 1e9)
+            state.header.stamp.sec, state.header.stamp.nanosec = divmod(stamp_ns, 1_000_000_000)
             state.header.frame_id = 'odom'
             state.position.z = position
             state.orientation.w = 1.0
             state.clock_id = CLOCK_ID
             state.published_steady_time = state.imu_receive_time = state.rtk_receive_time = now
+            state.imu_sample_steady_time = now if fixed_imu_sample is None else fixed_imu_sample
             state.rtk_stamp = state.navigation_sample_stamp = h.stamp()
             state.initialized = state.imu_ready = state.estimator_ready = state.navigation_ready = True
             state.navigation_valid = state.clock_aligned = state.heading_valid = True
@@ -441,6 +458,9 @@ class ShadowTests(unittest.TestCase):
             authority.receiver_valid = True
             authority.session_id = "test-authority"
             authority.header.stamp = h.stamp()
+            authority.rc_stamp = authority.status_stamp = authority.header.stamp
+            authority.clock_id = CLOCK_ID
+            authority.rc_request_steady_time = authority.status_request_steady_time = now
             authority.armed = True
             authority.rc_link = True
             h.publisher('authority', Authority).publish(authority)
@@ -466,6 +486,21 @@ class ShadowTests(unittest.TestCase):
         h.run(.15)
         self.assertFalse(h.received['computation_status'][-1].controller_success)
         self.assertIn('geofence rejected', h.received['computation_status'][-1].reason)
+
+        # Re-published state can have a young ROS age even though the original
+        # accepted source epoch is old. Shrinking its ROS age by 4 ms models the
+        # effect of a small backwards ROS offset on an already cached epoch;
+        # neither publication nor offset may change immutable source evidence.
+        position = 2.0
+        fixed_imu_sample = time.monotonic() - .060
+        for sample_ros_age in (.005, .001):
+            before = len(h.received['control_command'])
+            h.run(.08)
+            commands = h.received['control_command'][before:]
+            self.assertTrue(commands)
+            self.assertTrue(all(c.evidence.imu_sample_time == fixed_imu_sample for c in commands[-3:]))
+            self.assertFalse(h.received['computation_status'][-1].controller_success)
+            self.assertIn('IMU source sample stale/future', h.received['computation_status'][-1].reason)
 
     def test_shadow_mpc_health_separation_and_edges(self):
         h = self.h

@@ -1,5 +1,7 @@
 std_msgs/Header header
 # False is a revocation event, not a measurement. Its stamp is detection time.
+# True permits component-wise fusion; missing position/velocity values may be NaN.
+# heading_valid does not imply independent magnetic-heading trust.
 bool observation_valid
 string reason
 string session_id

@@ -45,7 +45,9 @@ bool EkfImuParameters::load(const Yaml& node) {
 	if (node["baro_relative_reference"].isDefined()) baro_relative_reference = node["baro_relative_reference"].as<bool>();
 	if (node["Q_init_baro_bias"].isDefined()) Q_init_baro_bias = node["Q_init_baro_bias"].as<Scalar>();
 
-  return valid();
+	if (node["process_noise_model"].isDefined()) process_noise_model = node["process_noise_model"].as<std::string>();
+	if (node["integration_step"].isDefined()) integration_step = node["integration_step"].as<Scalar>();
+	return valid();
 }
 
 bool EkfImuParameters::valid() const {
@@ -71,26 +73,36 @@ bool EkfImuParameters::valid() const {
 	check &= !baro_relative_reference || baro_bias_random_walk == 0;
 	check &= std::isfinite(Q_init_baro_bias) && Q_init_baro_bias > 0;
 
-  return check;
+	check &= process_noise_model == "legacy_dt2" || process_noise_model == "continuous_psd";
+	check &= std::isfinite(integration_step) && integration_step > 0 && integration_step <= 0.01;
+	check &= (R_pos.array() >= 0).all() && (R_att.array() >= 0).all();
+	check &= (R_acc.array() >= 0).all() && (R_omega.array() >= 0).all();
+	check &= (Q_pos.array() >= 0).all() && (Q_att.array() >= 0).all() && (Q_vel.array() >= 0).all();
+	check &= (Q_bome.array() >= 0).all() && (Q_bacc.array() >= 0).all();
+	check &= (Q_init_pos.array() >= 0).all() && (Q_init_att.array() >= 0).all() && (Q_init_vel.array() >= 0).all();
+	check &= (Q_init_bome.array() >= 0).all() && (Q_init_bacc.array() >= 0).all();
+	return check;
 }
 
 std::ostream& operator<<(std::ostream& os, const EkfImuParameters& params) {
   os << "EKF IMU Parameters:\n";
 
-  os << "R_pos:       " << params.R_pos.transpose() << '\n';
-  os << "R_att:       " << params.R_att.transpose() << '\n';
-  os << "R_acc:       " << params.R_acc.transpose() << '\n';
-  os << "R_omega:     " << params.R_omega.transpose() << '\n';
-  os << "Q_pos:       " << params.Q_pos.transpose() << '\n';
-  os << "Q_att:       " << params.Q_att.transpose() << '\n';
-  os << "Q_vel:       " << params.Q_vel.transpose() << '\n';
-  os << "Q_bome:      " << params.Q_bome.transpose() << '\n';
-  os << "Q_bacc:      " << params.Q_bacc.transpose() << '\n';
-  os << "Q_init_pos:  " << params.Q_init_pos.transpose() << '\n';
-  os << "Q_init_att:  " << params.Q_init_att.transpose() << '\n';
-  os << "Q_init_vel:  " << params.Q_init_vel.transpose() << '\n';
-  os << "Q_init_bome: " << params.Q_init_bome.transpose() << '\n';
-  os << "Q_init_bacc: " << params.Q_init_bacc.transpose() << '\n';
+	os << "process_noise_model: " << params.process_noise_model << '\n';
+	os << "integration_step: " << params.integration_step << '\n';
+	os << "R_pos:       " << params.R_pos.transpose() << '\n';
+	os << "R_att:       " << params.R_att.transpose() << '\n';
+	os << "R_acc:       " << params.R_acc.transpose() << '\n';
+	os << "R_omega:     " << params.R_omega.transpose() << '\n';
+	os << "Q_pos:       " << params.Q_pos.transpose() << '\n';
+	os << "Q_att:       " << params.Q_att.transpose() << '\n';
+	os << "Q_vel:       " << params.Q_vel.transpose() << '\n';
+	os << "Q_bome:      " << params.Q_bome.transpose() << '\n';
+	os << "Q_bacc:      " << params.Q_bacc.transpose() << '\n';
+	os << "Q_init_pos:  " << params.Q_init_pos.transpose() << '\n';
+	os << "Q_init_att:  " << params.Q_init_att.transpose() << '\n';
+	os << "Q_init_vel:  " << params.Q_init_vel.transpose() << '\n';
+	os << "Q_init_bome: " << params.Q_init_bome.transpose() << '\n';
+	os << "Q_init_bacc: " << params.Q_init_bacc.transpose() << '\n';
 	os << "baro_bias_random_walk: " << params.baro_bias_random_walk << '\n';
 	os << "baro_relative_reference: " << params.baro_relative_reference << '\n';
 	os << "Q_init_baro_bias:      " << params.Q_init_baro_bias << '\n';

@@ -118,6 +118,10 @@ class MspEvidence:
     OVERRIDE_SETTINGS = ('msp_override_channels_mask', 'msp_override_failsafe', 'msp_override_timeout_ms')
     # These modes change the meaning of AETR or add another outer controller.
     CONFLICTING_MODES = {1, 2, 3, 5, 6, 7, 11, 12, 17, 29, 30, 35, 46, 47, 49, 56}
+    # Hardware polls each mode at 25 Hz. Two periods (80 ms), the measured
+    # <8.35 ms response tail and a 10 ms scheduling budget fit inside 100 ms.
+    # This is a request-age bound, never refreshed by unrelated MSP traffic.
+    MODE_MAX_AGE = .100
 
     def __init__(self, expected):
         self.expected = expected
@@ -139,29 +143,45 @@ class MspEvidence:
         self.receiver_snapshot = None
         self.retired_sessions = set()
         self.mode_order = {}
+        self.mode_request_steady = {}
         self.mode_versions = {105: 0, 150: 0}
         self.low_rc_version = -1
         self.low_status_version = -1
+        self.mode_fault_versions = None
+        self.mode_failure_reason = ''
 
-    def accept(self, code, payload, stamp, session, name='', event='rx', observed_steady=None):
+    def invalidate_modes(self, reason):
+        if self.mode_fault_versions is None:
+            self.mode_fault_versions = dict(self.mode_versions)
+        self.mode_failure_reason = reason
+
+    def accept(self, code, payload, stamp, session, name='', event='rx', observed_steady=None, request_steady=None):
         if session in self.retired_sessions:
             return
         if session != self.session:
+            changed_session = self.session is not None
             if self.session is not None:
                 self.retired_sessions.add(self.session)
             self.session = session
             self.frames.clear()
             self.settings.clear()
             self.failed = False
-            self.receiver_snapshot = None
+            # Preserve the last known physical switches; unknown is not low.
             self.mode_order.clear()
+            self.mode_request_steady.clear()
             self.mode_versions = {105: 0, 150: 0}
             self.low_rc_version = self.low_status_version = -1
+            self.mode_fault_versions = dict(self.mode_versions) if changed_session else None
+            self.mode_failure_reason = 'MSP session changed; fresh physical AUTO low required' if changed_session else ''
+        if event in ('mode_timeout', 'mode_rx_unmatched'):
+            self.invalidate_modes('Unconfirmed RC/STATUS reply; fresh physical AUTO low required')
+            return
         if event in ('error', 'timeout', 'transport_error'):
+            self.invalidate_modes('MSP transport/request failure')
             self.failed = True
             self.reason = 'MSP transport/request failure; restart required'
             return
-        mode = code in (105, 150) and event in ('rx', 'mode_rx_unmatched')
+        mode = code in (105, 150) and event == 'rx'
         if mode:
             order = stamp if observed_steady is None else observed_steady
             if not math.isfinite(order) or order <= self.mode_order.get(code, 0.):
@@ -170,7 +190,8 @@ class MspEvidence:
                 return
             self.mode_order[code] = order
             self.mode_versions[code] += 1
-            self.frames[code] = bytes(payload), stamp if event == 'rx' else 0.
+            self.mode_request_steady[code] = request_steady if request_steady is not None else math.nan
+            self.frames[code] = bytes(payload), stamp
             return
         if event != 'rx' or not math.isfinite(stamp) or stamp <= 0:
             return
@@ -256,7 +277,7 @@ class MspEvidence:
             return False, 'Truncated configuration'
         return True, 'Configuration verified'
 
-    def snapshot(self, now, battery_timeout=1.5):
+    def snapshot(self, now, battery_timeout=1.5, steady_now=None):
         verified, reason = self.configuration(now)
         result = dict(config_verified=verified, receiver_valid=False, armed=False, auto_switch=False,
                       kill=True, rc_link=False, battery_voltage=float('nan'), rc_stamp=0., status_stamp=0.,
@@ -285,6 +306,12 @@ class MspEvidence:
         rc, rt = self.frames[105]
         status, st = self.frames[150]
         result.update(rc_stamp=rt, status_stamp=st)
+        monotonic_fresh = steady_now is None or all(
+            fresh(steady_now, self.mode_request_steady.get(code, math.nan), self.MODE_MAX_AGE) for code in (105, 150))
+        if not fresh(now, rt, self.MODE_MAX_AGE) or not fresh(now, st, self.MODE_MAX_AGE) or not monotonic_fresh:
+            self.invalidate_modes('RC/STATUS successful request stale/future; fresh physical AUTO low required')
+            result['reason'] = self.mode_failure_reason
+            return result
         if not verified:
             return result
         try:
@@ -318,6 +345,13 @@ class MspEvidence:
             imu_ready = (sensor_mask & 0x21) == 0x21 and not (flags & ((1 << 12) | (1 << 23)))
             physical_auto = high(self.auto_channel)
             previous = self.receiver_snapshot
+            if self.mode_fault_versions is not None:
+                refreshed = all(self.mode_versions[code] > version for code, version in self.mode_fault_versions.items())
+                if not refreshed or physical_auto:
+                    result['reason'] = self.mode_failure_reason
+                    return result
+                self.mode_fault_versions = None
+                self.mode_failure_reason = ''
             if not physical_auto and self.low_rc_version != self.mode_versions[105]:
                 # A later AUTO rise must not reuse FC-high evidence from before this low.
                 self.low_rc_version = self.mode_versions[105]
@@ -342,10 +376,11 @@ class MspEvidence:
             result.update(receiver_valid=True, armed=high(self.arm_channel) and mode(0), auto_switch=auto_switch,
                           kill=kill, rc_link=rc_link, imu_ready=imu_ready, control_mode_ok=control_mode_ok,
                           reason=(('Waiting for coherent AUTO rise; retaining confirmed physical low' if waiting else
-                                   'Physical receiver modes held until a new readback') if control_mode_ok else
+                                   'Fresh matched physical receiver evidence') if control_mode_ok else
                                   'AUTO conflicts with FC mode IDs: ' + ','.join(map(str, conflicting))))
             self.receiver_snapshot = {key: result[key] for key in (
                 'receiver_valid', 'armed', 'auto_switch', 'kill', 'rc_link', 'rc_stamp', 'status_stamp')}
         except (IndexError, ValueError, struct.error) as error:
+            self.invalidate_modes(str(error))
             result['reason'] = str(error)
         return result

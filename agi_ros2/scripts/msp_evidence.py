@@ -122,8 +122,9 @@ class EvidenceNode(Node):
         mode = message.code in (105, 150) and message.event in ('rx', 'mode_rx_unmatched')
         steady = time.monotonic()
         if mode:
-            # The response reception clock is known even when MSP cannot match
-            # it to a request. Validate clocks without giving the mode an age limit.
+            # Validate the response clocks independently of the successful
+            # request-age limit in snapshot(). Unmatched replies never grant
+            # authority and cannot manufacture a physical AUTO low.
             received_ros = seconds(message.header.stamp)
             invalid = (not math.isfinite(message.steady_time) or message.steady_time <= 0. or
                        message.steady_time > steady or received_ros <= 0. or received_ros > now or
@@ -141,15 +142,16 @@ class EvidenceNode(Node):
             self.decoder.accept(message.code, [], 0., message.session_id, event='transport_error')
             return
         self.decoder.accept(message.code, message.payload, request_time, message.session_id,
-                            message.request_name, message.event, observed_steady=message.steady_time)
-        changed = mode and mode_key(self.decoder.snapshot(now, getattr(self, 'battery_timeout', 1.5)),
+                            message.request_name, message.event, observed_steady=message.steady_time,
+                            request_steady=message.request_steady_time)
+        changed = mode and mode_key(self.decoder.snapshot(now, getattr(self, 'battery_timeout', 1.5), steady_now=steady),
                                     self.decoder.session) != getattr(self, '_last_mode_key', None)
-        if changed or message.event in ('error', 'timeout', 'transport_error'):
+        if changed or message.event in ('error', 'timeout', 'transport_error', 'mode_timeout'):
             self.publish()
 
     def publish(self):
         now = self.get_clock().now().nanoseconds * 1e-9
-        data = self.decoder.snapshot(now, self.battery_timeout)
+        data = self.decoder.snapshot(now, self.battery_timeout, steady_now=time.monotonic())
         self._last_mode_key = mode_key(data, self.decoder.session)
         decoded = MspState()
         decoded.header.stamp = stamp(now)
@@ -159,6 +161,11 @@ class EvidenceNode(Node):
         self.decoded_pub.publish(decoded)
         authority = Authority()
         authority.header.stamp = stamp(min(data['rc_stamp'], data['status_stamp']))
+        authority.rc_stamp = stamp(data['rc_stamp'])
+        authority.status_stamp = stamp(data['status_stamp'])
+        authority.clock_id = self.clock_id
+        authority.rc_request_steady_time = self.decoder.mode_request_steady.get(105, math.nan)
+        authority.status_request_steady_time = self.decoder.mode_request_steady.get(150, math.nan)
         authority.receiver_valid = data['receiver_valid']
         authority.session_id = self.decoder.session or ''
         authority.armed = data['armed']

@@ -10,7 +10,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Rtk.msg" "msg/Authority.msg" "msg/Health.msg"
   "msg/Navigation.msg" "msg/LocalNavigation.msg" "msg/NavigationOrigin.msg" "msg/Barometer.msg"
   "msg/ComputationStatus.msg" "msg/MspState.msg"
-  "msg/Heading.msg" "msg/FusedState.msg" "msg/SafetyEvidence.msg"
+  "msg/Heading.msg" "msg/FusedState.msg" "msg/SafetyEvidence.msg" "msg/NavigationUpdate.msg"
   "msg/ControlCommand.msg" "msg/OutputStatus.msg" "msg/MspEvent.msg"
   "msg/ImuTiming.msg" "msg/OutputTiming.msg" "msg/MspWriteTiming.msg"
   DEPENDENCIES std_msgs geometry_msgs builtin_interfaces)

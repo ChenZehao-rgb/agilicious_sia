@@ -42,10 +42,12 @@ msg::SafetyEvidence encodeEvidence(const agi::hardware::Evidence& evidence) {
 	msg::SafetyEvidence message;
 	message.now = evidence.now;
 	message.imu_time = evidence.imu_time;
+	message.imu_sample_time = evidence.imu_sample_time;
 	message.rtk_time = evidence.rtk_time;
 	message.navigation_sample_time = evidence.navigation_sample_time;
 	message.navigation_receive_time = evidence.navigation_receive_time;
 	message.rc_time = evidence.rc_time;
+	message.status_time = evidence.status_time;
 	message.command_time = evidence.command_time;
 	message.solve_seconds = evidence.solve_seconds;
 	message.rtk_fixed = evidence.rtk_fixed;
@@ -78,10 +80,12 @@ agi::hardware::Evidence decodeEvidence(const msg::SafetyEvidence& message) {
 	agi::hardware::Evidence evidence;
 	evidence.now = message.now;
 	evidence.imu_time = message.imu_time;
+	evidence.imu_sample_time = message.imu_sample_time;
 	evidence.rtk_time = message.rtk_time;
 	evidence.navigation_sample_time = message.navigation_sample_time;
 	evidence.navigation_receive_time = message.navigation_receive_time;
 	evidence.rc_time = message.rc_time;
+	evidence.status_time = message.status_time;
 	evidence.command_time = message.command_time;
 	evidence.solve_seconds = message.solve_seconds;
 	evidence.rtk_fixed = message.rtk_fixed;

@@ -86,6 +86,9 @@ void MspTelemetry::expireRequests(double now, uint64_t errors) {
 		++_timeouts;
 		if (p.code == 105 || p.code == 150) {
 			p.ambiguous = true;
+			// MSP has no transaction ID. Stop this code for the session: a
+			// delayed response cannot safely be attributed to a later request.
+			p.hz = 0;
 			emit("mode_timeout", {p.code, false, {}}, errors, NAN, &p);
 			continue;
 		}
@@ -139,6 +142,7 @@ void MspTelemetry::tick(agi::hardware::BetaflightMspBridge& bridge, double write
 				}
 				break;
 			}
+			if (!matched && (frame.code == 105 || frame.code == 150)) unmatched_mode = true;
 			if (unmatched_mode && !frame.error) {
 				event = "mode_rx_unmatched";
 			} else if (!matched) {

@@ -34,6 +34,7 @@ class Harness:
         self.peer.robust_parsing = True
         self.sync = True
         self.sync_delay = 0
+        self.sync_offset_us = 0
         self.pending_sync = []
         self.streaming = True
         self.streaming_gps = True
@@ -116,7 +117,8 @@ class Harness:
             except BlockingIOError: data = b''
             for m in self.peer.parse_buffer(data) or []:
                 if m.get_type() == 'TIMESYNC' and self.sync:
-                    self.pending_sync.append((time.monotonic()+self.sync_delay, self.remote()*1000, m.ts1))
+                    self.pending_sync.append((time.monotonic()+self.sync_delay,
+                                              (self.remote()+self.sync_offset_us)*1000, m.ts1))
                 elif m.get_type() == 'COMMAND_LONG':
                     self.commands.append((m.command, m.param1, m.param2))
                     result = self.ack_result_by_id.get(int(m.param1), mav.MAV_RESULT_ACCEPTED)
@@ -313,6 +315,10 @@ class SensorTests(unittest.TestCase):
             h.heading=invalid; h.drive(.15)
             self.assertFalse(h.values['heading'][-1].valid)
             self.assertTrue(math.isnan(h.values['heading'][-1].heading))
+            navigation = h.values['navigation'][-1]
+            self.assertFalse(navigation.heading_valid)
+            self.assertEqual(navigation.latitude, 31.)
+            self.assertEqual((navigation.velocity.x, navigation.velocity.y, navigation.velocity.z), (2., 1., 3.))
 
     def test_atomic_navigation_preserves_quality_and_session(self):
         h = self.h
@@ -334,7 +340,8 @@ class SensorTests(unittest.TestCase):
         h.drive(.4)
         failures = h.values['navigation'][previous:]
         self.assertTrue(failures)
-        self.assertTrue(all(not n.heading_valid and math.isnan(n.velocity.x) for n in failures))
+        self.assertTrue(all(n.heading_valid and math.isfinite(n.latitude) and math.isnan(n.velocity.y) and
+                            n.velocity.x == 2. for n in failures))
         h.invalid_velocity = False
         h.epoch = time.monotonic() - 2
         h.drive(2.)
@@ -359,6 +366,38 @@ class SensorTests(unittest.TestCase):
         self.assertGreater(int(h.status()['rejected_sync']), 0)
         h.sync_delay=0; h.pending_sync.clear(); h.drive(1.5)
         self.assertTrue(h.values['imu'])
+
+    def test_clock_offset_changes_preserve_monotonic_source_evidence(self):
+        h = self.h
+        h.drive(1.6)
+        session = h.values['imu_timing'][-1].source_session
+        # A 30 ms TIMESYNC estimate change is below the discontinuity reset
+        # threshold but its first 3 ms filtered correction exceeds an IMU tick.
+        h.sync_offset_us = 30000
+        h.drive(1.3)
+        self.assertGreater(int(h.status()['mapping_regressions']), 0)
+        samples = h.values['imu_timing']
+        self.assertEqual(samples[-1].source_session, session)
+        stamps = [v.header.stamp.sec * 1000000000 + v.header.stamp.nanosec for v in samples]
+        self.assertTrue(all(a < b for a, b in zip(stamps, stamps[1:])))
+        self.assertTrue(all(0 <= v.mapped_sample_age <= .05 for v in samples))
+
+    def test_old_and_future_imu_arrivals_do_not_refresh_source_evidence(self):
+        h = self.h
+        h.drive(1.6)
+        h.streaming = False
+        h.drive(.15)
+        before = len(h.values['imu_timing'])
+        old_sample = h.remote() - 100000
+        self.assertGreater(old_sample, h.values['imu_timing'][-1].fc_time_usec)
+        h.imu(old_sample)  # New FC sequence epoch, but already 100 ms old.
+        h.drive(.02)
+        h.imu(h.remote() + 10000)  # Previously admitted by the 20 ms tolerance.
+        h.drive(.02)
+        self.assertEqual(len(h.values['imu_timing']), before)
+        h.imu()
+        h.drive(.02)
+        self.assertEqual(len(h.values['imu_timing']), before + 1)
 
     def test_extended_device_time(self):
         h=self.h

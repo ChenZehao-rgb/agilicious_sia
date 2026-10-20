@@ -1,6 +1,8 @@
 # Atomic MAVLink GPS solution, after timestamp pairing. No PPS claim.
-# A transport/clock/fix/heading failure also emits a revocation with unavailable
-# fields as NaN and heading_valid=false; that event stamp is detection time.
+# Transport/clock/fix failure emits a revocation at local detection time.
+# Missing velocity/heading components remain NaN/heading_valid=false without
+# revoking valid position. device_time_usec is the FC new-solution capture epoch,
+# not the receiver PVT epoch or a proven physical sensor sampling time.
 std_msgs/Header header
 string source_session
 uint64 device_time_usec

@@ -21,44 +21,67 @@ EkfImu::EkfImu(const std::shared_ptr<EkfImuParameters>& params)
 
 EkfImu::~EkfImu() { printTimings(); }
 
-bool EkfImu::getAt(const Scalar t, QuadState* const state) {
-	if (state == nullptr) return false;
-	if (!std::isfinite(t)) return false;
+bool EkfImu::getAt(const Scalar time, QuadState* const state) { return getAt(time, state, nullptr); }
 
-	const Vector<4> motors = motor_speeds_;
+bool EkfImu::getAt(const Scalar time, QuadState* const state, NavigationQuality* const quality) {
+	if (state == nullptr || !std::isfinite(time)) return false;
+	if (quality) *quality = NavigationQuality{};
 	const Vector<4> motor_des = state->motdes;
 	state->setZero();
-	state->t = t;
+	state->t = time;
 
 	std::lock_guard<std::mutex> lock(mutex_);
 	if (!std::isfinite(t_posterior_)) return false;
 	if (params_->update_on_get) process();
-
-	// Catch trivial cases...
-	if (t <= t_posterior_) {
+	if (time <= t_posterior_) {
+		if (quality) *quality = qualityAt(t_posterior_, posterior_, P_);
 		return vectorToState(t_posterior_, posterior_, state);
 	}
 
-	// Queries reuse the last prediction without advancing posterior covariance.
+	// Quality queries predict state and covariance together. Legacy state-only queries retain their cheaper propagation.
 	const Scalar saved_time = t_prior_;
 	const StateVector saved_prior = prior_;
-	const bool reuse = std::isfinite(_prediction_time) && _prediction_time >= t_posterior_ && _prediction_time <= t;
+	const StateMatrix saved_covariance = P_;
+	const bool reuse = std::isfinite(_prediction_time) && _prediction_time >= t_posterior_ && _prediction_time <= time &&
+	                   (!quality || _prediction_has_covariance);
 	t_prior_ = reuse ? _prediction_time : t_posterior_;
 	prior_ = reuse ? _prediction : posterior_;
-	bool ret = propagatePrior(t);
-	if (ret) ret = vectorToState(t_prior_, prior_, state);
-	// Extrapolated states must be recomputed when later IMU samples arrive.
-	if (ret && !imus_.empty() && t <= imus_.back().t) {
+	P_ = reuse && quality ? _prediction_covariance : saved_covariance;
+	bool success = quality ? propagatePriorAndCovariance(time) : propagatePrior(time);
+	if (success) success = vectorToState(t_prior_, prior_, state);
+	if (success && quality) *quality = qualityAt(t_prior_, prior_, P_);
+	if (success && !imus_.empty() && time <= imus_.back().t) {
 		_prediction_time = t_prior_;
 		_prediction = prior_;
+		_prediction_has_covariance = quality != nullptr;
+		if (quality) _prediction_covariance = P_;
 	}
 	t_prior_ = saved_time;
 	prior_ = saved_prior;
-
-	if (motors.allFinite()) state->mot = motors;
+	P_ = saved_covariance;
 	if (motor_des.allFinite()) state->motdes = motor_des;
+	return success;
+}
 
-	return ret;
+void EkfImu::setNavigationDiagnosticsEnabled(const bool enabled) {
+	std::lock_guard<std::mutex> lock(mutex_);
+	if (enabled) {
+		_navigation_diagnostics = std::make_unique<NavigationDiagnostics>();
+		_barometer_diagnostics = std::make_unique<NavigationDiagnostics>();
+	} else {
+		_navigation_diagnostics.reset();
+		_barometer_diagnostics.reset();
+	}
+}
+
+EkfImu::NavigationDiagnostics EkfImu::navigationDiagnostics() {
+	std::lock_guard<std::mutex> lock(mutex_);
+	return _navigation_diagnostics ? *_navigation_diagnostics : NavigationDiagnostics{};
+}
+
+EkfImu::NavigationDiagnostics EkfImu::barometerDiagnostics() {
+	std::lock_guard<std::mutex> lock(mutex_);
+	return _barometer_diagnostics ? *_barometer_diagnostics : NavigationDiagnostics{};
 }
 
 bool EkfImu::initialize(const QuadState& state) {
@@ -91,6 +114,8 @@ bool EkfImu::init(const QuadState& state) {
 	P_ = Q_init_;
 	_prediction_time = NAN;
 	_navigation_quality = NavigationQuality{};
+	if (_navigation_diagnostics) *_navigation_diagnostics = NavigationDiagnostics{};
+	if (_barometer_diagnostics) *_barometer_diagnostics = NavigationDiagnostics{};
 	_barometer_quality = BarometerQuality{};
 	_last_rtk_time = NAN;
 	_last_navigation_attempt_time = NAN;
@@ -232,120 +257,140 @@ EkfImu::NavigationUpdateResult EkfImu::addNavigation(const Scalar time, const Ve
                                                      const Scalar heading, const bool heading_valid, const Vector<3>& position_variance,
                                                      const Vector<3>& velocity_variance, const Scalar heading_variance,
                                                      const Scalar horizontal_nis_limit, const Scalar height_nis_limit,
-                                                     const Scalar vertical_velocity_nis_limit) {
+                                                     const Scalar vertical_velocity_nis_limit, const Scalar position_nis_limit,
+                                                     const Scalar velocity_nis_limit, const Scalar heading_nis_limit) {
 	NavigationUpdateResult result;
 	std::lock_guard<std::mutex> lock(mutex_);
+	constexpr uint8_t all_groups = kHorizontalGroup | kHeadingGroup | kHeightGroup | kVerticalVelocityGroup;
+	const std::array<uint8_t, 5> masks{kPositionGroup, kVelocityGroup, kHeadingGroup, kHeightGroup, kVerticalVelocityGroup};
+	const std::array<Scalar, 5> limits{position_nis_limit, velocity_nis_limit, heading_nis_limit, height_nis_limit,
+	                                   vertical_velocity_nis_limit};
+	std::array<NavigationGroupQuality, 5> groups{_navigation_quality.position, _navigation_quality.velocity,
+	                                             _navigation_quality.heading, _navigation_quality.height,
+	                                             _navigation_quality.vertical_velocity};
+	for (size_t index = 0; index < groups.size(); ++index) {
+		auto& group = groups[index];
+		group.observation_stamp = time;
+		group.innovation_squared = NAN;
+		group.innovation_limit = limits[index];
+		group.measurement_variance.setConstant(NAN);
+		group.accepted = false;
+		group.reason = NavigationUpdateReason::kNotAttempted;
+		group.observation_dimensions = index < 2 ? 2 : 1;
+	}
+	groups[0].measurement_variance.head<2>() = position_variance.head<2>();
+	groups[1].measurement_variance.head<2>() = velocity_variance.head<2>();
+	groups[2].measurement_variance(0) = heading_variance;
+	groups[3].measurement_variance(0) = position_variance.z();
+	groups[4].measurement_variance(0) = velocity_variance.z();
+	Scalar horizontal_nis = NAN;
+	if (_navigation_diagnostics) {
+		*_navigation_diagnostics = NavigationDiagnostics{};
+		_navigation_diagnostics->stamp = time;
+	}
+	const auto finish = [&](const uint8_t accepted, const bool numerical_failure, const bool count_attempt) {
+		result.accepted_groups = accepted;
+		result.rejected_groups = all_groups & ~accepted;
+		result.numerical_failure = numerical_failure;
+		for (size_t index = 0; index < groups.size(); ++index) {
+			auto& group = groups[index];
+			group.accepted = (accepted & masks[index]) != 0;
+			if (group.accepted) {
+				group.stamp = time;
+				group.reason = NavigationUpdateReason::kAccepted;
+				if (count_attempt) ++group.accepted_updates;
+			} else {
+				if (numerical_failure) group.reason = NavigationUpdateReason::kNumericalFailure;
+				if (count_attempt) ++group.rejected_updates;
+			}
+		}
+		_navigation_quality.position = groups[0];
+		_navigation_quality.velocity = groups[1];
+		_navigation_quality.heading = groups[2];
+		_navigation_quality.height = groups[3];
+		_navigation_quality.vertical_velocity = groups[4];
+		auto& horizontal = _navigation_quality.horizontal;
+		horizontal.observation_stamp = time;
+		horizontal.observation_dimensions = 4;
+		horizontal.innovation_squared = horizontal_nis;
+		horizontal.innovation_limit = horizontal_nis_limit;
+		horizontal.measurement_variance << position_variance.head<2>(), velocity_variance.head<2>(), NAN;
+		horizontal.accepted = (accepted & kHorizontalGroup) == kHorizontalGroup;
+		horizontal.reason = horizontal.accepted ? NavigationUpdateReason::kAccepted
+		                                        : (groups[0].accepted ? groups[1].reason : groups[0].reason);
+		if (horizontal.accepted) horizontal.stamp = time;
+		if (count_attempt) {
+			if (horizontal.accepted)
+				++horizontal.accepted_updates;
+			else
+				++horizontal.rejected_updates;
+		}
+		_navigation_quality.innovation_squared = horizontal_nis;
+		_navigation_quality.observation_dimensions = 4;
+		_navigation_quality.accepted_updates = horizontal.accepted_updates;
+		_navigation_quality.rejected_updates = horizontal.rejected_updates;
+		result.reason = numerical_failure ? NavigationUpdateReason::kNumericalFailure
+		                                  : (accepted ? NavigationUpdateReason::kAccepted : horizontal.reason);
+		if (_navigation_diagnostics) {
+			_navigation_diagnostics->groups = groups;
+			_navigation_diagnostics->result = result;
+		}
+		return result;
+	};
 	if (!std::isfinite(time) || !std::isfinite(t_posterior_) || time < t_posterior_ ||
 	    (std::isfinite(_last_rtk_time) && time <= _last_rtk_time) ||
 	    (std::isfinite(_last_navigation_attempt_time) && time <= _last_navigation_attempt_time) || imus_.empty() ||
 	    time > imus_.back().t) {
-		// A rejected timestamp is not a new fusion attempt and must not inflate counters or retain accepted=true.
-		for (NavigationGroupQuality* group :
-		     {&_navigation_quality.horizontal, &_navigation_quality.height, &_navigation_quality.vertical_velocity}) {
-			group->observation_stamp = time;
-			group->accepted = false;
-			group->innovation_squared = NAN;
-			group->measurement_variance.setConstant(NAN);
-			group->reason = NavigationUpdateReason::kTimestamp;
-		}
-		_navigation_quality.horizontal.measurement_variance << position_variance.head<2>(), velocity_variance.head<2>(),
-		        heading_valid ? heading_variance : NAN;
-		_navigation_quality.horizontal.observation_dimensions = heading_valid ? 5 : 4;
-		_navigation_quality.height.measurement_variance(0) = position_variance.z();
-		_navigation_quality.vertical_velocity.measurement_variance(0) = velocity_variance.z();
-		_navigation_quality.height.observation_dimensions = _navigation_quality.vertical_velocity.observation_dimensions = 1;
-		_navigation_quality.innovation_squared = _navigation_quality.horizontal.innovation_squared;
-		_navigation_quality.observation_dimensions = _navigation_quality.horizontal.observation_dimensions;
-		result.rejected_groups = kHorizontalGroup | kHeightGroup | kVerticalVelocityGroup;
-		result.reason = NavigationUpdateReason::kTimestamp;
-		return result;
+		for (auto& group : groups) group.reason = NavigationUpdateReason::kTimestamp;
+		return finish(0, false, false);
 	}
 	_last_navigation_attempt_time = time;
 	const StateMatrix saved_covariance = P_;
 	const StateVector saved_prior = prior_;
 	const Scalar saved_time = t_prior_;
-	std::array<NavigationGroupQuality, 3> groups{_navigation_quality.horizontal, _navigation_quality.height,
-	                                             _navigation_quality.vertical_velocity};
-	const std::array<uint8_t, 3> masks{kHorizontalGroup, kHeightGroup, kVerticalVelocityGroup};
-	const std::array<Scalar, 3> limits{horizontal_nis_limit, height_nis_limit, vertical_velocity_nis_limit};
-	for (auto& group : groups) {
-		group.observation_stamp = time;
-		group.innovation_squared = NAN;
-		group.measurement_variance.setConstant(NAN);
-		group.accepted = false;
-		group.reason = NavigationUpdateReason::kNotAttempted;
-	}
-	groups[0].observation_dimensions = heading_valid ? 5 : 4;
-	groups[0].measurement_variance << position_variance.head<2>(), velocity_variance.head<2>(), heading_valid ? heading_variance : NAN;
-	groups[1].observation_dimensions = groups[2].observation_dimensions = 1;
-	groups[1].measurement_variance(0) = position_variance.z();
-	groups[2].measurement_variance(0) = velocity_variance.z();
-	const auto finish = [&](const uint8_t accepted, const bool numerical_failure) {
-		result.accepted_groups = accepted;
-		result.rejected_groups = (kHorizontalGroup | kHeightGroup | kVerticalVelocityGroup) & ~accepted;
-		result.numerical_failure = numerical_failure;
-		for (size_t group = 0; group < groups.size(); ++group) {
-			groups[group].accepted = (accepted & masks[group]) != 0;
-			if (groups[group].accepted) {
-				groups[group].stamp = time;
-				groups[group].reason = NavigationUpdateReason::kAccepted;
-				++groups[group].accepted_updates;
-			} else {
-				if (numerical_failure) groups[group].reason = NavigationUpdateReason::kNumericalFailure;
-				++groups[group].rejected_updates;
-			}
-		}
-		_navigation_quality.horizontal = groups[0];
-		_navigation_quality.height = groups[1];
-		_navigation_quality.vertical_velocity = groups[2];
-		_navigation_quality.innovation_squared = groups[0].innovation_squared;
-		_navigation_quality.observation_dimensions = groups[0].observation_dimensions;
-		if (groups[0].accepted)
-			++_navigation_quality.accepted_updates;
-		else
-			++_navigation_quality.rejected_updates;
-		result.reason = numerical_failure ? NavigationUpdateReason::kNumericalFailure
-		                                  : (accepted ? NavigationUpdateReason::kAccepted : groups[0].reason);
-		return result;
-	};
 	const auto reject = [&](const bool numerical_failure) {
+		// A rejected update's posterior at the attempted epoch equals its propagated prior.
+		if (_navigation_diagnostics && _navigation_diagnostics->valid) {
+			_navigation_diagnostics->posterior_state = prior_;
+			_navigation_diagnostics->posterior_covariance = P_;
+		}
 		P_ = saved_covariance;
 		prior_ = saved_prior;
 		t_prior_ = saved_time;
-		return finish(0, numerical_failure);
+		return finish(0, numerical_failure, true);
 	};
 	prior_ = posterior_;
 	t_prior_ = t_posterior_;
 	if (!propagatePriorAndCovariance(time) || !prior_.allFinite() || !P_.allFinite()) return reject(true);
 
+	Vector<7> measurement, prediction;
+	measurement << position, velocity, heading;
+	prediction << prior_.segment<3>(POS), prior_.segment<3>(VEL), NAN;
 	Vector<7> residual = Vector<7>::Zero();
 	Matrix<7, IDX::SIZE> observation = Matrix<7, IDX::SIZE>::Zero();
 	residual.head<3>() = prior_.segment<3>(POS) - position;
 	residual.segment<3>(3) = prior_.segment<3>(VEL) - velocity;
 	observation.block<3, 3>(0, POS).setIdentity();
 	observation.block<3, 3>(3, VEL).setIdentity();
-	std::array<bool, 3> input_valid{position.head<2>().allFinite() && velocity.head<2>().allFinite() &&
-	                                        position_variance.head<2>().allFinite() && velocity_variance.head<2>().allFinite() &&
-	                                        (position_variance.head<2>().array() > 0).all() &&
+	std::array<bool, 5> input_valid{position.head<2>().allFinite() && position_variance.head<2>().allFinite() &&
+	                                        (position_variance.head<2>().array() > 0).all(),
+	                                velocity.head<2>().allFinite() && velocity_variance.head<2>().allFinite() &&
 	                                        (velocity_variance.head<2>().array() > 0).all(),
+	                                false,
 	                                std::isfinite(position.z()) && std::isfinite(position_variance.z()) && position_variance.z() > 0,
 	                                std::isfinite(velocity.z()) && std::isfinite(velocity_variance.z()) && velocity_variance.z() > 0};
-	if (heading_valid) {
-		const Scalar w = prior_(ATTW), x = prior_(ATTX), y = prior_(ATTY), z = prior_(ATTZ);
-		const Scalar a = 2 * (w * z + x * y), b = 1 - 2 * (y * y + z * z), d = a * a + b * b;
-		if (std::isfinite(heading) && std::isfinite(heading_variance) && heading_variance > 0 && d > 1e-8) {
-			residual(6) = std::atan2(std::sin(std::atan2(a, b) - heading), std::cos(std::atan2(a, b) - heading));
-			observation.block<1, 4>(6, ATT) << 2 * z * b / d, 2 * y * b / d, (2 * x * b + 4 * y * a) / d,
-			        (2 * w * b + 4 * z * a) / d;
-		} else {
-			input_valid[0] = false;
-		}
+	const Scalar w = prior_(ATTW), x = prior_(ATTX), y = prior_(ATTY), z = prior_(ATTZ);
+	const Scalar a = 2 * (w * z + x * y), b = 1 - 2 * (y * y + z * z), d = a * a + b * b;
+	if (d > 1e-8) {
+		prediction(6) = std::atan2(a, b);
+		residual(6) = std::remainder(prediction(6) - heading, 2 * M_PI);
+		observation.block<1, 4>(6, ATT) << 2 * z * b / d, 2 * y * b / d, (2 * x * b + 4 * y * a) / d, (2 * w * b + 4 * z * a) / d;
+		input_valid[2] = heading_valid && std::isfinite(heading) && std::isfinite(heading_variance) && heading_variance > 0;
 	}
 	Vector<7> variances;
-	variances << position_variance, velocity_variance, heading_valid ? heading_variance : 1.0;
-	const std::array<uint8_t, 7> row_groups{kHorizontalGroup, kHorizontalGroup,       kHeightGroup,    kHorizontalGroup,
-	                                        kHorizontalGroup, kVerticalVelocityGroup, kHorizontalGroup};
-	// Disabled rows have zero residual/Jacobian and independent unit noise, so they add no information.
+	variances << position_variance, velocity_variance, heading_variance;
+	const std::array<uint8_t, 7> row_groups{kPositionGroup, kPositionGroup,         kHeightGroup, kVelocityGroup,
+	                                        kVelocityGroup, kVerticalVelocityGroup, kHeadingGroup};
 	const auto selectRows = [&](const uint8_t selected, Matrix<7, IDX::SIZE>* h, Vector<7>* r, Matrix<7, 7>* noise) {
 		*h = observation;
 		*r = residual;
@@ -359,26 +404,49 @@ EkfImu::NavigationUpdateResult EkfImu::addNavigation(const Scalar time, const Ve
 			}
 		}
 	};
+	if (_navigation_diagnostics) {
+		auto& diagnostics = *_navigation_diagnostics;
+		diagnostics.valid = true;
+		diagnostics.prior_state = prior_;
+		diagnostics.prior_covariance = P_;
+		diagnostics.measurement = measurement;
+		diagnostics.prediction = prediction;
+		diagnostics.residual = residual;
+		diagnostics.observation = observation;
+		diagnostics.measurement_covariance = variances.asDiagonal();
+		diagnostics.innovation_covariance = observation * P_ * observation.transpose() + diagnostics.measurement_covariance;
+	}
 	uint8_t selected = 0;
-	for (size_t group = 0; group < groups.size(); ++group) {
-		if (!input_valid[group] || !(limits[group] > 0)) {
-			groups[group].reason = NavigationUpdateReason::kInvalidInput;
+	for (size_t index = 0; index < groups.size(); ++index) {
+		if (!input_valid[index] || !(limits[index] > 0)) {
+			groups[index].reason = NavigationUpdateReason::kInvalidInput;
 			continue;
 		}
 		Matrix<7, IDX::SIZE> h;
 		Vector<7> r;
 		Matrix<7, 7> noise;
-		selectRows(masks[group], &h, &r, &noise);
+		selectRows(masks[index], &h, &r, &noise);
 		const Matrix<7, 7> innovation_covariance = h * P_ * h.transpose() + noise;
-		const auto factor = innovation_covariance.ldlt();
-		if (factor.info() != Eigen::Success || !factor.vectorD().allFinite() || (factor.vectorD().array() <= 0).any())
-			return reject(true);
-		groups[group].innovation_squared = r.dot(factor.solve(r));
-		if (!std::isfinite(groups[group].innovation_squared) || groups[group].innovation_squared < 0) return reject(true);
-		if (groups[group].innovation_squared <= limits[group])
-			selected |= masks[group];
+		const auto factor = innovation_covariance.llt();
+		if (factor.info() != Eigen::Success) return reject(true);
+		const Vector<7> whitened = factor.matrixL().solve(r);
+		groups[index].innovation_squared = whitened.squaredNorm();
+		if (_navigation_diagnostics) _navigation_diagnostics->whitened_innovation.col(index) = whitened;
+		if (!std::isfinite(groups[index].innovation_squared)) return reject(true);
+		if (groups[index].innovation_squared <= limits[index])
+			selected |= masks[index];
 		else
-			groups[group].reason = NavigationUpdateReason::kInnovation;
+			groups[index].reason = NavigationUpdateReason::kInnovation;
+	}
+	if (input_valid[0] && input_valid[1]) {
+		Matrix<7, IDX::SIZE> h;
+		Vector<7> r;
+		Matrix<7, 7> noise;
+		selectRows(kHorizontalGroup, &h, &r, &noise);
+		const Matrix<7, 7> covariance = h * P_ * h.transpose() + noise;
+		const auto factor = covariance.llt();
+		if (factor.info() != Eigen::Success) return reject(true);
+		horizontal_nis = factor.matrixL().solve(r).squaredNorm();
 	}
 	if (selected == 0) return reject(false);
 
@@ -387,15 +455,19 @@ EkfImu::NavigationUpdateResult EkfImu::addNavigation(const Scalar time, const Ve
 	Matrix<7, 7> noise;
 	selectRows(selected, &h, &r, &noise);
 	const Matrix<7, 7> innovation_covariance = h * P_ * h.transpose() + noise;
-	const auto factor = innovation_covariance.ldlt();
-	if (factor.info() != Eigen::Success || !factor.vectorD().allFinite() || (factor.vectorD().array() <= 0).any()) return reject(true);
-	// The common-prior joint correction is essential: sequential Schmidt updates are not equivalent.
+	const auto factor = innovation_covariance.llt();
+	if (factor.info() != Eigen::Success) return reject(true);
 	Matrix<IDX::SIZE, 7> gain = P_ * h.transpose() * factor.solve(Matrix<7, 7>::Identity());
 	constrainReferenceGain(&gain);
 	StateVector corrected = prior_ - gain * r;
 	const StateMatrix correction = StateMatrix::Identity() - gain * h;
 	StateMatrix covariance = correction * P_ * correction.transpose() + gain * noise * gain.transpose();
 	if (!normalizeCorrection(&corrected, &covariance)) return reject(true);
+	if (_navigation_diagnostics) {
+		_navigation_diagnostics->posterior_state = corrected;
+		_navigation_diagnostics->posterior_covariance = covariance;
+		_navigation_diagnostics->correction_contributions = -gain * r.asDiagonal();
+	}
 	P_ = covariance;
 	posterior_ = prior_ = corrected;
 	t_posterior_ = t_prior_ = time;
@@ -403,23 +475,27 @@ EkfImu::NavigationUpdateResult EkfImu::addNavigation(const Scalar time, const Ve
 	_prediction_time = NAN;
 	while (imus_.size() > 1 && imus_[1].t <= time) imus_.pop_front();
 	result.committed = true;
-	return finish(selected, false);
+	return finish(selected, false, true);
 }
 
 EkfImu::NavigationQuality EkfImu::navigationQuality() {
 	std::lock_guard<std::mutex> lock(mutex_);
+	return qualityAt(t_posterior_, posterior_, P_);
+}
+
+EkfImu::NavigationQuality EkfImu::qualityAt(const Scalar time, const StateVector& state, const StateMatrix& covariance) const {
 	NavigationQuality result = _navigation_quality;
-	result.stamp = t_posterior_;
-	result.position_variance = P_.diagonal().segment<3>(POS);
-	result.velocity_variance = P_.diagonal().segment<3>(VEL);
-	const Scalar w = posterior_(ATTW), x = posterior_(ATTX), y = posterior_(ATTY), z = posterior_(ATTZ);
+	result.stamp = time;
+	result.position_variance = covariance.diagonal().segment<3>(POS);
+	result.velocity_variance = covariance.diagonal().segment<3>(VEL);
+	const Scalar w = state(ATTW), x = state(ATTX), y = state(ATTY), z = state(ATTZ);
 	const Scalar a = 2 * (w * z + x * y), b = 1 - 2 * (y * y + z * z), d = a * a + b * b;
 	if (d > 1e-8) {
 		Vector<4> jacobian;
 		jacobian << 2 * z * b / d, 2 * y * b / d, (2 * x * b + 4 * y * a) / d, (2 * w * b + 4 * z * a) / d;
-		result.heading_variance = jacobian.dot(P_.block<4, 4>(ATT, ATT) * jacobian);
+		result.heading_variance = jacobian.dot(covariance.block<4, 4>(ATT, ATT) * jacobian);
 	}
-	result.valid = std::isfinite(result.stamp) && result.position_variance.allFinite() && result.velocity_variance.allFinite() &&
+	result.valid = std::isfinite(result.stamp) && state.allFinite() && covariance.allFinite() &&
 	               (result.position_variance.array() >= 0).all() && (result.velocity_variance.array() >= 0).all() &&
 	               std::isfinite(result.heading_variance) && result.heading_variance >= 0;
 	return result;
@@ -439,43 +515,97 @@ bool EkfImu::normalizeCorrection(StateVector* state, StateMatrix* covariance) co
 }
 
 bool EkfImu::addBaro(const Scalar time, const Scalar height, const Scalar variance, const Scalar nis_limit) {
-	if (!std::isfinite(time) || !std::isfinite(height) || !std::isfinite(variance) || variance <= 0 || !(nis_limit > 0)) return false;
 	std::lock_guard<std::mutex> lock(mutex_);
-	if (params_->baro_relative_reference && !_barometer_reference_valid) return false;
+	if (_barometer_diagnostics) {
+		*_barometer_diagnostics = NavigationDiagnostics{};
+		_barometer_diagnostics->stamp = time;
+		_barometer_diagnostics->measurement(2) = height;
+		_barometer_diagnostics->measurement_covariance(2, 2) = variance;
+		auto& group = _barometer_diagnostics->groups[3];
+		group.observation_stamp = time;
+		group.observation_dimensions = 1;
+		group.innovation_limit = nis_limit;
+		group.measurement_variance(0) = variance;
+	}
+	const auto finish = [&](const NavigationUpdateReason reason) {
+		const bool accepted = reason == NavigationUpdateReason::kAccepted;
+		if (_barometer_diagnostics) {
+			auto& diagnostics = *_barometer_diagnostics;
+			diagnostics.result.reason = reason;
+			diagnostics.result.committed = accepted;
+			diagnostics.result.accepted_groups = accepted ? kHeightGroup : 0;
+			diagnostics.result.rejected_groups = accepted ? 0 : kHeightGroup;
+			diagnostics.result.numerical_failure = reason == NavigationUpdateReason::kNumericalFailure;
+			auto& group = diagnostics.groups[3];
+			group.accepted = accepted;
+			group.reason = reason;
+			group.stamp = _barometer_quality.stamp;
+			group.accepted_updates = _barometer_quality.accepted_updates;
+			group.rejected_updates = _barometer_quality.rejected_updates;
+		}
+		return accepted;
+	};
+	if (!std::isfinite(time) || !std::isfinite(height) || !std::isfinite(variance) || variance <= 0 || !(nis_limit > 0) ||
+	    (params_->baro_relative_reference && !_barometer_reference_valid))
+		return finish(NavigationUpdateReason::kInvalidInput);
 	if (!std::isfinite(t_posterior_) || time < t_posterior_ ||
 	    (std::isfinite(_barometer_quality.stamp) && time <= _barometer_quality.stamp) || imus_.empty() || time > imus_.back().t)
-		return false;
+		return finish(NavigationUpdateReason::kTimestamp);
 	const StateMatrix saved_covariance = P_;
 	const StateVector saved_prior = prior_;
 	const Scalar saved_time = t_prior_;
-	const auto reject = [&]() {
+	const auto reject = [&](const NavigationUpdateReason reason) {
+		if (_barometer_diagnostics && _barometer_diagnostics->valid) {
+			_barometer_diagnostics->posterior_state = prior_;
+			_barometer_diagnostics->posterior_covariance = P_;
+		}
 		P_ = saved_covariance;
 		prior_ = saved_prior;
 		t_prior_ = saved_time;
 		++_barometer_quality.rejected_updates;
-		return false;
+		return finish(reason);
 	};
 	prior_ = posterior_;
 	t_prior_ = t_posterior_;
-	if (!propagatePriorAndCovariance(time)) return reject();
+	if (!propagatePriorAndCovariance(time)) return reject(NavigationUpdateReason::kNumericalFailure);
 	Matrix<1, IDX::SIZE> observation = Matrix<1, IDX::SIZE>::Zero();
 	observation(POSZ) = 1;
 	observation(BARO_BIAS) = 1;
-	const Scalar residual = prior_(POSZ) + prior_(BARO_BIAS) - height;
+	const Scalar prediction = prior_(POSZ) + prior_(BARO_BIAS);
+	const Scalar residual = prediction - height;
 	const Scalar innovation_variance = (observation * P_ * observation.transpose())(0, 0) + variance;
 	_barometer_quality.innovation = residual;
 	_barometer_quality.innovation_squared = NAN;
-	if (!std::isfinite(innovation_variance) || innovation_variance <= 0) return reject();
+	if (_barometer_diagnostics) {
+		auto& diagnostics = *_barometer_diagnostics;
+		diagnostics.valid = true;
+		diagnostics.prior_state = prior_;
+		diagnostics.prior_covariance = P_;
+		diagnostics.prediction(2) = prediction;
+		diagnostics.residual(2) = residual;
+		diagnostics.observation.row(2) = observation;
+		diagnostics.innovation_covariance(2, 2) = innovation_variance;
+	}
+	if (!std::isfinite(innovation_variance) || innovation_variance <= 0) return reject(NavigationUpdateReason::kNumericalFailure);
 	_barometer_quality.innovation_squared = residual * residual / innovation_variance;
-	if (!std::isfinite(_barometer_quality.innovation_squared) || _barometer_quality.innovation_squared < 0 ||
-	    _barometer_quality.innovation_squared > nis_limit)
-		return reject();
+	if (_barometer_diagnostics) {
+		_barometer_diagnostics->groups[3].innovation_squared = _barometer_quality.innovation_squared;
+		_barometer_diagnostics->whitened_innovation.col(3).setZero();
+		_barometer_diagnostics->whitened_innovation(2, 3) = residual / std::sqrt(innovation_variance);
+	}
+	if (!std::isfinite(_barometer_quality.innovation_squared)) return reject(NavigationUpdateReason::kNumericalFailure);
+	if (_barometer_quality.innovation_squared > nis_limit) return reject(NavigationUpdateReason::kInnovation);
 	StateVector gain = P_ * observation.transpose() / innovation_variance;
 	constrainReferenceGain(&gain);
 	StateVector corrected = prior_ - gain * residual;
 	const StateMatrix correction = StateMatrix::Identity() - gain * observation;
 	StateMatrix covariance = correction * P_ * correction.transpose() + variance * gain * gain.transpose();
-	if (!normalizeCorrection(&corrected, &covariance)) return reject();
+	if (!normalizeCorrection(&corrected, &covariance)) return reject(NavigationUpdateReason::kNumericalFailure);
+	if (_barometer_diagnostics) {
+		_barometer_diagnostics->posterior_state = corrected;
+		_barometer_diagnostics->posterior_covariance = covariance;
+		_barometer_diagnostics->correction_contributions.col(2) = -gain * residual;
+	}
 	P_ = covariance;
 	posterior_ = prior_ = corrected;
 	t_posterior_ = t_prior_ = time;
@@ -483,7 +613,7 @@ bool EkfImu::addBaro(const Scalar time, const Scalar height, const Scalar varian
 	_barometer_quality.stamp = time;
 	++_barometer_quality.accepted_updates;
 	while (imus_.size() > 1 && imus_[1].t <= time) imus_.pop_front();
-	return true;
+	return finish(NavigationUpdateReason::kAccepted);
 }
 
 bool EkfImu::resetBaroBias(const Scalar variance) {
@@ -745,12 +875,12 @@ bool EkfImu::propagatePrior(const Scalar t) {
 		imu_data.tail<3>() = imu_last_.acc;
   }
 
-  static constexpr Scalar dt_max = 1e-4;
-  while (t_prior_ < t) {
-    if (imu_ptr < imus_.end()) {
-      if (imu_ptr->t <= t_prior_) ++imu_ptr;
-      if (imu_ptr < imus_.end()) {
-        t_target = std::min(imu_ptr->t, t);
+	const Scalar dt_max = params_->integration_step;
+	while (t_prior_ < t) {
+		if (imu_ptr < imus_.end()) {
+			if (imu_ptr->t <= t_prior_) ++imu_ptr;
+			if (imu_ptr < imus_.end()) {
+				t_target = std::min(imu_ptr->t, t);
 				imu_data.head<3>() = imu_ptr->omega;
 				imu_data.tail<3>() = imu_ptr->acc;
       } else {
@@ -759,7 +889,10 @@ bool EkfImu::propagatePrior(const Scalar t) {
     }
 
     while (t_prior_ < t_target) {
-      const Scalar dt = std::min(t_target - t_prior_, dt_max);
+			// Integrate the representable interval, not a nominal dt rounded differently by a large absolute epoch.
+			const Scalar next_time = std::min(t_target, t_prior_ + dt_max);
+			const Scalar dt = next_time - t_prior_;
+			if (!(dt > 0)) return false;
 
       const Quaternion q{prior_(IDX::ATTW), prior_(IDX::ATTX),
                          prior_(IDX::ATTY), prior_(IDX::ATTZ)};
@@ -779,8 +912,7 @@ bool EkfImu::propagatePrior(const Scalar t) {
         0.5 * dt * Q_left(q) * Vector<4>(0, omega.x(), omega.y(), omega.z());
       prior_.segment<IDX::NATT>(IDX::ATT).normalize();
 
-      t_prior_ += dt;
-      if (dt < dt_max) break;
+			t_prior_ = next_time;
     }
     t_prior_ = t_target;
   }
@@ -818,7 +950,7 @@ bool EkfImu::propagatePriorAndCovariance(const Scalar t) {
 		imu_data.tail<3>() = imu_last_.acc;
   }
 
-  static constexpr Scalar dt_max = 1e-4;
+	const Scalar dt_max = params_->integration_step;
 
   while (t_prior_ < t) {
     if (imu_ptr < imus_.end()) {
@@ -833,7 +965,10 @@ bool EkfImu::propagatePriorAndCovariance(const Scalar t) {
     }
 
     while (t_prior_ < t_target) {
-      const Scalar dt = std::min(t_target - t_prior_, dt_max);
+			// Integrate the representable interval, not a nominal dt rounded differently by a large absolute epoch.
+			const Scalar next_time = std::min(t_target, t_prior_ + dt_max);
+			const Scalar dt = next_time - t_prior_;
+			if (!(dt > 0)) return false;
 
       const Quaternion q{prior_(IDX::ATTW), prior_(IDX::ATTX),
                          prior_(IDX::ATTY), prior_(IDX::ATTZ)};
@@ -878,30 +1013,39 @@ bool EkfImu::propagatePriorAndCovariance(const Scalar t) {
       // d/da v_dot
       G.block<IDX::NVEL, 3>(IDX::VEL, 3) = R;
 
+			const bool continuous = params_->process_noise_model == "continuous_psd";
+			StateMatrix transition = StateMatrix::Identity() + dt * F;
+			if (continuous) transition.noalias() += (0.5 * dt * dt) * F * F;
 
-      const StateMatrix IdtF = StateMatrix::Identity() + dt * F;
-      const Matrix<IDX::SIZE, SRIMU> dtG = dt * G;
+			prior_.segment<IDX::NPOS>(IDX::POS) += 0.5 * dt * prior_.segment<IDX::NVEL>(IDX::VEL);
+			prior_.segment<IDX::NVEL>(IDX::VEL) += dt * (GVEC + R * acc);
+			prior_.segment<IDX::NPOS>(IDX::POS) += 0.5 * dt * prior_.segment<IDX::NVEL>(IDX::VEL);
+			prior_.segment<IDX::NATT>(IDX::ATT) += 0.5 * dt * Qleftq * Vector<4>(0, omega.x(), omega.y(), omega.z());
 
-      prior_.segment<IDX::NPOS>(IDX::POS) +=
-        0.5 * dt * prior_.segment<IDX::NVEL>(IDX::VEL);
-      prior_.segment<IDX::NVEL>(IDX::VEL) += dt * (GVEC + R * acc);
-      prior_.segment<IDX::NPOS>(IDX::POS) +=
-        0.5 * dt * prior_.segment<IDX::NVEL>(IDX::VEL);
+			StateMatrix covariance = transition * P_ * transition.transpose();
+			if (continuous) {
+				// W is continuous covariance per second, independent of IMU or numerical integration frequency.
+				// Integrate (I+sF) W (I+sF)' exactly on [0,dt] in a sum-of-PSD form.
+				// The dt^3 term retains position/velocity and bias random-walk cross covariances.
+				const StateMatrix spectral_density = G * R_imu_ * G.transpose() + Q_;
+				const StateMatrix midpoint = StateMatrix::Identity() + 0.5 * dt * F;
+				covariance.noalias() += dt * midpoint * spectral_density * midpoint.transpose();
+				covariance.noalias() += (dt * dt * dt / 12) * F * spectral_density * F.transpose();
+			} else {
+				const Matrix<IDX::SIZE, SRIMU> dt_g = dt * G;
+				covariance.noalias() += dt_g * R_imu_ * dt_g.transpose();
+				covariance.noalias() += (dt * dt) * Q_;
+			}
+			if (!_relative_reference_active) covariance(BARO_BIAS, BARO_BIAS) += params_->baro_bias_random_walk * dt;
+			if (continuous) {
+				// The state normalization is a coordinate transformation; apply its Jacobian to P as well.
+				if (!normalizeCorrection(&prior_, &covariance)) return false;
+			} else {
+				prior_.segment<IDX::NATT>(IDX::ATT).normalize();
+			}
+			P_ = (0.5 * (covariance + covariance.transpose())).eval();
 
-      prior_.segment<IDX::NATT>(IDX::ATT) +=
-        0.5 * dt * Qleftq * Vector<4>(0, omega.x(), omega.y(), omega.z());
-      prior_.segment<IDX::NATT>(IDX::ATT).normalize();
-
-      StateMatrix P = IdtF * P_ * IdtF.transpose();
-      P.noalias() += dtG * R_imu_ * dtG.transpose();
-      P.noalias() += (dt * dt) * Q_;
-			// This parameter is a continuous random walk variance rate, unlike the legacy dt^2 process terms.
-			if (!_relative_reference_active) P(BARO_BIAS, BARO_BIAS) += params_->baro_bias_random_walk * dt;
-
-      P_ = 0.5 * (P + P.transpose());
-
-      t_prior_ += dt;
-      if (dt < dt_max) break;
+			t_prior_ = next_time;
     }
     t_prior_ = t_target;
   }

@@ -39,7 +39,7 @@ class HealthFreshnessTest(unittest.TestCase):
         output.transport_healthy = True
         output.thrust_mapping_ready = output_mapping
         node = SimpleNamespace(
-            decoder=ready_decoder(10.0), battery_timeout=1.5, clock_id='test-boot',
+            decoder=ready_decoder(10.0, request_steady=100.), battery_timeout=1.5, clock_id='test-boot',
             minimum=[-1.0]*3, maximum=[1.0]*3, fused=fused, output=output,
             get_clock=lambda: SimpleNamespace(now=lambda: SimpleNamespace(nanoseconds=round((10.0+sample_age)*1e9))))
         node.decoder.failed = decoder_failed
@@ -131,6 +131,26 @@ class OutputFreshnessTest(unittest.TestCase):
 
 
 class ModeEventTest(unittest.TestCase):
+    def test_authority_heartbeat_preserves_original_request_clock(self):
+        wall_now = [10.04]
+        node = SimpleNamespace(
+            decoder=ready_decoder(10., request_steady=100.), battery_timeout=1.5,
+            clock_id='test-boot', minimum=[0.]*3, maximum=[0.]*3, fused=None, output=None,
+            get_clock=lambda: SimpleNamespace(now=lambda: SimpleNamespace(nanoseconds=round(wall_now[0]*1e9))))
+        for name in ('decoded_pub', 'authority_pub', 'health_pub', 'status_pub'):
+            setattr(node, name, CapturedPublisher())
+        for ros_now, steady_now in ((10.04, 100.04), (10.08, 100.08), (10.08, 100.11)):
+            wall_now[0] = ros_now
+            with patch('msp_evidence.time.monotonic', return_value=steady_now):
+                EvidenceNode.publish(node)
+            authority = node.authority_pub.messages[-1]
+            self.assertEqual(authority.clock_id, 'test-boot')
+            self.assertEqual(authority.rc_request_steady_time, 100.)
+            self.assertEqual(authority.status_request_steady_time, 100.)
+            self.assertEqual(authority.header.stamp, stamp(10.))
+        self.assertTrue(node.authority_pub.messages[1].receiver_valid)
+        self.assertFalse(node.authority_pub.messages[2].receiver_valid)
+
     def node_and_event(self, event='rx', request=95., request_steady=995.):
         node = SimpleNamespace(decoder=ready_decoder(), clock_id='test-boot', publish=lambda: None,
                                get_clock=lambda: SimpleNamespace(now=lambda: SimpleNamespace(nanoseconds=100_000_000_000)))
@@ -141,19 +161,21 @@ class ModeEventTest(unittest.TestCase):
         message.header.stamp = Time(sec=99, nanosec=900_000_000)
         return node, message
 
-    def test_mode_request_age_is_not_a_transport_failure(self):
+    def test_old_mode_request_revokes_authority_without_transport_failure(self):
         node, message = self.node_and_event()
         with patch('msp_evidence.time.monotonic', return_value=1000.):
             EvidenceNode.on_event(node, message)
         self.assertFalse(node.decoder.failed)
         self.assertEqual(node.decoder.frames[105][1], 95.)
+        self.assertFalse(node.decoder.snapshot(100.)['receiver_valid'])
 
     def test_unmatched_reply_keeps_request_time_unknown(self):
         node, message = self.node_and_event('mode_rx_unmatched', 0., 0.)
         with patch('msp_evidence.time.monotonic', return_value=1000.):
             EvidenceNode.on_event(node, message)
         self.assertFalse(node.decoder.failed)
-        self.assertEqual(node.decoder.frames[105][1], 0.)
+        self.assertNotIn(105, node.decoder.frames)
+        self.assertFalse(node.decoder.snapshot(100.)['receiver_valid'])
 
     def test_future_or_different_clock_evidence_still_fails(self):
         for request, steady in ((101., 1001.), (95., 994.)):

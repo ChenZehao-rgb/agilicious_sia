@@ -8,14 +8,17 @@ import os
 import math
 from pathlib import Path
 import pty
+import signal
+import subprocess
+import sys
 import time
-import threading
 import unittest
 
 import rclpy
 import yaml
 from pymavlink.dialects.v20 import common as mav
 from std_msgs.msg import String
+from sensor_msgs.msg import Imu
 from agi_ros2.msg import Authority, ControlCommand, ComputationStatus, FusedState, Health, MspState, OutputStatus
 from nav_msgs.msg import Odometry
 from test_shadow_pipeline import ShadowHarness
@@ -133,6 +136,33 @@ class HardwareHarness(ShadowHarness):
         os.close(self.mav_slave)
 
 
+def run_sensor_process(fd, epoch):
+    # Reuse the same real-time FC emulation without the observer's Python GIL,
+    # ROS message allocations or assertion formatting. Never backfill samples.
+    sensor = HardwareHarness.__new__(HardwareHarness)
+    sensor.mav_master, sensor.epoch = fd, epoch
+    sensor.next_imu = sensor.next_gps = 0.
+    sensor.heading, sensor.fix_type = 9000, 3
+    sensor.invalid_velocity = False
+    sensor.streaming = sensor.gps_streaming = True
+    sensor.peer = mav.MAVLink(sensor, srcSystem=1, srcComponent=1)
+    sensor.peer.robust_parsing = True
+    running = True
+    def stop(signum, frame):
+        nonlocal running
+        running = False
+    signal.signal(signal.SIGTERM, stop)
+    previous = time.monotonic()
+    maximum_gap = 0.
+    while running:
+        now = time.monotonic()
+        maximum_gap = max(maximum_gap, now-previous)
+        previous = now
+        sensor.drive_sensors()
+        time.sleep(.0003)
+    print(f'synthetic sensor process max scheduling gap {maximum_gap*1000:.3f} ms', flush=True)
+
+
 class HardwarePipelineTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -147,25 +177,38 @@ class HardwarePipelineTests(unittest.TestCase):
         self.addCleanup(h.close)
         return h
 
-    def test_mode_gaps_hold_reference_and_output_but_explicit_faults_stop(self):
+    def test_receiver_faults_and_mode_timeout_revoke_output(self):
         h = self.harness(controller='GEO')
-        # Emulated IMU generation must continue while the observer checks ROS
-        # messages; assertion formatting must not masquerade as sensor loss.
-        sensor_stop = threading.Event()
-        sensor_errors = []
-        def feed_sensors():
-            try:
-                while not sensor_stop.is_set():
-                    h.drive_sensors()
-                    sensor_stop.wait(.0003)
-            except Exception as error:
-                sensor_errors.append(error)
-        worker = threading.Thread(target=feed_sensors, daemon=True)
+        h.subscribe_sensor('sensors/imu', Imu)
+        # Sensor production must also be independent of the observer's GIL.
+        sensor_log = open(h.path / 'sensor_producer.log', 'w+')
+        worker = subprocess.Popen([sys.executable, '-c',
+            'import sys; from test_hardware_pipeline import run_sensor_process; '
+            'run_sensor_process(int(sys.argv[1]), float(sys.argv[2]))', str(h.mav_master), str(h.epoch)],
+            pass_fds=(h.mav_master,), stdout=sensor_log, stderr=sensor_log)
+        h.processes.append(worker)
+        h.logs.append(sensor_log)
         h.driver = lambda: None
-        worker.start()
         def stop_sensors():
-            sensor_stop.set()
-            worker.join(timeout=2.)
+            worker.terminate()
+            worker.wait(timeout=2.)
+            states = h.received.get('fused_state', [])
+            resets = [(b.reset_counter, b.readiness_reason,
+                       (b.header.stamp.sec-a.header.stamp.sec) + (b.header.stamp.nanosec-a.header.stamp.nanosec)*1e-9)
+                      for a, b in zip(states, states[1:]) if b.reset_counter != a.reset_counter]
+            imus = h.received.get('sensors/imu', [])
+            imu_gaps = [(b.header.stamp.sec-a.header.stamp.sec) + (b.header.stamp.nanosec-a.header.stamp.nanosec)*1e-9
+                        for a, b in zip(imus, imus[1:])]
+            print('  ' + Path(sensor_log.name).read_text().strip(), flush=True)
+            print(f'  mapped IMU max gap {max(imu_gaps, default=0.)*1000:.3f} ms; '
+                  f'fusion resets {resets}', flush=True)
+            artifacts = os.environ.get('AGI_TEST_FAILURE_ARTIFACTS')
+            if artifacts:
+                destination = Path(artifacts) / h.path.name
+                destination.mkdir(parents=True, exist_ok=True)
+                for log in h.logs:
+                    (destination / Path(log.name).name).write_bytes(Path(log.name).read_bytes())
+                (destination / 'snapshot.txt').write_text(str(h.snapshot()))
         self.addCleanup(stop_sensors)
         h.subscribe('reference', Odometry)
         h.subscribe('authority', Authority)
@@ -177,31 +220,7 @@ class HardwarePipelineTests(unittest.TestCase):
         h.response_auto = True
         h.run(.25)
         self.assertTrue(h.received['output_status'][-1].override_active, h.received['output_status'][-1].last_fault)
-        captured = h.received['reference'][-1].pose.pose
-        for gap in (.15, .5, 5.):
-            with self.subTest(gap=gap):
-                start = {topic: len(h.received[topic]) for topic in
-                         ('output_status', 'computation_status', 'reference', 'control_command')}
-                elapsed = h.received['computation_status'][-1].reference_elapsed
-                fault_count = h.received['output_status'][-1].fault_count
-                authority_stamp = h.received['authority'][-1].header.stamp
-                h.drop_codes = {105, 150}
-                h.run(gap)
-                self.assertTrue(all(s.override_active and s.fault_count == fault_count
-                                    for s in h.received['output_status'][start['output_status']:]), h.received['output_status'][-1].last_fault)
-                computations = h.received['computation_status'][start['computation_status']:]
-                self.assertTrue(computations)
-                self.assertTrue(all(s.controller_success and s.trajectory_active and s.warm_cycles == 50
-                                    for s in computations), h.received['output_status'][-1].last_fault)
-                self.assertGreater(computations[-1].reference_elapsed, elapsed + gap - .05)
-                self.assertTrue(all(s.pose.pose == captured for s in h.received['reference'][start['reference']:]))
-                self.assertTrue(all(s.evidence.command_valid and s.permit_override
-                                    for s in h.received['control_command'][start['control_command']:]))
-                self.assertEqual(h.received['authority'][-1].header.stamp, authority_stamp)
-                h.drop_codes.clear()
-                h.run(.25)
-                self.assertTrue(h.received['output_status'][-1].override_active, h.received['output_status'][-1].last_fault)
-        # AUX falling must be observed promptly even after reply correlation was lost.
+        # Confirm a genuine low before exercising explicit receiver faults.
         changed = time.monotonic()
         h.response_auto = False
         while time.monotonic() - changed < .1 and h.received['output_status'][-1].override_active:
@@ -239,7 +258,25 @@ class HardwarePipelineTests(unittest.TestCase):
         h.run(.2)
         self.assertTrue(h.received['output_status'][-1].override_active, h.received['output_status'][-1].last_fault)
 
-        self.assertFalse(sensor_errors)
+        # A missing mode reply expires independently of the running IMU and
+        # unrelated telemetry. MSP lacks a transaction ID, so this code remains
+        # disabled for the transport session after timeout.
+        h.drop_codes = {105, 150}
+        h.run(.18)
+        self.assertFalse(h.received['output_status'][-1].override_active)
+        self.assertFalse(h.received['authority'][-1].receiver_valid)
+        self.assertTrue(h.received['authority'][-1].auto_switch, 'Timeout manufactured AUTO low')
+        authority_stamp = h.received['authority'][-1].header.stamp
+        start = len(h.codes)
+        h.drop_codes.clear()
+        h.run(.5)
+        self.assertFalse(h.has_output(start), 'Uncorrelated readback silently restored authority')
+        self.assertEqual(h.received['authority'][-1].header.stamp, authority_stamp)
+        h.response_auto = False
+        h.run(.15)
+        self.assertFalse(h.received['authority'][-1].receiver_valid)
+        self.assertTrue(h.received['authority'][-1].auto_switch, 'Unknown switch became low without a matched reply')
+        self.assertIsNone(worker.poll())
 
     def test_real_gnss_hover_authorization_and_recovery(self):
         self.check_real_gnss_hover('MPC')

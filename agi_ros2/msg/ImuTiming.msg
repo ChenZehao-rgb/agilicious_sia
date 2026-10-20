@@ -1,4 +1,5 @@
-# Header is exactly the corresponding sensors/imu sample header.
+# Header is exactly the corresponding sensors/imu mapped FC update header.
+# Sensor acquisition and onboard filtering latency are not transmitted.
 std_msgs/Header header
 string clock_id
 string source_session

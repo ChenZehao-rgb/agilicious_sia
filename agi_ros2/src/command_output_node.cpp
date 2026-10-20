@@ -332,11 +332,15 @@ void CommandOutputNode::processOutput(bool new_command) {
 	        _command.clock_id == evidenceClockId(_clock_id, _simulation_time) && _command.header.frame_id == "base_link" &&
 	        timely(wall, _command_receive_time, _simulation_time ? kSitlWallTimeout : 0.025) &&
 	        timely(evidence.now, _command.evidence.now, 0.025) && timely(ros_time, stampSeconds(_command.header.stamp), 0.025);
-	const bool receiver_valid = _authority.receiver_valid && !_authority.session_id.empty() && !_authority_session_changed;
-	const bool rc_fresh = _authority.rc_link &&
-	                      (_mode == "hardware" ? receiver_valid
-	                                           : timely(wall, _authority_receive_time, _simulation_time ? kSitlWallTimeout : 0.1) &&
-	                                                     timely(ros_time, stampSeconds(_authority.header.stamp), 0.1));
+	const bool receiver_valid = _authority.receiver_valid && !_authority.session_id.empty() && !_authority_session_changed &&
+	                            (_mode != "hardware" || _authority.clock_id == _clock_id);
+	const bool rc_fresh =
+	        _authority.rc_link &&
+	        (_mode == "hardware" ? receiver_valid && timely(wall, _authority_receive_time, SafetyGate::kReceiverEvidenceMaxAge) &&
+		                               timely(wall, _authority.rc_request_steady_time, SafetyGate::kReceiverEvidenceMaxAge) &&
+		                               timely(wall, _authority.status_request_steady_time, SafetyGate::kReceiverEvidenceMaxAge)
+		                     : timely(wall, _authority_receive_time, _simulation_time ? kSitlWallTimeout : 0.1) &&
+		                               timely(ros_time, stampSeconds(_authority.header.stamp), 0.1));
 	const bool health_fresh = timely(wall, _health_receive_time, _simulation_time ? kSitlWallTimeout : 0.2) &&
 	                          timely(ros_time, stampSeconds(_health.header.stamp), 0.2);
 	// New authority can revoke old commands immediately, but never authorize a

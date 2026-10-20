@@ -328,7 +328,7 @@ hardware 模式拒绝启用此开关。旧独立控制器仍可用 `run.py --no-
 | `navigation.heading_confirmed/heading_correction_rad` | 确认绝对航向来源与安装方向后声明；修正量加在 ENU 航向上，rad |
 | `navigation.fc_declination_applied` | 记录 FC 是否已经处理磁偏角，避免重复修正；本身不授予导航健康 |
 | `navigation.max_horizontal_accuracy/max_vertical_accuracy/max_velocity_accuracy` | 允许的接收机报告精度，m/m/(m/s)；任一为 0 表示未配置，不授权 |
-| `fusion.max_horizontal_position_stddev/max_vertical_position_stddev/max_velocity_stddev/max_heading_stddev` | 允许的 EKF 后验标准差，m/m/(m/s)/rad；0 表示未配置，不授权 |
+| `fusion.max_horizontal_position_stddev/max_vertical_position_stddev/max_velocity_stddev/max_heading_stddev` | 与当前状态同历元的预测标准差上限，m/m/(m/s)/rad；0 表示未配置，不授权 |
 | `evidence.geofence_min/geofence_max` | 本地 ENU 包围盒，m；每轴 min<max，包含原点和预定悬停范围 |
 | `evidence.expected_pid_profile/expected_rate_profile` | 当前期望 FC profile 的零基编号；飞行中改变 profile 撤销授权 |
 | `evidence.expected_override_timeout_ms` | ms；本轮硬件策略固定为 50，不能通过参数放宽，必须与固件回读相等 |
@@ -469,12 +469,18 @@ MSP RC/STATUS_EX 默认 25 Hz、电池 2 Hz、配置 1 Hz。`MSP_RC` 的 AETR �
 
 MSP 查询在同一串口上最多等待一个响应，收到响应后再发送下一条。已到期的查询按下一更新期限排序，
 使 RC/STATUS 的高频读取优先于启动时积压的配置读取；错过的周期直接跳过，不集中补发。
-实际频率取决于飞控响应速度。硬件模式值在同一会话内保持，不因 RC/STATUS 读数变旧而退出 AUTO。
-RC/STATUS 查询超过 100 ms 记为非致命 `mode_timeout` 并继续轮询；超时后无法确定回复属于哪次请求，
-后续模式回复标为 `mode_rx_unmatched`，请求时间和延迟保持未知，按串口接收顺序解码 AUX/状态。
+实际频率取决于飞控响应速度。硬件保留最后确认的实体开关值，但 RC/STATUS 各自最后成功匹配的请求
+只有 100 ms 授权有效期；新收到旧回复、其他消息及心跳不能刷新它。预算对应两个 25 Hz 周期（80 ms）、
+已记录的最大回复约 8.35 ms 和约 10 ms 调度余量，未满足期限时撤权。
+RC/STATUS 查询超过 100 ms 记为 `mode_timeout`，停止该消息码在本会话内的查询。MSP 没有事务 ID，
+迟到模式回复标为 `mode_rx_unmatched`，请求时间和延迟保持未知，不解码为新的物理低边沿或授权证据。
+超时需要重启查询会话；普通证据年龄超限可在同会话恢复。两者都须重新收到新鲜 RC/STATUS、真实 AUTO 低→高。
 其他查询的超时仍停止同消息码查询，关键配置/电池查询失败及串口传输故障仍要求重启会话。
 `msp_evidence` 订阅独立的 `msp/rc`、`msp/status`、`msp/battery` 和低流量 `msp/evidence_events`；
-模式主题使用深度 10 的可靠小队列，完整 `msp/events` 继续记录。`Authority.receiver_valid` 区分尚未确认与已确认模式，`session_id` 改变清除旧授权。
+模式主题使用深度 10 的可靠小队列，完整 `msp/events` 继续记录。`Authority.receiver_valid` 表示当前授权证据是否有效，
+`rc_stamp/status_stamp` 分别保留成功请求时间，header 取两者较早值；`session_id` 改变清除旧授权，不伪造实体 AUTO 低。
+`clock_id` 与 `rc_request_steady_time/status_request_steady_time` 保留匹配请求的原始主机单调时间；
+控制、输出使用原始单调时间检查期限，不能按当前 ROS 时钟偏移重新映射并刷新旧请求年龄。
 硬件在明确 AUTO 低时结束当前 AUTO 并返回手动预热；KILL、ARM 低或明确 RX failsafe 停止求解与接管，
 恢复后需要 AUTO 低→高重新授权。启动未确认模式或 AUTO 已高不自动接管；ARM 高且 AUTO 低时预热至少 50 周期。
 IMU/导航、控制指令、健康节点存活及写入期限继续执行原保护。SITL 保留原 RC 实时输入检查。
@@ -497,12 +503,18 @@ GPS 配对观测经 GNSS adapter 转成固定本地 `odom` ENU。ENU yaw 从东�
 GNSS 融合在已确认、未 ARM 的实体授权下采集静止 IMU，默认至少 3 秒/1000 样本；
 检查陀螺偏置/方差、加速度方差和重力模长。初始化只确定初始倾角、gyro bias 与导航状态；
 不会声称完成六面加速度标定。随后 `EkfImu` 传播 p/v/q/bias，用原始测量时间进行 GPS/航向更新，
-检验导航创新、连续接受更新数和后验协方差。IMU 实时预测缓存与后验历史分开，查询不反复重放全部历史。
+检验各分量创新和当前预测协方差。初始化要求 30 次连续接受；已经就绪后的恢复默认要求 5 次普通门控接受，
+并同时满足原始/已接受导航的新鲜度、航向可信性与当前协方差上限。仅一次非航向拒绝允许有界短时预测；
+连续拒绝、航向拒绝/缺失或年龄/协方差超限立即撤销就绪。恢复不重置位置、姿态或强制接受观测；
+实际输出仍须重新完成新鲜实体 AUTO low→high。不能自然通过创新门控的长期失配保持无效。
+当前状态和协方差共同预测，缓存与延迟后验分开，观测提交后重新计算预测；旧 state-only API 保留原查询路径。
 
 硬件默认同时请求 40 Hz 绝对气压并启用 `fusion.baro_enabled`。气压在静止窗口与本地高度
 对齐后，通过独立一维创新门限和参考偏差状态融合。硬件默认
 `fusion.height_fusion_mode: baro_gnss_weighted`：IMU 预测、气压主导相对高度、GNSS 高度低权重辅助，
-GNSS 垂直速度独立融合。水平位置/速度及航向、高度、垂直速度分别检查创新，同一 GNSS 时刻只提交一次更新。
+GNSS 垂直速度独立融合。水平位置、水平速度、航向、高度、垂直速度分别检查创新，自由度为 2/2/1/1/1；
+99.9% 门限分别为 13.8155/13.8155/10.8276/10.828/10.828。全部判据使用共同先验，接受行联合提交一次 Joseph 更新。
+四维水平 NIS 只用于诊断，不再用原五维门限将坏航向连带扩展为整组拒绝；慢变航向误差仍不能靠门限识别为真值。
 相对高度坐标中的参考偏差保持固定，并保留参考相关协方差，避免自由偏置吸收两种高度的分歧。
 GNSS 提供初始高度基准；气压不可用时恢复常规 GNSS 高度权重。RTK 保持原三维融合行为。
 GNSS/气压按采样时间进入有界排序缓冲，默认等待 0.20 s 后更新，IMU 继续预测当前状态。
@@ -516,8 +528,11 @@ GNSS/气压按采样时间进入有界排序缓冲，默认等待 0.20 s 后更�
 
 EKF 运行参数也只在 `fusion` 段：`ekf_process_*_variance` 对应位置、四元数姿态、速度、
 陀螺与加速度偏置过程噪声；`ekf_initial_*_variance` 对应初始姿态及两类偏置协方差。
-姿态数组为 4 个四元数分量，其余为 3 轴；这些字段是方差，不是标准差。
-初始位置/速度协方差采用首个导航观测，`imu_*_variance` 是 IMU 测量噪声的唯一来源。
+姿态数组为 4 个四元数分量，其余为 3 轴。硬件显式使用 `ekf_process_noise_model=continuous_psd`：
+`imu_*_variance` 是连续白噪声谱密度，单位为加速度/角速度平方乘秒；`ekf_process_*_variance` 是状态方差率（/s），
+两类偏置项为随机游走方差率。旧硬件值乘原 0.0001 s 子步仅保持原名义噪声预算，不代表完成噪声辨识。
+`ekf_integration_step=0.001` 控制数值积分，不改变 PSD。未显式选模型的旧配置仍用 `legacy_dt2`，禁止直接套用未迁移参数。
+`ekf_initial_*_variance` 仍是初始方差；初始位置/速度协方差采用首个导航观测，气压偏置原 m²/s 参数不作上述迁移。
 不再额外加载 `agilib/params/ekf_imu.yaml`；诊断应核对当前 profile 的实际参数。
 
 普通 GNSS 的 `rtk_fixed`、`synchronized`、旧 `imu_calibrated/converged` 不伪置为 true。
@@ -525,19 +540,25 @@ EKF 运行参数也只在 `fusion` 段：`ekf_process_*_variance` 对应位置�
 固定源策略由本地只读 `navigation_source=gnss` 决定，命令消息不能切换策略。
 TIMESYNC 是近似时钟对齐，仍包括 FC 滤波和 GPS 串口/解算延迟，不等于 PPS 测量同步。
 
-显式 no-fix、无效航向/速度、时钟失效或源会话重置会传播导航失效事件；原点建立后，GNSS adapter
+显式 no-fix、时钟失效或源会话重置会传播导航失效事件；原点建立后，GNSS adapter
 发布 `LocalNavigation.observation_valid=false`，融合立即发布撤销 readiness 的状态，控制下一周期撤销授权，
 输出收到撤销命令即复查。证据节点继续发布融合 readiness 诊断。不会继续把旧好定位保留到 300 ms 才失效。
 失效事件使用本地检测时间，不刷新最后有效 GPS/IMU 的采集时间；完全停流仍由年龄检查处理。
 实际撤销包含 ROS 调度、消息传递与飞控回退时间，不能解释为物理零延迟。
+无效航向或部分速度分量保留可用位置/速度观测；缺失分量为 NaN，不伪造零值。缺失/拒绝的航向不授予控制就绪。
+入口重排队列允许最多 10 ms 的轻微未来导航/气压历元，但须等待 IMU 覆盖才可更新；它不是控制授权证据。
+硬件 IMU 输入、当前状态和最终控制证据仍按非未来历元检查。
 
 控制定时器为 100 Hz：SITL 用 ROS 仿真时钟，hardware 用墙钟；两种控制器的计算耗时都用单调墙钟。
-控制状态采样及发布年龄上限为 15 ms，IMU 接收年龄仍为 10 ms。原始导航采样与接收年龄分别保持 300 ms；
+控制状态采样及发布年龄上限为 15 ms。硬件 IMU 回调接收与映射 FC 更新历元分别检查 50 ms，其他 FreshSamples
+路径仍为 10 ms。`FusedState.imu_sample_steady_time` 在接受 IMU 时转换一次，后续重发及控制周期保留原值，
+避免入口后的 ROS offset 变化刷新缓存源年龄。入口前的映射误差仍未由此消除。
+FC 更新历元不等于已知物理采样时刻；尚需独立测量传感器/滤波延迟。原始导航采样与接收年龄分别保持 300 ms；
 已接受观测的年龄预算为 `300 ms + fusion.observation_delay`，当前 200 ms 排序窗口对应 500 ms。
 融合 readiness、控制节点、输出和 MSP 共同 SafetyGate 使用同一 profile 的本地只读排序窗口；
 窗口必须有限且在 0–250 ms 内，消息不能修改预算。`FusedState.navigation_sample_stamp` 是最新原始采样时间，
 `rtk_stamp` 是最后已接受观测时间，`rtk_receive_time` 是最新原始接收时间；转发到 `SafetyEvidence` 时仍保留这些时间。
-SITL RC 100 ms、计算预算 8 ms 和 50 个连续健康预热周期保持不变；硬件 RC 模式使用同会话保持策略。
+SITL RC 100 ms、计算预算 8 ms 和 50 个连续健康预热周期保持不变；硬件 RC/STATUS 各自执行 100 ms 请求证据期限。
 输出还检查 25 ms 命令年龄；SITL 有独立 250 ms 墙钟停流保护。消息证据时间不会在转发/看门狗时刷新。
 硬件 health 只缓存最新融合样本，按 50 Hz 定时汇总，MSP 错误事件立即汇总；诊断融合缓存期限为 25 ms。
 控制节点使用当前融合状态检查估计器、导航和围栏，health 提供 FC 配置、接收机、传输、电池和独立的
@@ -550,7 +571,8 @@ SITL RC 100 ms、计算预算 8 ms 和 50 个连续健康预热周期保持不�
 |---|---|
 | `/sensors/mavlink/status` | IMU/GPS 频率、TIMESYNC、串口/CRC/源ID错误及迟到样本 |
 | `/navigation/status`、`/navigation/origin` | 原点、高度/航向声明、精度未知或超限原因 |
-| `/fused_state` | initialized、readiness_reason、navigation_accepted_updates 连续合格次数、拒绝计数、后验协方差及其时间戳 |
+| `/fused_state` | readiness、恢复阶段、各组接受时刻、实际 ba/bw、同状态历元的当前协方差与独立保留的延迟后验质量 |
+| `/fusion/navigation/update` | `navigation_diagnostics=true` 时输出每次 GNSS/气压的 z、h、H、P、R、S、白化创新、分组 NIS 与逐行校正贡献；矩阵 row-major |
 | `/msp/decoded_state`、`/health/status` | 配置、实体 AUX、profile、模式冲突、电压、50 ms timeout 回读 |
 | `/computation_status` | controller_type/controller_success、预热、参考状态/时间、solve_seconds、cycle_seconds 和输入年龄；mpc_success 为弃用兼容别名 |
 | `/output_status` | override_active、当前 reason、保留的 last_fault、write_seconds、command_age |

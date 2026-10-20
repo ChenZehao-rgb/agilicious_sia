@@ -43,14 +43,14 @@ def status_frame(armed=True, auto=False, failsafe=False, flags=0, pid_profile=0,
     return data
 
 
-def ready_decoder(t=10.):
+def ready_decoder(t=10., request_steady=None):
     d = MspEvidence(EXPECTED)
     for code, payload in config_frames().items():
         d.accept(code, payload, t, 'one')
     for name, value in [('msp_override_channels_mask', '15'), ('msp_override_failsafe', 'OFF'), ('msp_override_timeout_ms', '50')]:
         d.accept(0x3010, f'{name} = {value}'.encode(), t, 'one', name)
-    d.accept(105, struct.pack('<7H', 1500, 1500, 1000, 1500, 1800, 1000, 1000), t, 'one')
-    d.accept(150, status_frame(), t, 'one')
+    d.accept(105, struct.pack('<7H', 1500, 1500, 1000, 1500, 1800, 1000, 1000), t, 'one', request_steady=request_steady)
+    d.accept(150, status_frame(), t, 'one', request_steady=request_steady)
     return d
 
 
@@ -264,54 +264,81 @@ class EvidenceTests(unittest.TestCase):
         d.accept(105, struct.pack('<7H', 1500, 1500, 1000, 1500, 1800, 1800, 1800), 10.02, 'one')
         self.assertTrue(d.snapshot(10.03)['kill'])
 
-    def test_latched_modes_age_gaps_and_session_reset(self):
-        d = ready_decoder()
-        d.snapshot(10.01)
-        high = struct.pack('<7H', 1500, 1500, 1000, 1500, 1800, 1800, 1000)
-        d.accept(105, high, 10.02, 'one')
-        d.accept(150, status_frame(auto=True), 10.04, 'one')
-        self.assertTrue(d.snapshot(10.05)['auto_switch'])
-        for gap in (.15, .5, 5.):
-            t = 10.05 + gap
-            # Only mode input is interrupted: other configuration remains healthy.
-            for code, payload in config_frames().items():
-                d.accept(code, payload, t, 'one')
-            for name, (value, _) in list(d.settings.items()):
-                d.accept(0x3010, f'{name} = {value}'.encode(), t, 'one', name)
-            d.accept(105, b'', t, 'one', event='mode_timeout')
-            result = d.snapshot(t)
-            self.assertTrue(result['receiver_valid'] and result['auto_switch'] and result['armed'], result)
-            self.assertFalse(result['kill'])
-            self.assertTrue(result['transport_healthy'])
-            self.assertEqual((result['rc_stamp'], result['status_stamp']), (10.02, 10.04))
-        d.accept(150, status_frame(auto=True), 16., 'two')
-        result = d.snapshot(16.01)
-        self.assertFalse(result['receiver_valid'])
-        d.accept(105, high, 16.02, 'one')  # Retired session cannot restore old authorization.
-        self.assertEqual(d.session, 'two')
-        self.assertFalse(d.snapshot(16.03)['receiver_valid'])
+    def test_each_successful_mode_request_expires_independently(self):
+        for stale_code in (105, 150):
+            with self.subTest(stale_code=stale_code):
+                d = ready_decoder()
+                d.snapshot(10.01)
+                high = struct.pack('<7H', 1500, 1500, 1000, 1500, 1800, 1800, 1000)
+                d.accept(105, high, 10.02, 'one')
+                d.accept(150, status_frame(auto=True), 10.03, 'one')
+                self.assertTrue(d.snapshot(10.04)['receiver_valid'])
+                other = 150 if stale_code == 105 else 105
+                d.accept(other, status_frame(auto=True) if other == 150 else high, 10.13, 'one')
+                # ACK/config/other-mode traffic cannot extend either request.
+                d.accept(200, b'', 10.14, 'one', event='ack')
+                result = d.snapshot(10.141)
+                self.assertFalse(result['receiver_valid'], result)
+                self.assertTrue(result['auto_switch'] and result['armed'])
+                self.assertFalse(result['kill'], 'Stale evidence impersonated a physical switch change')
+                d.accept(105, high, 10.15, 'one')
+                d.accept(150, status_frame(auto=True), 10.16, 'one')
+                self.assertFalse(d.snapshot(10.17)['receiver_valid'], 'Fresh high silently recovered authority')
+                low = struct.pack('<7H', 1500, 1500, 1000, 1500, 1800, 1000, 1000)
+                d.accept(105, low, 10.18, 'one')
+                self.assertTrue(d.snapshot(10.19)['receiver_valid'])
+                self.assertFalse(d.snapshot(10.19)['auto_switch'])
+                d.accept(105, high, 10.20, 'one')
+                self.assertFalse(d.snapshot(10.21)['auto_switch'], 'Old STATUS high reused after low')
+                d.accept(150, status_frame(auto=True), 10.22, 'one')
+                self.assertTrue(d.snapshot(10.23)['auto_switch'])
 
-    def test_physical_fall_and_unmatched_reply_do_not_fabricate_edges(self):
+    def test_ros_offset_change_cannot_refresh_original_monotonic_requests(self):
+        d = ready_decoder(request_steady=100.)
+        self.assertTrue(d.snapshot(10.01, steady_now=100.01)['receiver_valid'])
+        # ROS advanced only 70 ms while monotonic elapsed 110 ms: a 40 ms
+        # backward wall-clock adjustment must not prolong either request.
+        self.assertFalse(d.snapshot(10.07, steady_now=100.11)['receiver_valid'])
+        self.assertEqual(d.mode_request_steady, {105: 100., 150: 100.})
+        d = ready_decoder(request_steady=100.01)
+        self.assertFalse(d.snapshot(10.01, steady_now=100.)['receiver_valid'])
         d = ready_decoder()
-        d.snapshot(10.01)
+        self.assertFalse(d.snapshot(10.01, steady_now=100.)['receiver_valid'], 'Missing steady request became fresh')
+
+    def test_timeout_unmatched_and_session_change_preserve_unknown_switches(self):
         high = struct.pack('<7H', 1500, 1500, 1000, 1500, 1800, 1800, 1000)
         low = struct.pack('<7H', 1500, 1500, 1000, 1500, 1800, 1000, 1000)
+        for event in ('mode_timeout', 'mode_rx_unmatched', 'session_change'):
+            with self.subTest(event=event):
+                d = ready_decoder()
+                d.snapshot(10.01)
+                d.accept(105, high, 10.02, 'one')
+                d.accept(150, status_frame(auto=True), 10.03, 'one')
+                self.assertTrue(d.snapshot(10.04)['auto_switch'])
+                if event == 'session_change':
+                    d.accept(150, status_frame(auto=True), 10.05, 'two')
+                else:
+                    d.accept(105, low, 0., 'one', event=event, observed_steady=100.)
+                result = d.snapshot(10.06)
+                self.assertFalse(result['receiver_valid'])
+                self.assertTrue(result['auto_switch'], 'Unknown/late RC manufactured physical low')
+                self.assertTrue(result['armed'])
+                self.assertFalse(result['kill'])
+                self.assertFalse(d.failed)
+                if event == 'session_change':
+                    d.accept(105, low, 10.07, 'one')
+                    self.assertEqual(d.session, 'two')
+                    self.assertTrue(d.snapshot(10.08)['auto_switch'])
+
+    def test_status_low_alone_does_not_fabricate_auto_edge(self):
+        d = ready_decoder()
+        d.snapshot(10.01)
+        high = struct.pack('<7H', 1500, 1500, 1000, 1500, 1800, 1800, 1000)
         d.accept(105, high, 10.02, 'one')
         d.accept(150, status_frame(auto=True), 10.03, 'one')
         self.assertTrue(d.snapshot(10.04)['auto_switch'])
         d.accept(150, status_frame(auto=False), 10.05, 'one')
-        self.assertTrue(d.snapshot(10.06)['auto_switch'], 'STATUS low manufactured physical AUTO low')
-        d.accept(150, status_frame(auto=True), 10.07, 'one')
-        d.snapshot(10.08)
-        d.accept(105, low, 0., 'one', event='mode_rx_unmatched', observed_steady=100.)
-        self.assertFalse(d.snapshot(10.09)['auto_switch'])
-        self.assertEqual(d.snapshot(10.09)['rc_stamp'], 0.)
-        d.accept(105, high, 0., 'one', event='mode_rx_unmatched', observed_steady=100.1)
-        self.assertFalse(d.snapshot(10.10)['auto_switch'], 'Old FC high reused after physical low')
-        d.accept(150, status_frame(auto=True), 0., 'one', event='mode_rx_unmatched', observed_steady=100.2)
-        self.assertTrue(d.snapshot(10.11)['auto_switch'])
-        d.accept(105, low, 0., 'one', event='mode_rx_unmatched', observed_steady=99.)
-        self.assertTrue(d.snapshot(10.12)['auto_switch'], 'Out-of-order mode event applied')
+        self.assertTrue(d.snapshot(10.06)['auto_switch'])
 
     def test_configurable_authority_aux_indices(self):
         expected = dict(EXPECTED, arm_aux=7, auto_aux=4, kill_aux=13)

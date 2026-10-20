@@ -175,6 +175,7 @@ private:
 		_last_remote_ns = 0;
 		_requests.clear();
 		_last_stamp.clear();
+		_last_mapped_stamp.clear();
 		_fixes.clear();
 		_positions.clear();
 		_gps_fix_type = 0;
@@ -394,7 +395,7 @@ private:
 		double mapped = remote + _offset + _ros_offset;
 		double age = now().seconds() - mapped;
 		const double max_age = id == MAVLINK_MSG_ID_SCALED_PRESSURE ? _baro_max_age_s : id == 105 ? .05 : .5;
-		if (age < -.02 || age > max_age) {
+		if (age < 0 || age > max_age) {
 			++_stale;
 			if (id == MAVLINK_MSG_ID_SCALED_PRESSURE) ++_baro_stale;
 			return false;
@@ -405,8 +406,18 @@ private:
 			if (id == MAVLINK_MSG_ID_SCALED_PRESSURE) ++_baro_duplicates;
 			return false;
 		}
+		// Updating the clock estimate can move mapped time backwards even
+		// when FC time increases. Drop that sample rather than relabel it
+		// with arrival time or silently change its physical-age evidence.
+		const int64_t mapped_ns = static_cast<int64_t>(mapped * 1e9);
+		auto mapped_it = _last_mapped_stamp.find(id);
+		if (mapped_it != _last_mapped_stamp.end() && mapped_ns <= mapped_it->second) {
+			++_mapping_regressions;
+			return false;
+		}
 		_last_stamp[id] = remote;
-		out = rclcpp::Time(static_cast<int64_t>(mapped * 1e9));
+		_last_mapped_stamp[id] = mapped_ns;
+		out = rclcpp::Time(mapped_ns);
 		return true;
 	}
 	double bootMs(uint32_t ms) const {
@@ -637,7 +648,7 @@ private:
 		while (!_fixes.empty() && t - _fixes.front().arrival > .5) _fixes.pop_front();
 		while (!_positions.empty() && t - _positions.front().arrival > .5) _positions.pop_front();
 		for (auto it = _positions.begin(); it != _positions.end();) {
-			auto fix = std::find_if(_fixes.begin(), _fixes.end(), [&](const Fix &f) {
+			auto fix = std::find_if(_fixes.begin(), _fixes.end(), [&](const Fix& f) {
 				return static_cast<uint32_t>(f.value.time_usec / 1000) == it->value.time_boot_ms;
 			});
 			if (fix == _fixes.end()) {
@@ -645,17 +656,20 @@ private:
 				continue;
 			}
 			const auto& v = it->value;
+			const bool velocity_valid = v.vx != INT16_MAX && v.vy != INT16_MAX && v.vz != INT16_MAX;
 			geometry_msgs::msg::TwistStamped out;
-			if (v.vx == INT16_MAX || v.vy == INT16_MAX || v.vz == INT16_MAX) invalidateNavigation(true);
 			if (!_publisher_conflict && fix->value.fix_type >= 3 && fix->value.fix_type <= 6 &&
 			    std::abs(static_cast<int64_t>(fix->value.lat)) <= 900000000 &&
-			    std::abs(static_cast<int64_t>(fix->value.lon)) <= 1800000000 && v.vx != INT16_MAX && v.vy != INT16_MAX &&
-			    v.vz != INT16_MAX && stamp(33, fix->value.time_usec * 1e-6, out.header.stamp)) {
+			    std::abs(static_cast<int64_t>(fix->value.lon)) <= 1800000000 &&
+			    stamp(33, fix->value.time_usec * 1e-6, out.header.stamp)) {
 				out.header.frame_id = "gps_enu";
-				out.twist.linear.x = v.vy * .01;
-				out.twist.linear.y = v.vx * .01;
-				out.twist.linear.z = -v.vz * .01;
-				_velocity_pub->publish(out);
+				out.twist.linear.x = v.vy != INT16_MAX ? v.vy * .01 : nan;
+				out.twist.linear.y = v.vx != INT16_MAX ? v.vx * .01 : nan;
+				out.twist.linear.z = v.vz != INT16_MAX ? -v.vz * .01 : nan;
+				if (velocity_valid) {
+					_velocity_pub->publish(out);
+					++_counts[2];
+				}
 				agi_ros2::msg::Navigation navigation;
 				navigation.header = out.header;
 				navigation.source_session = _source_session;
@@ -675,9 +689,10 @@ private:
 				navigation.vertical_accuracy = fix->value.v_acc ? fix->value.v_acc * .001 : nan;
 				navigation.velocity_accuracy = fix->value.vel_acc ? fix->value.vel_acc * .001 : nan;
 				navigation.clock_aligned = _sync_count >= 5 && steady() - _last_sync < 2;
+				// Unknown velocity cannot discard a valid position or heading.
+				// Preserve per-component NaNs for the fusion innovation groups.
 				_navigation_pub->publish(navigation);
-				++_counts[2];
-				_velocity_valid = true;
+				_velocity_valid = velocity_valid;
 			}
 			it = _positions.erase(it);
 		}
@@ -722,6 +737,9 @@ private:
 		add("synchronized", synchronized ? "true" : "false");
 		add("rate_commands_ok", _command_index == _rate_requests.size() && !_commands_failed ? "true" : "false");
 		add("source_session", _source_session);
+		add("mapping_regressions", std::to_string(_mapping_regressions));
+		add("imu_timestamp_semantics", "FC acceleration-update snapshot; physical sensor/filter latency unknown");
+		add("gps_timestamp_semantics", "FC new-solution capture; receiver PVT epoch not transmitted");
 		add("baro_enabled", _baro_hz ? "true" : "false");
 		add("baro_valid", _baro_valid ? "true" : "false");
 		add("baro_reason", _baro_reason);
@@ -790,6 +808,8 @@ private:
 	std::deque<Tx> _tx;
 	std::map<int64_t, double> _requests;
 	std::map<uint32_t, double> _last_stamp;
+	std::map<uint32_t, int64_t> _last_mapped_stamp;
+	uint64_t _mapping_regressions{0};
 	std::deque<Fix> _fixes;
 	std::deque<Position> _positions;
 	double _last_imu_receive{0};

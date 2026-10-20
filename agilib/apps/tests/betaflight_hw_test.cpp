@@ -14,7 +14,7 @@ void require(bool condition) {
 }
 Evidence healthy(double now = 10) {
 	Evidence e;
-	e.now = e.imu_time = e.rtk_time = e.rc_time = e.command_time = now;
+	e.now = e.imu_sample_time = e.status_time = e.imu_time = e.rtk_time = e.rc_time = e.command_time = now;
 	e.navigation_sample_time = e.navigation_receive_time = now;
 	e.solve_seconds = 0.004;
 	e.rtk_fixed = e.heading_valid = e.accuracy_ok = e.imu_calibrated = true;
@@ -113,6 +113,31 @@ void hardwareImuLeaseTests() {
 	require(gate.update(e));
 	e.imu_time = e.now + .001;
 	require(!gate.update(e));
+	// A freshly delivered old FC update cannot renew the IMU source lease.
+	e = healthy();
+	e.receiver_valid = true;
+	e.imu_sample_time = e.now - .051;
+	require(!SafetyGate::inputsHealthy(e, NavigationPolicy::Rtk, 0.0, ReceiverPolicy::LatchedSwitches));
+	e.imu_sample_time = e.now - .049;
+	require(SafetyGate::inputsHealthy(e, NavigationPolicy::Rtk, 0.0, ReceiverPolicy::LatchedSwitches));
+	e.imu_sample_time = e.now + .001;
+	require(!SafetyGate::inputsHealthy(e, NavigationPolicy::Rtk, 0.0, ReceiverPolicy::LatchedSwitches));
+	for (int stale = 0; stale < 2; ++stale) {
+		SafetyGate receiver_gate(NavigationPolicy::Rtk, 0.0, ReceiverPolicy::LatchedSwitches);
+		e = healthy();
+		e.receiver_valid = true;
+		require(!receiver_gate.update(e));
+		e.auto_switch = true;
+		require(receiver_gate.update(e));
+		(stale == 0 ? e.rc_time : e.status_time) -= .101;
+		require(!receiver_gate.update(e));
+		e.rc_time = e.status_time = e.now;
+		require(!receiver_gate.update(e));  // Fresh high is not a new physical edge.
+		e.auto_switch = false;
+		require(!receiver_gate.update(e));
+		e.auto_switch = true;
+		require(receiver_gate.update(e));
+	}
 }
 void thrustMappingReadinessTests() {
 	Evidence e = healthy();

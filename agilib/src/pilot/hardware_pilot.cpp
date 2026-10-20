@@ -91,7 +91,11 @@ ControlDecision HardwarePilot::tick(const QuadState& state, Evidence evidence, b
 	result.state_valid = state_ok && cadence_ok && (!shadow_only || navigation_valid);
 	const bool receiver_ok = evidence.rc_link && !evidence.kill &&
 	                         (_receiver_policy == ReceiverPolicy::LatchedSwitches
-	                                  ? evidence.receiver_valid
+	                                  ? evidence.receiver_valid &&
+	                                            SafetyGate::fresh(evidence.now, evidence.rc_time, SafetyGate::kReceiverEvidenceMaxAge,
+	                                                              evidence.timing_checks) &&
+	                                            SafetyGate::fresh(evidence.now, evidence.status_time,
+	                                                              SafetyGate::kReceiverEvidenceMaxAge, evidence.timing_checks)
 	                                  : SafetyGate::fresh(evidence.now, evidence.rc_time, .1, evidence.timing_checks));
 	const bool compute_healthy =
 	        shadow_only ? navigation_valid

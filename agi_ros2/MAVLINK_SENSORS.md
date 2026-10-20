@@ -180,12 +180,18 @@ use exclusive access, bounded RX/TX queues and partial-write handling. Reconnect
 repeats synchronization and rate requests. Duplicate/out-of-order samples and
 stale samples are discarded (IMU older than 50 ms, pressure older than the independent
 `baro_max_age_s` default 250 ms; other streams older than 500 ms).
-Future stamps beyond 20 ms are discarded. These adapter limits do not relax the
+All future mapped stamps are discarded. Offset updates that would make a
+published stream go backwards are rejected per sample and counted as
+`mapping_regressions`; no sample is clamped or relabeled with arrival time.
+These adapter limits do not relax the
 existing fusion/control freshness thresholds. Physical end-to-end latency must
 still fit those stricter thresholds before attempting closed-loop operation.
 
-An explicit no-fix, invalid heading/velocity, epoch reset, or detected source conflict publishes
-an invalid navigation event. Once a local origin exists, the GNSS adapter emits
+An explicit no-fix, epoch reset, or detected source conflict publishes
+an invalid navigation event. Missing heading or velocity components remain
+invalid/NaN while usable components retain the paired GPS epoch. Bad heading
+does not discard position/velocity; it still prevents automatic-control readiness.
+Once a local origin exists, a whole-solution failure makes the GNSS adapter emit
 `LocalNavigation.observation_valid=false`; fusion immediately publishes revoked readiness.
 Control and MSP evidence consume that state on their next update, and output rechecks unhealthy
 evidence on receipt. They do not retain an earlier healthy fix until its 300 ms age limit.

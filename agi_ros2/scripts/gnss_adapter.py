@@ -10,7 +10,7 @@ from rclpy.qos import QoSProfile, DurabilityPolicy, qos_profile_sensor_data
 from rcl_interfaces.msg import ParameterDescriptor
 from std_msgs.msg import String
 from agi_ros2.msg import Navigation, LocalNavigation, NavigationOrigin
-from shadow_support import OriginBuilder, fresh, navigation_accuracy_ok
+from shadow_support import OriginBuilder, fresh, local_position, navigation_accuracy_ok
 
 
 class GnssAdapter(Node):
@@ -43,7 +43,7 @@ class GnssAdapter(Node):
         self.origin_pub = self.create_publisher(NavigationOrigin, 'navigation/origin', qos)
         self.status_pub = self.create_publisher(String, 'navigation/status', 10)
         self.origin_message = None
-        self.reason = 'Waiting for valid stationary GPS and confirmed heading'
+        self.reason = 'Waiting for valid stationary GPS'
         self.last_receive = float('nan')
         self.create_subscription(Navigation, 'sensors/navigation', self.on_navigation, qos_profile_sensor_data)
         self.create_timer(1., self.report)
@@ -83,18 +83,36 @@ class GnssAdapter(Node):
         if not (msg.clock_aligned and 3 <= msg.fix_type <= 6 and (fresh(now, t, .3) or 0 < t-now <= .01)):
             self.reject(msg, 'Invalid fix, clock alignment or navigation age')
             return
-        if not self.values['heading_confirmed'] or not msg.heading_valid or not math.isfinite(msg.heading):
-            self.reject(msg, 'True-north heading source/correction unconfirmed or invalid')
-            return
+        # Heading configuration declares the reference; it is not a quality measurement.
+        # Keep usable GNSS when heading is absent. Fusion gates its innovation separately
+        # and still requires trusted heading for initialization and control readiness.
+        heading_valid = bool(self.values['heading_confirmed'] and msg.heading_valid and math.isfinite(msg.heading))
         velocity = msg.velocity.x, msg.velocity.y, msg.velocity.z
-        if (not all(math.isfinite(x) for x in (msg.latitude, msg.longitude, msg.altitude, *velocity)) or
-                abs(msg.latitude) > 90 or abs(msg.longitude) > 180 or
-                msg.altitude_reference not in ('msl', 'ellipsoid') or
+        position_valid = (all(math.isfinite(x) for x in (msg.latitude, msg.longitude, msg.altitude)) and
+                          abs(msg.latitude) <= 90 and abs(msg.longitude) <= 180)
+        velocity_valid = all(math.isfinite(x) for x in velocity)
+        if (msg.altitude_reference not in ('msl', 'ellipsoid') or
                 (self.builder.origin is not None and msg.altitude_reference != self.builder.basis)):
-            self.reject(msg, 'Navigation position, velocity or altitude reference invalid')
+            self.reject(msg, 'Navigation altitude reference invalid or changed')
             return
-        position = self.builder.add(t, msg.source_session, msg.latitude, msg.longitude, msg.altitude,
-                                    msg.altitude_reference, velocity)
+        if not position_valid or not velocity_valid:
+            if self.builder.origin is None or not (position_valid or velocity_valid):
+                self.reject(msg, 'Origin acquisition requires valid position and stationary velocity')
+                return
+            if self.builder.source_session == msg.source_session and self.builder.previous is not None and t <= self.builder.previous:
+                return
+            # The fixed origin is retained across source sessions, just as in OriginBuilder.
+            # Missing components stay NaN; they never become invented stationary measurements.
+            if position_valid:
+                position = local_position(self.builder.origin, (msg.latitude, msg.longitude, msg.altitude),
+                                          msg.altitude_reference)
+            else:
+                position = (math.nan, math.nan, math.nan)
+            self.builder.previous = t
+            self.builder.source_session = msg.source_session
+        else:
+            position = self.builder.add(t, msg.source_session, msg.latitude, msg.longitude, msg.altitude,
+                                        msg.altitude_reference, velocity)
         if position is None:
             self.reason = 'Acquiring stationary origin, or invalid/duplicate navigation'
             return
@@ -121,12 +139,13 @@ class GnssAdapter(Node):
         out.fix_type = msg.fix_type
         out.position.x, out.position.y, out.position.z = position
         out.velocity = msg.velocity
-        out.heading = math.remainder(msg.heading + self.values['heading_correction_rad'], 2*math.pi)
-        out.heading_valid = True
+        out.heading = (math.remainder(msg.heading + self.values['heading_correction_rad'], 2*math.pi)
+                       if heading_valid else math.nan)
+        out.heading_valid = heading_valid
         accuracies = msg.horizontal_accuracy, msg.vertical_accuracy, msg.velocity_accuracy
         out.accuracy_known = all(math.isfinite(x) and x > 0 for x in accuracies)
         out.horizontal_accuracy, out.vertical_accuracy, out.velocity_accuracy = accuracies
-        out.accuracy_ok = navigation_accuracy_ok(accuracies, self.accuracy_limits)
+        out.accuracy_ok = position_valid and velocity_valid and navigation_accuracy_ok(accuracies, self.accuracy_limits)
         def variance(value, floor):
             return max(value, floor)**2 if math.isfinite(value) and value > 0 else floor**2
         out.position_variance = [variance(accuracies[0], self.values['horizontal_stddev'])]*2 + [
@@ -136,6 +155,8 @@ class GnssAdapter(Node):
         out.clock_aligned = msg.clock_aligned
         self.reason = ('Local navigation within configured accuracy limits' if out.accuracy_ok else
                        'Navigation for diagnostics only: accuracy unknown, above limit, or limits unconfigured')
+        if not heading_valid:
+            self.reason += '; heading unavailable or reference unconfirmed'
         out.reason = self.reason
         self.pub.publish(out)
 

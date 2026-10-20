@@ -27,7 +27,8 @@ protected:
 		_now += .01;
 		_state.t = _now;
 		Evidence evidence;
-		evidence.now = evidence.imu_time = evidence.rtk_time = evidence.rc_time = _now;
+		evidence.now = evidence.imu_sample_time = evidence.status_time = evidence.imu_time = evidence.rtk_time = evidence.rc_time =
+		        _now;
 		evidence.rtk_fixed = evidence.heading_valid = evidence.accuracy_ok = evidence.imu_calibrated = true;
 		evidence.synchronized = evidence.converged = evidence.config_verified = evidence.thrust_calibrated = true;
 		evidence.thrust_mapping_ready = true;

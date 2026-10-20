@@ -66,7 +66,8 @@ class MonitorHarness:
                          'msp.rc.rate_hz': 25., 'msp.status.rate_hz': 25., 'msp.battery.rate_hz': 2.,
                          'msp.attitude.enabled': False, 'msp.analog.enabled': False,
                          'msp.gps.enabled': optional_gps})
-        executable = Path(get_package_prefix('agi_ros2')) / 'lib/agi_ros2/betaflight_msp_node'
+        executable = os.environ.get('AGI_MSP_NODE_BINARY',
+                                    str(Path(get_package_prefix('agi_ros2')) / 'lib/agi_ros2/betaflight_msp_node'))
         args = [str(executable), '--ros-args', '-r', '__ns:=' + self.namespace]
         for name, value in params.items():
             args += ['-p', name + ':=' + (str(value).lower() if isinstance(value, bool) else str(value))]
@@ -81,10 +82,10 @@ class MonitorHarness:
         self.events.append(event)
         stamp = event.request_stamp.sec + event.request_stamp.nanosec * 1e-9
         self.decoder.accept(event.code, event.payload, stamp, event.session_id, event.request_name, event.event,
-                            observed_steady=event.steady_time)
+                            observed_steady=event.steady_time, request_steady=event.request_steady_time)
 
     def snapshot(self):
-        return self.decoder.snapshot(self.node.get_clock().now().nanoseconds * 1e-9)
+        return self.decoder.snapshot(self.node.get_clock().now().nanoseconds * 1e-9, steady_now=time.monotonic())
 
     def payload(self, code, request):
         if code == 0x3010:
@@ -293,7 +294,7 @@ class MspPollSchedulerTests(unittest.TestCase):
         if code == 0x3010:
             self.assertEqual(timeouts[0].request_name, fault['payload'].rstrip(b'\x00').decode('ascii'))
 
-    def test_mode_timeouts_keep_polling_without_claiming_request_correlation(self):
+    def test_mode_timeouts_revoke_and_disable_ambiguous_code(self):
         for code in (105, 150):
             with self.subTest(code=code):
                 h = self.harness()
@@ -305,12 +306,13 @@ class MspPollSchedulerTests(unittest.TestCase):
                 events = [event for event in h.events if event.code == code and event.steady_time >= fault_time]
                 self.assertTrue(any(event.event == 'mode_timeout' for event in events))
                 replies = [event for event in events if event.event == 'mode_rx_unmatched']
-                self.assertGreater(len(replies), 5)
+                self.assertEqual(len(replies), 1)
                 self.assertTrue(all(event.request_steady_time == 0. and event.request_stamp.sec == 0 and
                                     math.isnan(event.latency_seconds) for event in replies))
-                self.assertGreater(sum(item['code'] == code and item['time'] >= fault_time for item in h.requests), 5)
+                self.assertEqual(sum(item['code'] == code and item['time'] >= fault_time for item in h.requests), 1)
                 self.assertFalse(h.decoder.failed)
-                self.assertTrue(h.snapshot()['transport_healthy'] and h.snapshot()['receiver_valid'], h.snapshot())
+                self.assertTrue(h.snapshot()['transport_healthy'], h.snapshot())
+                self.assertFalse(h.snapshot()['receiver_valid'], h.snapshot())
 
     def test_uart_disconnect_latches_unhealthy_without_exiting_or_retries(self):
         h = self.harness()
@@ -351,12 +353,12 @@ class MspPollSchedulerTests(unittest.TestCase):
         h.resume()
         h.run(1.2)
         subsequent = [item for item in h.requests if item['time'] >= request['time']]
-        self.assertGreater(sum(item['code'] == 105 for item in subsequent), 5)
+        self.assertEqual(sum(item['code'] == 105 for item in subsequent), 1)
         events = h.events[event_start:]
         timeouts = [event for event in events if event.code == 105 and event.event == 'mode_timeout']
         late = [event for event in events if event.code == 105 and event.event == 'mode_rx_unmatched']
         self.assertEqual(len(timeouts), 1, [(event.event, event.code) for event in events])
-        self.assertGreater(len(late), 5)
+        self.assertEqual(len(late), 1)
         self.assertLess(timeouts[0].steady_time, late[0].steady_time)
         self.assertGreaterEqual(timeouts[0].steady_time - timeouts[0].request_steady_time, .1)
         self.assertEqual(late[0].request_steady_time, 0.)
@@ -367,7 +369,8 @@ class MspPollSchedulerTests(unittest.TestCase):
         self.assertTrue(any(event.event == 'rx' and event.code != 105
                             and event.steady_time > late[0].steady_time for event in events))
         self.assertFalse(h.decoder.failed)
-        self.assertTrue(h.snapshot()['transport_healthy'] and h.snapshot()['receiver_valid'], h.snapshot())
+        self.assertTrue(h.snapshot()['transport_healthy'], h.snapshot())
+        self.assertFalse(h.snapshot()['receiver_valid'], h.snapshot())
 
 
 if __name__ == '__main__':

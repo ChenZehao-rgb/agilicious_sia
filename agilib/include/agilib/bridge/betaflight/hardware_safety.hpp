@@ -13,6 +13,9 @@ enum class ReceiverPolicy { FreshSamples, LatchedSwitches };
 struct Evidence {
 	bool timing_checks{true};  // Local policy; never taken from a received command.
 	double now{NAN}, imu_time{NAN}, rtk_time{NAN}, rc_time{NAN};
+	// Mapped FC update epoch, distinct from fusion callback receipt. The FC
+	// snapshot does not by itself establish the sensor's physical exposure time.
+	double imu_sample_time{NAN}, status_time{NAN};
 	double command_time{NAN}, solve_seconds{NAN};
 	// Original source sample/receipt times, distinct from accepted rtk_time.
 	double navigation_sample_time{NAN}, navigation_receive_time{NAN};
@@ -34,6 +37,7 @@ public:
 	// Hardware rechecks a command between control ticks and before UART writes.
 	// Its source IMU must outlive the 25 ms command lease plus state/solve delay.
 	static constexpr double kHardwareImuMaxAge = 0.050;
+	static constexpr double kReceiverEvidenceMaxAge = 0.100;
 	static double acceptedNavigationMaxAge(double observation_delay) {
 		if (!std::isfinite(observation_delay) || observation_delay < 0 || observation_delay > 0.250) return NAN;
 		return kNavigationSourceMaxAge + observation_delay;
@@ -48,6 +52,7 @@ public:
 	                                ReceiverPolicy receiver_policy = ReceiverPolicy::FreshSamples) {
 		const double imu_max_age = receiver_policy == ReceiverPolicy::LatchedSwitches ? kHardwareImuMaxAge : .010;
 		if (!fresh(e.now, e.imu_time, imu_max_age, e.timing_checks)) return "IMU stale/future";
+		if (!fresh(e.now, e.imu_sample_time, imu_max_age, e.timing_checks)) return "IMU source sample stale/future";
 		const double accepted_max_age = acceptedNavigationMaxAge(observation_delay);
 		if (!std::isfinite(accepted_max_age)) return "navigation timing policy invalid";
 		if (policy == NavigationPolicy::Gnss || observation_delay > 0) {
@@ -59,6 +64,8 @@ public:
 		if (!fresh(e.now, e.rtk_time, accepted_max_age, e.timing_checks)) return "navigation stale/future";
 		if (receiver_policy == ReceiverPolicy::LatchedSwitches) {
 			if (!e.receiver_valid) return "receiver mode unavailable";
+			if (!fresh(e.now, e.rc_time, kReceiverEvidenceMaxAge, e.timing_checks)) return "RC request stale/future";
+			if (!fresh(e.now, e.status_time, kReceiverEvidenceMaxAge, e.timing_checks)) return "STATUS request stale/future";
 			if (!e.rc_link) return "receiver reports RX failsafe";
 		} else if (!fresh(e.now, e.rc_time, .100, e.timing_checks) || !e.rc_link) {
 			return "RC timeout/future/link unavailable";

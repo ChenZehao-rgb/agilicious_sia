@@ -1,6 +1,8 @@
 
 #pragma once
 
+#include <string>
+
 #include "agilib/base/parameter_base.hpp"
 #include "agilib/math/types.hpp"
 #include "agilib/utils/logger.hpp"
@@ -17,6 +19,12 @@ struct EkfImuParameters : public ParameterBase {
 
   Scalar jump_pos_threshold;
   Scalar jump_att_threshold;
+
+	// legacy_dt2 preserves historic per-substep scaling. continuous_psd uses R_acc/R_omega as
+	// continuous white-noise PSD ((m/s^2)^2*s and (rad/s)^2*s), and Q_* as state variance rates /s.
+	// Q_bacc/Q_bome then describe bias random walks. No implicit unit conversion is performed.
+	std::string process_noise_model = "legacy_dt2";
+	Scalar integration_step = 1e-4;
 
   Vector<3> R_pos;
   Vector<3> R_att;

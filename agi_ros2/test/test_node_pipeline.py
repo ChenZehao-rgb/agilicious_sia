@@ -29,7 +29,7 @@ from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
 from rcl_interfaces.srv import SetParameters
 
 ROOT = Path(__file__).resolve().parents[2]
-INSTALL = ROOT / 'install/agi_ros2'
+INSTALL = Path(os.environ.get('AGI_ROS2_TEST_INSTALL', str(ROOT / 'install/agi_ros2')))
 BIN = INSTALL / 'lib/agi_ros2'
 PARAMS = INSTALL / 'share/agi_ros2/params'
 CLOCK_ID = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
@@ -64,6 +64,8 @@ class Harness:
         self.packets = []
         self.sequence = 0
         self.authority_session = "test-authority"
+        self.authority_clock = CLOCK_ID
+        self.authority_request_ages = (0., 0.)
         self.receiver_valid = True
         self.armed = True
         self.auto = False
@@ -157,6 +159,10 @@ class Harness:
             rc.receiver_valid = self.receiver_valid
             rc.session_id = self.authority_session
             rc.header.stamp = self.stamp()
+            rc.rc_stamp = rc.status_stamp = rc.header.stamp
+            rc.clock_id = self.authority_clock
+            rc.rc_request_steady_time = wall - self.authority_request_ages[0]
+            rc.status_request_steady_time = wall - self.authority_request_ages[1]
             rc.armed, rc.auto_switch, rc.kill, rc.rc_link = self.armed, self.auto, self.kill, True
             rc.manual_aetr = [1500, 1500, 1000, 1500]
             self.publisher('authority', Authority).publish(rc)
@@ -206,7 +212,8 @@ class Harness:
             command.permit_override = self.auto
             command.mode = 4 if self.auto else 3
             evidence = command.evidence
-            for field in ('now', 'imu_time', 'rtk_time', 'navigation_sample_time', 'navigation_receive_time', 'rc_time', 'command_time'):
+            for field in ('now', 'imu_time', 'imu_sample_time', 'rtk_time', 'navigation_sample_time',
+                          'navigation_receive_time', 'rc_time', 'status_time', 'command_time'):
                 setattr(evidence, field, wall - self.command_age)
             evidence.rtk_time -= self.navigation_age
             evidence.navigation_sample_time -= self.navigation_sample_age
@@ -338,7 +345,7 @@ class NodePipelineTest(unittest.TestCase):
         self.assertTrue(h.received['output_status'][-1].override_active)
         h.rc_enabled = False
         h.run(.5, commands=True)
-        self.assertTrue(h.received['output_status'][-1].override_active, 'Hardware authority receipt age revoked output')
+        self.assertFalse(h.received['output_status'][-1].override_active, 'Stale hardware authority retained output')
         h.rc_enabled = True
         h.authority_session = 'test-authority-restarted'
         h.run(.15, commands=True)
@@ -359,6 +366,30 @@ class NodePipelineTest(unittest.TestCase):
         h.auto = True
         h.run(.1, commands=True)
         self.assertTrue(h.received['output_status'][-1].override_active)
+
+    def test_hardware_original_request_ages_cannot_be_refreshed_by_new_authority(self):
+        h = self.start_quadratic_output()
+        h.auto = True
+        h.run(.15, commands=True)
+        self.assertTrue(h.received['output_status'][-1].override_active)
+        for ages, clock_id in (((.150, 0.), CLOCK_ID), ((0., .150), CLOCK_ID),
+                               ((-1., 0.), CLOCK_ID), ((0., 0.), 'different-boot')):
+            with self.subTest(ages=ages, clock_id=clock_id):
+                # Header and publication remain current; original matched
+                # requests are independently expired/future/on another boot.
+                h.authority_request_ages = ages
+                h.authority_clock = clock_id
+                h.run(.1, commands=True)
+                self.assertFalse(h.received['output_status'][-1].override_active)
+                h.authority_request_ages = (0., 0.)
+                h.authority_clock = CLOCK_ID
+                h.run(.1, commands=True)
+                self.assertFalse(h.received['output_status'][-1].override_active, 'Fresh high silently reauthorized')
+                h.auto = False
+                h.run(.05, commands=True)
+                h.auto = True
+                h.run(.1, commands=True)
+                self.assertTrue(h.received['output_status'][-1].override_active)
 
     def test_quadratic_mapping_voltage_independence_and_battery_interlock(self):
         h = self.start_quadratic_output()
