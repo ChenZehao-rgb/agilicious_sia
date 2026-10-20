@@ -32,6 +32,50 @@ def mode_key(data, session):
         'imu_ready', 'control_mode_ok', 'config_verified'))
 
 
+class ClockEpoch:
+    """Local ROS/CLOCK_MONOTONIC relation, independent of incoming evidence."""
+    def __init__(self, ros_now, steady_now):
+        self.offset = ros_now - steady_now
+        self.started_steady = -math.inf
+        self.resets = 0
+        self.last_step_seconds = 0.
+        self.rejected_events = 0
+
+    def observe(self, ros_now, steady_now):
+        offset = ros_now - steady_now
+        step = offset - self.offset
+        self.offset = offset
+        if abs(step) <= .05:
+            return False
+        self.started_steady = steady_now
+        self.resets += 1
+        self.last_step_seconds = step
+        return True
+
+
+def check_clock_epoch(node, ros_now, steady_now):
+    if not hasattr(node, 'clock_epoch'):
+        node.clock_epoch = ClockEpoch(ros_now, steady_now)
+    if node.clock_epoch.observe(ros_now, steady_now):
+        node.decoder.reset_clock_epoch()
+        node.output = None
+        node.fused = None
+    return node.clock_epoch
+
+
+def sample_clocks(node):
+    # Scheduling between the two reads is not evidence of a wall-clock step.
+    # Bound skew well below the 50 ms epoch threshold, retrying interrupted reads.
+    for _ in range(3):
+        before = time.monotonic()
+        ros_now = node.get_clock().now().nanoseconds * 1e-9
+        after = time.monotonic()
+        if 0. <= after - before <= .005:
+            return ros_now, after
+    node.decoder.invalidate_modes('Clock sampling delayed; fresh physical AUTO low required')
+    return None
+
+
 def output_freshness(output, clock_id, ros_now, steady_now, received_steady=None):
     """Expose the exact cached evidence used by the unchanged 50 ms interlock."""
     def age(now, sample):
@@ -88,6 +132,9 @@ class EvidenceNode(Node):
         if len(self.minimum) != 3 or len(self.maximum) != 3 or not all(math.isfinite(x) for x in self.minimum+self.maximum):
             raise ValueError('geofence requires three finite coordinates')
         self.clock_id = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+        clocks = sample_clocks(self)
+        if clocks is not None:
+            self.clock_epoch = ClockEpoch(*clocks)
         self.output = None
         self.output_received_steady = None
         self.fused = None
@@ -114,13 +161,30 @@ class EvidenceNode(Node):
 
     def on_event(self, message):
         # The receipt stamp is never substituted for a missing request stamp.
-        # A wall-clock discontinuity or future evidence invalidates the session.
-        now = self.get_clock().now().nanoseconds * 1e-9
+        # Only an independently observed local clock step permits epoch recovery.
         if not message.session_id.startswith(self.clock_id + ':'):
             return
+        if message.event in ('error', 'timeout', 'transport_error'):
+            # A real transport failure is authoritative even when local clock
+            # sampling is delayed or a wall-clock step is being recovered.
+            self.decoder.accept(message.code, [], 0., message.session_id, event=message.event)
+            self.publish()
+            return
+        clocks = sample_clocks(self)
+        if clocks is None:
+            return
+        now, steady = clocks
         request_time = seconds(message.request_stamp)
         mode = message.code in (105, 150) and message.event in ('rx', 'mode_rx_unmatched')
-        steady = time.monotonic()
+        epoch = check_clock_epoch(self, now, steady)
+        if message.event in ('rx', 'mode_rx_unmatched') and (
+                0. < message.steady_time < epoch.started_steady or
+                (message.event == 'rx' and 0. < message.request_steady_time < epoch.started_steady)):
+            # Includes requests sent before the step whose replies arrived after
+            # it. Their payloads cannot revalidate configuration or physical low.
+            epoch.rejected_events += 1
+            self.publish()
+            return
         if mode:
             # Validate the response clocks independently of the successful
             # request-age limit in snapshot(). Unmatched replies never grant
@@ -150,8 +214,12 @@ class EvidenceNode(Node):
             self.publish()
 
     def publish(self):
-        now = self.get_clock().now().nanoseconds * 1e-9
-        data = self.decoder.snapshot(now, self.battery_timeout, steady_now=time.monotonic())
+        clocks = sample_clocks(self)
+        if clocks is None:
+            return
+        now, steady = clocks
+        epoch = check_clock_epoch(self, now, steady)
+        data = self.decoder.snapshot(now, self.battery_timeout, steady_now=steady)
         self._last_mode_key = mode_key(data, self.decoder.session)
         decoded = MspState()
         decoded.header.stamp = stamp(now)
@@ -230,6 +298,10 @@ class EvidenceNode(Node):
         health.reason = '; '.join(reasons)
         self.health_pub.publish(health)
         self.status_pub.publish(String(data=json.dumps(dict(reasons=reasons, session=decoded.session_id,
+                                                           clock=dict(epoch_resets=epoch.resets,
+                                                                      last_step_seconds=epoch.last_step_seconds,
+                                                                      rejected_events=epoch.rejected_events,
+                                                                      recovery_pending=self.decoder.clock_recovery_pending),
                                                            output=output_diagnostic))))
 
 

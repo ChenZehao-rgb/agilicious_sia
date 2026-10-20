@@ -5,9 +5,11 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import yaml
-from launch import LaunchContext
+from launch import LaunchContext, LaunchDescription, LaunchService
 from launch.actions import ExecuteProcess
 from launch.utilities import perform_substitutions
 from launch_ros.actions import Node
@@ -29,6 +31,47 @@ sitl = import_path('sitl_run_test', ROOT / 'betaflight_sitl/run.py')
 
 
 class RuntimeProfiles(unittest.TestCase):
+    def test_hardware_waits_for_clock_before_assembling_any_component(self):
+        context = self.context(mode='hardware')
+        with patch.object(runtime, 'assemble', return_value=['assembled']) as assemble:
+            actions = runtime.guarded_assemble(context)
+            assemble.assert_not_called()
+            self.assertEqual(len(actions), 2)
+            self.assertIsInstance(actions[1], ExecuteProcess)
+            self.assertNotIsInstance(actions[1], Node)
+            with self.assertRaisesRegex(RuntimeError, 'clock synchronization'):
+                runtime.after_clock_sync(SimpleNamespace(returncode=1), context)
+            assemble.assert_not_called()
+            self.assertEqual(runtime.after_clock_sync(SimpleNamespace(returncode=0), context), ['assembled'])
+            assemble.assert_called_once_with(context, False, False, False)
+
+    def test_sitl_has_no_system_clock_gate(self):
+        context = self.context()
+        with patch.object(runtime, 'assemble', return_value=['sitl']) as assemble:
+            self.assertEqual(runtime.guarded_assemble(context), ['sitl'])
+            assemble.assert_called_once()
+
+    def test_clock_gate_rejects_invalid_timeout(self):
+        for timeout in ('0', '-1', 'nan', 'inf'):
+            with self.subTest(timeout=timeout), self.assertRaises(ValueError):
+                runtime.guarded_assemble(self.context(mode='hardware', clock_sync_timeout=timeout))
+
+    def test_clock_process_exit_controls_actual_launch_event_flow(self):
+        for exit_code in (0, 1):
+            with self.subTest(exit_code=exit_code), tempfile.TemporaryDirectory() as directory:
+                script = Path(directory) / 'lib/agi_ros2/wait_for_clock.py'
+                script.parent.mkdir(parents=True)
+                script.write_text(f'#!/usr/bin/env python3\nraise SystemExit({exit_code})\n')
+                script.chmod(0o755)
+                context = self.context(mode='hardware')
+                with patch.object(runtime, 'get_package_prefix', return_value=directory), \
+                        patch.object(runtime, 'assemble', return_value=[]) as assemble:
+                    service = LaunchService()
+                    service.include_launch_description(LaunchDescription(runtime.guarded_assemble(context)))
+                    result = service.run()
+                    self.assertEqual(result, exit_code)
+                    self.assertEqual(assemble.call_count, 1 if exit_code == 0 else 0)
+
     def context(self, **values):
         context = LaunchContext()
         context.launch_configurations.update(runtime.DEFAULTS)

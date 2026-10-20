@@ -30,6 +30,10 @@ public:
 		_acceleration_squared_sum.setZero();
 		_gyro_sum.setZero();
 		_gyro_squared_sum.setZero();
+		_acceleration.setZero();
+		_gyro_bias.setZero();
+		_gyro_variance.setZero();
+		_acceleration_variance.setZero();
 		_ready = false;
 	}
 
@@ -55,13 +59,12 @@ public:
 		const double count = static_cast<double>(_samples.size());
 		_acceleration = _acceleration_sum / count;
 		_gyro_bias = _gyro_sum / count;
-		const agi::Vector<3> gyro_variance = (_gyro_squared_sum / count - _gyro_bias.cwiseProduct(_gyro_bias)).cwiseMax(0.0);
-		const agi::Vector<3> acceleration_variance =
-		        (_acceleration_squared_sum / count - _acceleration.cwiseProduct(_acceleration)).cwiseMax(0.0);
+		_gyro_variance = (_gyro_squared_sum / count - _gyro_bias.cwiseProduct(_gyro_bias)).cwiseMax(0.0);
+		_acceleration_variance = (_acceleration_squared_sum / count - _acceleration.cwiseProduct(_acceleration)).cwiseMax(0.0);
 		_ready = _samples.size() >= static_cast<size_t>(_params.minimum_samples) &&
 		         sample.t - _samples.front().t >= _params.duration && _gyro_bias.norm() <= _params.max_gyro_bias &&
-		         gyro_variance.maxCoeff() <= _params.max_gyro_stddev * _params.max_gyro_stddev &&
-		         acceleration_variance.maxCoeff() <= _params.max_acceleration_stddev * _params.max_acceleration_stddev &&
+		         _gyro_variance.maxCoeff() <= _params.max_gyro_stddev * _params.max_gyro_stddev &&
+		         _acceleration_variance.maxCoeff() <= _params.max_acceleration_stddev * _params.max_acceleration_stddev &&
 		         std::abs(_acceleration.norm() - agi::G) <= _params.gravity_tolerance;
 		return _ready;
 	}
@@ -69,6 +72,22 @@ public:
 	bool ready() const { return _ready; }
 	const agi::Vector<3>& acceleration() const { return _acceleration; }
 	const agi::Vector<3>& gyroBias() const { return _gyro_bias; }
+	size_t sampleCount() const { return _samples.size(); }
+	double windowDuration() const { return _samples.empty() ? 0.0 : _samples.back().t - _samples.front().t; }
+	double gyroStddev() const { return _samples.empty() ? NAN : std::sqrt(_gyro_variance.maxCoeff()); }
+	double accelerationStddev() const { return _samples.empty() ? NAN : std::sqrt(_acceleration_variance.maxCoeff()); }
+	double gravityError() const { return _samples.empty() ? NAN : std::abs(_acceleration.norm() - agi::G); }
+	const char* blockingReason() const {
+		if (_samples.size() < static_cast<size_t>(_params.minimum_samples)) return "Collecting stationary IMU samples";
+		if (windowDuration() < _params.duration) return "Waiting for full stationary IMU window";
+		if (_gyro_bias.norm() > _params.max_gyro_bias) return "Stationary IMU gyro bias exceeds limit";
+		if (_gyro_variance.maxCoeff() > _params.max_gyro_stddev * _params.max_gyro_stddev)
+			return "Stationary IMU gyro noise exceeds limit";
+		if (_acceleration_variance.maxCoeff() > _params.max_acceleration_stddev * _params.max_acceleration_stddev)
+			return "Stationary IMU acceleration noise exceeds limit";
+		if (gravityError() > _params.gravity_tolerance) return "Stationary IMU gravity residual exceeds limit";
+		return _ready ? "Stationary IMU ready" : "Invalid stationary IMU statistics";
+	}
 
 private:
 	Params _params;
@@ -79,6 +98,8 @@ private:
 	agi::Vector<3> _gyro_squared_sum = agi::Vector<3>::Zero();
 	agi::Vector<3> _acceleration = agi::Vector<3>::Zero();
 	agi::Vector<3> _gyro_bias = agi::Vector<3>::Zero();
+	agi::Vector<3> _gyro_variance = agi::Vector<3>::Zero();
+	agi::Vector<3> _acceleration_variance = agi::Vector<3>::Zero();
 	bool _ready = false;
 };
 

@@ -149,6 +149,23 @@ class MspEvidence:
         self.low_status_version = -1
         self.mode_fault_versions = None
         self.mode_failure_reason = ''
+        self.clock_recovery_pending = False
+
+    def reset_clock_epoch(self):
+        """Reacquire evidence after a local clock step without clearing real faults."""
+        # Keep payload baselines so a configuration change across the step still
+        # latches a fault. Old timestamps must not count as fresh in either epoch.
+        self.frames = {code: (payload, -math.inf) for code, (payload, _) in self.frames.items()
+                       if code in self.CONFIG_CODES}
+        self.settings = {name: (value, -math.inf) for name, (value, _) in self.settings.items()}
+        self.last_event = math.nan
+        self.mode_order.clear()
+        self.mode_request_steady.clear()
+        self.mode_versions = {105: 0, 150: 0}
+        self.low_rc_version = self.low_status_version = -1
+        self.mode_fault_versions = dict(self.mode_versions)
+        self.mode_failure_reason = 'Local clock changed; fresh disarmed RC/STATUS and physical AUTO low required'
+        self.clock_recovery_pending = True
 
     def invalidate_modes(self, reason):
         if self.mode_fault_versions is None:
@@ -345,6 +362,11 @@ class MspEvidence:
             imu_ready = (sensor_mask & 0x21) == 0x21 and not (flags & ((1 << 12) | (1 << 23)))
             physical_auto = high(self.auto_channel)
             previous = self.receiver_snapshot
+            if self.clock_recovery_pending:
+                if physical_auto or high(self.arm_channel) or mode(0) or mode(50) or not rc_link or kill:
+                    result['reason'] = 'Local clock changed; waiting for fresh disarmed RC/STATUS and physical AUTO low'
+                    return result
+                self.clock_recovery_pending = False
             if self.mode_fault_versions is not None:
                 refreshed = all(self.mode_versions[code] > version for code, version in self.mode_fault_versions.items())
                 if not refreshed or physical_auto:

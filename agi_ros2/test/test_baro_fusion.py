@@ -4,6 +4,7 @@
 Uses an isolated namespace and simulated clock; no physical serial device is opened.
 Run after building and sourcing ROS and install/agi_ros2/local_setup.bash.
 """
+import gc
 import math
 import time
 import unittest
@@ -38,11 +39,18 @@ def diagnostic_values(status):
 class BarometerHarness(Harness):
     def __init__(self, navigation_source='rtk', parameters=None):
         super().__init__()
+        # This observer also generates the IMU. Cyclic GC must not manufacture
+        # an unrequested sensor outage while retaining thousands of ROS samples.
+        # Explicit timestamp gaps remain active; child nodes keep their own GC.
+        self._gc_was_enabled = gc.isenabled()
+        gc.disable()
         self.simulation = True
         self.armed = False
         self.health_enabled = False
         self.pressure_enabled = True
         self.pressure = 101325.0
+        self.pressure_period = 0.05
+        self.last_pressure = 0.0
         self.source_session = 'synthetic-fc-epoch-1'
         self.navigation_source = navigation_source
         self.navigation_position = (0.0, 0.0, 3.0)
@@ -88,6 +96,14 @@ class BarometerHarness(Harness):
         if not configuration['baro_enabled']:
             self._input_publishers.remove(self.pubs['sensors/baro/sample'])
         self.start('state_fusion_node', parameters=configuration)
+
+    def close(self):
+        try:
+            super().close()
+        finally:
+            if self._gc_was_enabled:
+                gc.enable()
+                gc.collect()
 
     def set_navigation(self, position, velocity=(0.0, 0.0, 0.0), heading=0.0, heading_rate=0.0, position_rate=None):
         self.navigation_position = position
@@ -142,11 +158,16 @@ class BarometerHarness(Harness):
     def publish_inputs(self, sensors, commands):
         super().publish_inputs(False, False)
         seconds = self.sim_time_ns * 1e-9
-        if seconds - self.last_sample >= self.navigation_period:
-            # Identical sample stamps, but pressure is deliberately delivered first.
+        if seconds - self.last_pressure >= self.pressure_period:
+            # Keep pressure timely when a test deliberately slows GNSS. At
+            # half-speed simulation, 200 ms GNSS periods take 400 ms wall time,
+            # which would exceed the pressure stream's 250 ms receipt deadline.
             sample = self.barometer()
             if self.pressure_enabled:
                 self.publisher('sensors/baro/sample', Barometer).publish(sample)
+            self.last_pressure = seconds
+        if seconds - self.last_sample >= self.navigation_period:
+            # For coincident sample stamps, pressure is still delivered first.
             navigation = self.navigation()
             if self.navigation_enabled:
                 self.pending_navigation.append((seconds + self.navigation_delay, navigation))
@@ -688,7 +709,7 @@ class WeightedGnssBarometerFusionTest(unittest.TestCase):
         before = h.state().reset_counter
         h.armed = True
         h.sim_time_ns -= 2_000_000_000
-        h.last_sample = h.last_imu = 0.0
+        h.last_sample = h.last_pressure = h.last_imu = 0.0
         h.pending_navigation.clear()
         h.pending_imus.clear()
         self.wait_for_status(reference_valid=0, ekf_reference_valid=0)
@@ -704,6 +725,75 @@ class NavigationTimingFusionTest(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         rclpy.shutdown()
+
+    def test_imu_gap_then_delayed_navigation_does_not_repeat_reset(self):
+        h = BarometerHarness(navigation_source='gnss')
+        self.addCleanup(h.close)
+        deadline = time.monotonic() + 8.
+        while time.monotonic() < deadline and (not h.received['fused_state'] or not h.state().initialized):
+            h.drive(.2)
+        self.assertTrue(h.state().initialized, h.state().readiness_reason)
+        h.armed = True
+        h.drive(.2)
+        h.navigation_enabled = False
+        h.pending_navigation.clear()
+        before = h.state().reset_counter
+        h.sim_time_ns += 291_371_000
+        h.drive(.3)
+        self.assertEqual(h.state().reset_counter, before + 1)
+        self.assertFalse(h.state().initialized)
+        self.assertIn('vehicle armed', h.state().readiness_reason)
+        self.assertEqual(h.status()['last_reset_reason'], 'IMU sample gap exceeds 25 ms')
+        self.assertGreater(h.status()['last_imu_gap_s'], .29)
+        self.assertEqual(h.status()['imu_timing_resets'], 1)
+
+        revoked = h.navigation()
+        revoked.observation_valid = False
+        revoked.clock_aligned = False
+        pub = h.publisher('sensors/local_navigation', LocalNavigation, True)
+        pub.publish(revoked)
+        h.drive(.1)
+        revoked_ns = revoked.header.stamp.sec * 1_000_000_000 + revoked.header.stamp.nanosec
+        before = h.state().reset_counter
+        for delay_ns in (286_000_000, 156_000_000, 86_000_000):
+            ns = revoked_ns - delay_ns
+            old = h.navigation(Time(sec=ns // 1_000_000_000, nanosec=ns % 1_000_000_000))
+            pub.publish(old)
+            h.drive(.1)
+            self.assertEqual(h.state().reset_counter, before)
+            self.assertFalse(h.state().initialized or h.state().clock_aligned)
+        h.drive(.2)
+        self.assertGreaterEqual(h.status()['out_of_order_navigation'], 3)
+        pub.publish(h.navigation())
+        h.drive(.2)
+        self.assertEqual(h.state().reset_counter, before + 1)
+        self.assertFalse(h.state().initialized)
+        self.assertIn('vehicle armed', h.state().readiness_reason)
+        h.armed = False
+        h.navigation_enabled = True
+        deadline = time.monotonic() + 4.
+        while time.monotonic() < deadline and not h.state().initialized:
+            h.drive(.2)
+        self.assertTrue(h.state().initialized, h.state().readiness_reason)
+        self.assertEqual(h.state().reset_counter, before + 1)
+
+    def test_initialization_reports_speed_and_gyro_bias_blockers(self):
+        h = BarometerHarness(navigation_source='gnss')
+        self.addCleanup(h.close)
+        h.navigation_velocity = (.31, 0., 0.)
+        h.drive(1.)
+        self.assertFalse(h.state().initialized)
+        self.assertIn('navigation speed', h.state().readiness_reason)
+        self.assertEqual(h.status()['imu_initialization_samples'], 0)
+        h.navigation_velocity = (0., 0., 0.)
+        h.imu_yaw_rate = .2
+        h.drive(1.)
+        self.assertFalse(h.state().initialized)
+        self.assertIn('gyro bias', h.state().readiness_reason)
+        self.assertAlmostEqual(h.status()['imu_initialization_gyro_bias_rad_s'], .2)
+        h.imu_yaw_rate = 0.
+        h.drive(1.)
+        self.assertTrue(h.state().initialized, h.state().readiness_reason)
 
     def test_bad_heading_retains_gnss_and_recovers_without_state_reset(self):
         h = BarometerHarness(navigation_source='gnss', parameters={
@@ -759,7 +849,9 @@ class NavigationTimingFusionTest(unittest.TestCase):
         states = [s for s in h.received['fused_state'][before:] if s.initialized]
         older = [s for s in states if stamp_seconds(s.header.stamp) - stamp_seconds(s.rtk_stamp) > 0.30]
         self.assertTrue(older, 'Regression did not exercise accepted navigation ages over 300 ms')
-        self.assertTrue(all(s.navigation_ready and s.estimator_ready for s in older))
+        blocked = [s for s in older if not (s.navigation_ready and s.estimator_ready)]
+        self.assertEqual(len(blocked), 0, [(stamp_seconds(s.header.stamp), s.reset_counter, s.readiness_reason,
+                                          s.navigation_valid, s.navigation_phase) for s in blocked[:5]])
         self.assertTrue(all(s.navigation_sample_stamp != s.rtk_stamp for s in older))
         h.navigation_enabled = False
         h.drive(0.9)

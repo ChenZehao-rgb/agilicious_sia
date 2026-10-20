@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Real ROS nodes, synthetic navigation and PTY MSP. Never opens hardware."""
+import gc
 import math
 import os
 from pathlib import Path
@@ -35,6 +36,10 @@ def crc8(data):
 class ShadowHarness(Harness):
     def __init__(self):
         super().__init__()
+        # Emulated FC replies share the observer's Python thread. Defer cyclic
+        # collection until the emulated UART closes, leaving runtime nodes intact.
+        self._gc_was_enabled = gc.isenabled()
+        gc.disable()
         self.driver = lambda: None
         self.codes = []
         self.drop_code = None
@@ -56,6 +61,14 @@ class ShadowHarness(Harness):
         self.navigation_latitude = 31.
         self.master, self.slave = pty.openpty()
         os.set_blocking(self.master, False)
+
+    def close(self):
+        try:
+            super().close()
+        finally:
+            if self._gc_was_enabled:
+                gc.enable()
+                gc.collect()
 
     def start_node(self, executable, **params):
         defaults = dict(mode='hardware')
@@ -257,7 +270,15 @@ class ShadowTests(unittest.TestCase):
             m.total_thrust = 10.
             h.publisher('control_command', ControlCommand).publish(m)
         h.driver = forged
-        h.run(2.5)
+        # Python process startup and DDS discovery are not part of the 100 ms
+        # receiver deadline. Wait for observed readback instead of a fixed sleep.
+        deadline = time.monotonic() + 8.
+        while time.monotonic() < deadline:
+            h.run(.05)
+            if (all(h.received[topic] for topic in ('output_status', 'msp/decoded_state', 'authority', 'health', 'msp/events')) and
+                    any(m.config_verified for m in h.received['msp/decoded_state']) and
+                    any(m.battery_voltage == 16. for m in h.received['health'])):
+                break
         self.assertTrue(any(m.config_verified for m in h.received['msp/decoded_state']),
                         [m.reason for m in h.received['msp/decoded_state'][-5:]])
         self.assertTrue(any(m.armed and m.rc_link and not m.kill for m in h.received['authority']),

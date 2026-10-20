@@ -12,6 +12,8 @@ import subprocess
 import sys
 import time
 
+from wait_for_clock import positive_timeout
+
 
 PRIORITIES = {
     'mavlink_sensor_node': 30,
@@ -88,6 +90,10 @@ def main():
     modes = [value.split(':=', 1)[1] for value in arguments if value.startswith('mode:=')]
     if modes != ['hardware']:
         raise RuntimeError('Specify mode:=hardware exactly once; this entry is for hardware only')
+    clock_timeouts = [value.split(':=', 1)[1] for value in arguments if value.startswith('clock_sync_timeout:=')]
+    if len(clock_timeouts) > 1:
+        raise RuntimeError('Specify clock_sync_timeout at most once')
+    clock_timeout = positive_timeout(clock_timeouts[0] if clock_timeouts else 60.)
     if find_nodes():
         raise RuntimeError('Hardware nodes already running; stop them before starting this entry')
     subprocess.run(['sudo', '-n', 'true'], check=True)
@@ -100,7 +106,7 @@ def main():
     process = subprocess.Popen([str(ROOT / 'agi_ros2/scripts/launch.sh'), *arguments],
                                start_new_session=True)
     try:
-        deadline = time.monotonic() + 15
+        deadline = time.monotonic() + clock_timeout + 15
         while process.poll() is None:
             nodes = find_nodes(process.pid)
             if len(nodes) == len(PRIORITIES):
@@ -140,6 +146,6 @@ def main():
 if __name__ == '__main__':
     try:
         sys.exit(main())
-    except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
+    except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
         print(f'[AGI-RT] {error}', file=sys.stderr)
         sys.exit(1)

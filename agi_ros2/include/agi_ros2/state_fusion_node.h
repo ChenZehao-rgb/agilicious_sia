@@ -54,9 +54,10 @@ private:
 	void resetBarometer(const std::string& reason);
 	void publishBarometerStatus();
 	void publishNavigationUpdate(const Observation& observation, double processing_time);
-	void reset();
+	void reset(const std::string& reason);
 	bool navigationFresh(double time, double received) const;
 	bool disarmedAuthorityFresh(double received) const;
+	const char* disarmedAuthorityFailure(double received) const;
 	bool covarianceReady(const agi::EkfImu::NavigationQuality& quality) const;
 	void publishState(double imu_receive_time);
 
@@ -100,6 +101,12 @@ private:
 	double _last_imu_sample_steady_time = NAN;
 	double _last_navigation_attempt = NAN;
 	std::string _readiness_reason = "Waiting for navigation and IMU";
+	std::string _last_reset_reason;
+	double _last_reset_stamp = NAN;
+	double _last_imu_gap = NAN;
+	uint64_t _imu_timing_resets = 0;
+	uint64_t _stale_imu_samples = 0;
+	uint64_t _out_of_order_navigation = 0;
 	bool _baro_enabled = false;
 	bool _gnss_use_baro_height = false;
 	std::string _height_fusion_mode = "legacy_full3d";

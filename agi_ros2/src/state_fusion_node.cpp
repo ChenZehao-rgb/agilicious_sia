@@ -180,7 +180,7 @@ StateFusionNode::StateFusionNode()
 	baro_reference.alignment_variance = positive("baro_reference_variance", 4.0);
 	_baro_reference = std::make_unique<BarometerReference>(baro_reference);
 	if (!_ekf_parameters->valid()) throw std::invalid_argument("Invalid EKF noise model, integration step or covariance parameters");
-	reset();
+	reset("Node startup");
 	_fused_pub = create_publisher<msg::FusedState>("fused_state", 1);
 	_navigation_update_pub = create_publisher<msg::NavigationUpdate>("fusion/navigation/update", rclcpp::SensorDataQoS());
 	_state_pub = create_publisher<nav_msgs::msg::Odometry>("state", 1);
@@ -206,7 +206,9 @@ StateFusionNode::StateFusionNode()
 	}
 }
 
-void StateFusionNode::reset() {
+void StateFusionNode::reset(const std::string& reason) {
+	_last_reset_reason = reason;
+	_last_reset_stamp = now().seconds();
 	_ahrs = std::make_unique<agi::CompanionAhrs>(agi::CompanionAhrs::Params{});
 	auto params = std::make_shared<agi::EkfImuParameters>(*_ekf_parameters);
 	params->Q_init_pos = _rtk_position_variance;
@@ -247,11 +249,12 @@ void StateFusionNode::onNavigation(msg::LocalNavigation::ConstSharedPtr message)
 	if (message->header.frame_id != "odom" || message->session_id.empty() || message->source_session.empty()) return;
 	const bool changed = _navigation.session_id != message->session_id || _navigation.source_session != message->source_session;
 	const bool newest = changed || stampSeconds(message->header.stamp) > stampSeconds(_navigation.header.stamp);
+	if (!newest) ++_out_of_order_navigation;
 	if (!message->observation_valid || !message->clock_aligned || message->fix_type < 3 || message->fix_type > 6) {
 		if (!newest) return;
 		const double previous_imu_time = _state.t;
 		if (changed) {
-			reset();
+			reset("Navigation session changed with invalid observation");
 			_state.t = previous_imu_time;
 		}
 		_navigation = *message;
@@ -272,7 +275,9 @@ void StateFusionNode::onNavigation(msg::LocalNavigation::ConstSharedPtr message)
 	// velocity component cannot discard an otherwise usable position group.
 	const bool heading_available = message->heading_valid && std::isfinite(message->heading) &&
 	                               std::isfinite(message->heading_variance) && message->heading_variance > 0;
-	const bool initialize_parameters = !_navigation.observation_valid && !_ekf->healthy();
+	// Delayed observations cannot reverse a newer revocation or restart the
+	// stationary window. Only the current solution can seed initialization.
+	const bool initialize_parameters = newest && !_navigation.observation_valid && !_ekf->healthy();
 	if (newest) {
 		_navigation = *message;
 		for (int i = 0; i < 3; ++i) {
@@ -285,7 +290,7 @@ void StateFusionNode::onNavigation(msg::LocalNavigation::ConstSharedPtr message)
 	}
 	if (changed || initialize_parameters) {
 		_rtk = msg::Rtk();
-		reset();
+		reset(changed ? "Navigation session changed" : "Current navigation restored before initialization");
 	}
 	// Internal observation storage only: never manufacture fixed/PPS evidence.
 	msg::Rtk navigation;
@@ -636,6 +641,22 @@ void StateFusionNode::publishBarometerStatus() {
 		status.values.push_back(item);
 	};
 	add("enabled", _baro_enabled);
+	add("readiness_reason", _readiness_reason);
+	add("reset_counter", _reset_counter);
+	add("last_reset_reason", _last_reset_reason);
+	add("last_reset_stamp", _last_reset_stamp);
+	add("last_imu_gap_s", _last_imu_gap);
+	add("imu_timing_resets", _imu_timing_resets);
+	add("stale_imu_samples", _stale_imu_samples);
+	add("out_of_order_navigation", _out_of_order_navigation);
+	add("imu_initialization_reason", _imu_initialization->blockingReason());
+	add("imu_initialization_samples", _imu_initialization->sampleCount());
+	add("imu_initialization_duration_s", _imu_initialization->windowDuration());
+	add("imu_initialization_gyro_bias_rad_s", _imu_initialization->gyroBias().norm());
+	add("imu_initialization_gyro_stddev_rad_s", _imu_initialization->gyroStddev());
+	add("imu_initialization_acceleration_stddev_m_s2", _imu_initialization->accelerationStddev());
+	add("imu_initialization_gravity_error_m_s2", _imu_initialization->gravityError());
+	add("initialization_navigation_speed_m_s", agi::Vector<3>(_rtk.velocity.x, _rtk.velocity.y, _rtk.velocity.z).norm());
 	add("healthy", healthy);
 	add("height_fusion_mode", _height_fusion_mode);
 	add("weighted_height_mode_active", _weighted_height_mode);
@@ -789,6 +810,22 @@ bool StateFusionNode::disarmedAuthorityFresh(double received) const {
 	return SafetyGate::fresh(now().seconds(), stampSeconds(_authority.header.stamp), 0.1);
 }
 
+const char* StateFusionNode::disarmedAuthorityFailure(double received) const {
+	if (_authority.armed) return "Initialization blocked: vehicle armed";
+	if (_authority.auto_switch) return "Initialization blocked: physical AUTO must be low";
+	if (!SafetyGate::fresh(received, _authority_receive_time, 0.1)) return "Initialization blocked: authority callback stale";
+	if (_latched_receiver) {
+		if (!_authority.receiver_valid) return "Initialization blocked: receiver evidence invalid; inspect health/status";
+		if (_authority.session_id.empty() || _authority.clock_id != _clock_id)
+			return "Initialization blocked: authority session or clock mismatch";
+		if (!SafetyGate::fresh(received, _authority.rc_request_steady_time, 0.1) ||
+		    !SafetyGate::fresh(received, _authority.status_request_steady_time, 0.1))
+			return "Initialization blocked: RC/STATUS successful request stale";
+	}
+	if (!_authority.rc_link) return "Initialization blocked: RC link unavailable";
+	return "Initialization blocked: authority timestamp stale or future";
+}
+
 void StateFusionNode::onImu(sensor_msgs::msg::Imu::ConstSharedPtr message) {
 	const double received = monotonicSeconds();
 	const double time = stampSeconds(message->header.stamp);
@@ -799,7 +836,10 @@ void StateFusionNode::onImu(sensor_msgs::msg::Imu::ConstSharedPtr message) {
 	// The callback clock is separate evidence. A newly delivered old mapped FC
 	// update must not refresh IMU readiness. Physical sensor latency remains unknown.
 	const double received_ros_time = now().seconds();
-	if (_latched_receiver && !SafetyGate::fresh(received_ros_time, time, 0.050)) return;
+	if (_latched_receiver && !SafetyGate::fresh(received_ros_time, time, 0.050)) {
+		++_stale_imu_samples;
+		return;
+	}
 	if (std::isfinite(_last_imu_time)) {
 		if (time == _last_imu_time) return;
 		if (time < _last_imu_time || (_timing_checks && time - _last_imu_time > 0.025)) {
@@ -807,7 +847,9 @@ void StateFusionNode::onImu(sensor_msgs::msg::Imu::ConstSharedPtr message) {
 				_rtk = msg::Rtk();
 				_rtk_receive_time = kUnknownTime;
 			}
-			reset();
+			_last_imu_gap = time - _last_imu_time;
+			++_imu_timing_resets;
+			reset(time < _last_imu_time ? "IMU timestamp moved backwards" : "IMU sample gap exceeds 25 ms");
 		}
 	}
 	_last_imu_time = time;
@@ -840,12 +882,23 @@ void StateFusionNode::onImu(sensor_msgs::msg::Imu::ConstSharedPtr message) {
 			if (!disarmed || !navigation_fresh || !heading_valid || !position.allFinite() || !velocity.allFinite() ||
 			    velocity.norm() > _initialization_max_speed) {
 				_imu_initialization->reset();
-				_readiness_reason = "Initialization requires disarmed authority and stationary, fresh navigation";
+				if (!disarmed)
+					_readiness_reason = disarmedAuthorityFailure(received);
+				else if (!navigation_fresh)
+					_readiness_reason = "Initialization blocked: navigation stale or revoked";
+				else if (!heading_valid)
+					_readiness_reason = "Initialization blocked: heading invalid";
+				else if (!position.allFinite() || !velocity.allFinite())
+					_readiness_reason = "Initialization blocked: nonfinite navigation position or velocity";
+				else
+					_readiness_reason = "Initialization blocked: navigation speed exceeds stationary limit";
 				publishState(received);
 				return;
 			}
 			if (!_imu_initialization->addSample(imu) || !valid_fix) {
-				_readiness_reason = "Collecting stationary IMU samples; checking gravity, gyro bias and noise";
+				_readiness_reason = _imu_initialization->ready()
+				                            ? "Stationary IMU ready; waiting for current navigation fix"
+				                            : _imu_initialization->blockingReason();
 				publishState(received);
 				return;
 			}
@@ -868,7 +921,7 @@ void StateFusionNode::onImu(sensor_msgs::msg::Imu::ConstSharedPtr message) {
 		         _state.q());
 		_state.bw = _navigation_source == "gnss" ? _imu_initialization->gyroBias() : _ahrs->gyroBias();
 		if (!_ekf->initialize(_state) || !_ekf->addImu(imu)) {
-			reset();
+			reset("EKF initialization failed");
 			_state.t = time;
 			_readiness_reason = "EKF initialization failed";
 			publishState(received);
@@ -881,7 +934,7 @@ void StateFusionNode::onImu(sensor_msgs::msg::Imu::ConstSharedPtr message) {
 		while (!_observations.empty() && _observations.front().time <= time) _observations.pop_front();
 	} else {
 		if (!_ekf->addImu(imu)) {
-			reset();
+			reset("EKF rejected IMU");
 			_state.t = time;
 			_readiness_reason = "EKF rejected IMU; reinitialization required";
 			publishState(received);
@@ -890,7 +943,7 @@ void StateFusionNode::onImu(sensor_msgs::msg::Imu::ConstSharedPtr message) {
 		processObservations(time, received);
 	}
 	if (!_ekf->getAt(time, &_state, &_current_quality) || !_state.valid()) {
-		reset();
+		reset("EKF prediction failed");
 		_state.t = time;
 		_readiness_reason = "EKF prediction failed; reinitialization required";
 	}
