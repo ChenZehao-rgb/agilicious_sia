@@ -16,3 +16,9 @@ string reason
 # Fixed at process startup; switching requires a restart and fresh AUTO authorization.
 string controller_type
 bool controller_success
+
+string state_source
+uint64 fc_time_usec
+float64 fc_sample_age
+float64 fc_receive_age
+float64 fc_publish_delay

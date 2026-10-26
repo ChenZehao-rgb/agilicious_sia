@@ -150,6 +150,21 @@ inline std::optional<RuntimeConfig> loadRuntimeConfig(rclcpp::Node& node, const 
 	return config;
 }
 
+inline agi::hardware::NavigationPolicy declareNavigationPolicy(rclcpp::Node& node, const std::optional<RuntimeConfig>& profile,
+                                                               const std::string& mode) {
+	std::string source = mode == "hardware" ? "gnss" : "rtk";
+	if (profile && profile->section("state")["source"].isDefined() &&
+	    profile->section("state")["source"].as<std::string>() == "fc_fused")
+		source = "fc_fused";
+	rcl_interfaces::msg::ParameterDescriptor descriptor;
+	descriptor.read_only = true;
+	source = node.declare_parameter<std::string>("navigation_source", source, descriptor);
+	if (source == "fc_fused" && mode == "hardware") return agi::hardware::NavigationPolicy::FcFused;
+	if (source == "gnss") return agi::hardware::NavigationPolicy::Gnss;
+	if (source == "rtk") return agi::hardware::NavigationPolicy::Rtk;
+	throw std::invalid_argument("navigation_source must be rtk, gnss or hardware fc_fused");
+}
+
 inline double declareObservationDelay(rclcpp::Node& node, const std::optional<RuntimeConfig>& profile, bool baro_enabled = false) {
 	if (profile && profile->section("fusion")["baro_enabled"].isDefined())
 		baro_enabled = profile->section("fusion")["baro_enabled"].as<bool>();

@@ -266,7 +266,8 @@ class EvidenceNode(Node):
         # A diagnostic cache has a 25 ms lifetime. Control checks its own latest
         # 15 ms state and consumes FC readiness independently of this summary.
         fused_fresh = (self.fused is not None and self.fused.clock_id == self.clock_id and
-                       self.fused.initialized and fresh(now, seconds(self.fused.header.stamp), .025) and
+                       (self.fused.fc_state_valid if self.fused.state_source == 'fc_fused' else self.fused.initialized) and
+                       fresh(now, seconds(self.fused.header.stamp), .025) and
                        fresh(time.monotonic(), self.fused.published_steady_time, .025))
         if configured and fused_fresh:
             position = self.fused.position.x, self.fused.position.y, self.fused.position.z
@@ -281,8 +282,17 @@ class EvidenceNode(Node):
         health.navigation_ready = bool(fused_fresh and self.fused.navigation_ready and
                                        self.fused.navigation_accuracy_ok and self.fused.accuracy_known and
                                        self.fused.heading_valid and self.fused.clock_aligned)
+        health.state_source = self.fused.state_source if self.fused else ''
+        health.state_session = self.fused.navigation_session if self.fused else ''
+        health.state_reset_counter = self.fused.reset_counter if self.fused else 0
+        health.msp_healthy = data['transport_healthy']
+        health.control_output_healthy = bool(output_known and self.output.transport_healthy)
+        health.fc_estimator_healthy = bool(fused_fresh and self.fused.state_source == 'fc_fused' and
+                                           self.fused.fc_state_valid and self.fused.clock_aligned and
+                                           fresh(time.monotonic(), self.fused.fc_state_sample_steady_time, .015) and
+                                           fresh(time.monotonic(), self.fused.fc_health_sample_steady_time, .060))
         reasons = [data['reason']]
-        if not health.imu_ready:
+        if health.state_source != 'fc_fused' and not health.imu_ready:
             reasons.append('IMU startup checks or FC calibration/sensor status not ready')
         if not health.estimator_ready or not health.navigation_ready:
             reasons.append(self.fused.readiness_reason if fused_fresh else 'Fused state unavailable/stale')
@@ -302,7 +312,9 @@ class EvidenceNode(Node):
                                                                       last_step_seconds=epoch.last_step_seconds,
                                                                       rejected_events=epoch.rejected_events,
                                                                       recovery_pending=self.decoder.clock_recovery_pending),
-                                                           output=output_diagnostic))))
+                                                           estimator=dict(source=health.state_source, healthy=health.fc_estimator_healthy,
+                                                                          session=health.state_session, reset=health.state_reset_counter),
+                                                           msp_healthy=health.msp_healthy, output=output_diagnostic))))
 
 
 def main():

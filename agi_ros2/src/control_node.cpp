@@ -9,6 +9,7 @@
 #include <memory>
 #include <stdexcept>
 
+#include "agi_ros2/fc_state_evidence.h"
 #include "agi_ros2/node_common.h"
 #include "agi_ros2/runtime_config.h"
 #include "agilib/bridge/betaflight/betaflight_msp_bridge.hpp"
@@ -51,10 +52,7 @@ ControlNode::ControlNode()
 	_geofence_max = geofence("geofence_max");
 	_shadow_only = declare_parameter<bool>("shadow_only", profile ? profile->section("flight")["shadow_only"].as<bool>() : false,
 	                                       shadow_descriptor);
-	const auto navigation =
-	        declare_parameter<std::string>("navigation_source", _mode == "hardware" ? "gnss" : "rtk", shadow_descriptor);
-	if (navigation != "gnss" && navigation != "rtk") throw std::invalid_argument("navigation_source must be gnss or rtk");
-	_navigation_policy = navigation == "gnss" ? agi::hardware::NavigationPolicy::Gnss : agi::hardware::NavigationPolicy::Rtk;
+	_navigation_policy = declareNavigationPolicy(*this, profile, _mode);
 	if (_shadow_only && _mode != "hardware") throw std::invalid_argument("shadow_only requires hardware mode");
 	if (_mode != "sitl" && _mode != "hardware") {
 		throw std::invalid_argument("mode must be sitl or hardware");
@@ -125,7 +123,9 @@ void ControlNode::onState(msg::FusedState::ConstSharedPtr message) {
 	if (message->clock_id != _clock_id) {
 		return;
 	}
-	if (_state.reset_counter != 0 && message->reset_counter != _state.reset_counter) {
+	if ((!_state.clock_id.empty() && message->reset_counter != _state.reset_counter) ||
+	    (_navigation_policy == agi::hardware::NavigationPolicy::FcFused &&
+	     (message->navigation_session != _state.navigation_session || !message->fc_state_valid))) {
 		_output_fault = true;
 	}
 	_state = *message;
@@ -163,7 +163,8 @@ void ControlNode::tick() {
 	agi::QuadState state;
 	state.setZero();
 	state.t = kUnknownTime;
-	if (_state.initialized && _state.clock_id == _clock_id && _state.header.frame_id == "odom" &&
+	if ((_navigation_policy == agi::hardware::NavigationPolicy::FcFused ? _state.fc_state_valid : _state.initialized) &&
+	    _state.clock_id == _clock_id && _state.header.frame_id == "odom" &&
 	    timely(wall, _state.published_steady_time, _simulation_time ? kSitlWallTimeout : SafetyGate::kStateMaxAge)) {
 		state.t = stampSeconds(_state.header.stamp);
 		state.p = agi::Vector<3>{_state.position.x, _state.position.y, _state.position.z};
@@ -227,11 +228,17 @@ void ControlNode::tick() {
 			                       state.p(i) >= _geofence_min[i] && state.p(i) <= _geofence_max[i];
 	}
 	evidence.msp_healthy = health_fresh && _health.transport_healthy && output_fresh && _output.transport_healthy;
-	const bool navigation_valid =
+	bool navigation_valid =
 	        _state.navigation_source == "gnss" && _state.navigation_valid && _state.clock_aligned && _state.heading_valid &&
 	        timely(_control_time, stampSeconds(_state.rtk_stamp), SafetyGate::acceptedNavigationMaxAge(_observation_delay)) &&
 	        timely(_control_time, stampSeconds(_state.navigation_sample_stamp), .3) && timely(wall, _state.rtk_receive_time, .3) &&
 	        timely(wall, _state.imu_receive_time, .010);
+	if (_navigation_policy == agi::hardware::NavigationPolicy::FcFused) {
+		setFcEvidence(_state, evidence);
+		navigation_valid = SafetyGate::fcFailure(evidence) == nullptr;
+		evidence.estimator_ready = evidence.navigation_ready = navigation_valid;
+		evidence.accuracy_ok = navigation_valid;
+	}
 	const auto decision = _pilot->tick(state, evidence, _shadow_only, navigation_valid);
 	_cycle_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - cycle_start).count();
 	publishDecision(decision, state);
@@ -277,6 +284,12 @@ void ControlNode::publishDecision(const agi::hardware::ControlDecision& decision
 	computation.state_age = _control_time - state.t;
 	computation.navigation_age = _control_time - stampSeconds(_state.rtk_stamp);
 	computation.imu_age = decision.evidence.now - decision.evidence.imu_time;
+	computation.state_source = _state.state_source;
+	computation.fc_time_usec = _state.fc_time_usec;
+	computation.fc_sample_age = _state.state_source == "fc_fused" ? decision.evidence.now - _state.fc_state_sample_steady_time : NAN;
+	computation.fc_receive_age = _state.state_source == "fc_fused" ? decision.evidence.now - _state.fc_state_receive_steady_time : NAN;
+	computation.fc_publish_delay =
+	        _state.state_source == "fc_fused" ? _state.published_steady_time - _state.fc_state_sample_steady_time : NAN;
 	computation.reason = decision.reason;
 	if (!_state.readiness_reason.empty()) computation.reason += "; fusion: " + _state.readiness_reason;
 	if (!_health.reason.empty()) computation.reason += "; health: " + _health.reason;

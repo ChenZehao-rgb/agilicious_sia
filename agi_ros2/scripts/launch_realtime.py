@@ -11,6 +11,7 @@ import signal
 import subprocess
 import sys
 import time
+import yaml
 
 from wait_for_clock import positive_timeout
 
@@ -18,6 +19,7 @@ from wait_for_clock import positive_timeout
 PRIORITIES = {
     'mavlink_sensor_node': 30,
     'state_fusion_node': 25,
+    'fc_state_adapter_node': 25,
     'command_output_node': 20,
     'control_node': 15,
 }
@@ -81,11 +83,25 @@ def stop_launch(process):
         time.sleep(.2)
 
 
+def expected_nodes(arguments):
+    profiles = [arg.split(':=', 1)[1] for arg in arguments if arg.startswith('runtime_config:=')]
+    sources = [arg.split(':=', 1)[1] for arg in arguments if arg.startswith('state_source:=')]
+    if len(profiles) > 1 or len(sources) > 1:
+        raise RuntimeError('Specify runtime_config/state_source at most once')
+    path = Path(profiles[0]) if profiles and profiles[0] else ROOT / 'agi_ros2/config/hardware.yaml'
+    profile = yaml.safe_load(path.read_text())
+    source = sources[0] if sources and sources[0] else profile.get('state', {}).get('source', 'ros_ekf')
+    if source not in ('ros_ekf', 'fc_fused'):
+        raise RuntimeError('Invalid state source')
+    estimator = 'fc_state_adapter_node' if source == 'fc_fused' else 'state_fusion_node'
+    return {'mavlink_sensor_node', estimator, 'control_node', 'command_output_node'}
+
+
 def main():
     arguments = sys.argv[1:]
     if arguments == ['--help'] or not arguments:
         print(__doc__)
-        print('Usage: launch_realtime.py mode:=hardware shadow_only:=false bench_fixed_gps:=true')
+        print('Usage: launch_realtime.py mode:=hardware shadow_only:=true')
         return 0
     modes = [value.split(':=', 1)[1] for value in arguments if value.startswith('mode:=')]
     if modes != ['hardware']:
@@ -94,6 +110,7 @@ def main():
     if len(clock_timeouts) > 1:
         raise RuntimeError('Specify clock_sync_timeout at most once')
     clock_timeout = positive_timeout(clock_timeouts[0] if clock_timeouts else 60.)
+    expected = expected_nodes(arguments)
     if find_nodes():
         raise RuntimeError('Hardware nodes already running; stop them before starting this entry')
     subprocess.run(['sudo', '-n', 'true'], check=True)
@@ -109,7 +126,9 @@ def main():
         deadline = time.monotonic() + clock_timeout + 15
         while process.poll() is None:
             nodes = find_nodes(process.pid)
-            if len(nodes) == len(PRIORITIES):
+            if set(nodes) - expected:
+                raise RuntimeError('Unexpected estimator process; stopping launch')
+            if set(nodes) == expected:
                 break
             if time.monotonic() >= deadline:
                 raise RuntimeError('Timed out waiting for all four hardware C++ nodes')

@@ -10,6 +10,7 @@
 
 #include "agi_ros2/msg/authority.hpp"
 #include "agi_ros2/msg/control_command.hpp"
+#include "agi_ros2/msg/fused_state.hpp"
 #include "agi_ros2/msg/health.hpp"
 #include "agi_ros2/msg/output_status.hpp"
 #include "agi_ros2/msg/output_timing.hpp"
@@ -63,6 +64,8 @@ private:
 	msg::ControlCommand _command;
 	msg::Authority _authority;
 	msg::Health _health;
+	msg::FusedState _fc_state;
+	rclcpp::Subscription<msg::FusedState>::SharedPtr _fc_state_sub;
 	double _command_receive_time;
 	double _output_check_time = NAN;
 	double _authority_receive_time;

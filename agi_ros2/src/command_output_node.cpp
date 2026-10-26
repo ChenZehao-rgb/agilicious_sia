@@ -18,6 +18,7 @@
 #include <stdexcept>
 #include <vector>
 
+#include "agi_ros2/fc_state_evidence.h"
 #include "agi_ros2/node_common.h"
 #include "agi_ros2/runtime_config.h"
 #include "agilib/types/quadrotor.hpp"
@@ -49,11 +50,8 @@ CommandOutputNode::CommandOutputNode()
 	_observation_delay = declareObservationDelay(*this, profile);
 	_shadow_only = declare_parameter<bool>("shadow_only", profile ? profile->section("flight")["shadow_only"].as<bool>() : false,
 	                                       shadow_descriptor);
-	const auto navigation =
-	        declare_parameter<std::string>("navigation_source", _mode == "hardware" ? "gnss" : "rtk", shadow_descriptor);
-	if (navigation != "gnss" && navigation != "rtk") throw std::invalid_argument("navigation_source must be gnss or rtk");
-	const auto policy = navigation == "gnss" ? agi::hardware::NavigationPolicy::Gnss : agi::hardware::NavigationPolicy::Rtk;
-	_navigation_policy = policy;
+	_navigation_policy = declareNavigationPolicy(*this, profile, _mode);
+	const auto policy = _navigation_policy;
 	const auto receiver_policy =
 	        _mode == "hardware" ? agi::hardware::ReceiverPolicy::LatchedSwitches : agi::hardware::ReceiverPolicy::FreshSamples;
 	_gate = std::make_unique<SafetyGate>(policy, _observation_delay, receiver_policy);
@@ -170,13 +168,22 @@ CommandOutputNode::CommandOutputNode()
 			processOutput();
 		}
 	});
+	if (_navigation_policy == agi::hardware::NavigationPolicy::FcFused) {
+		_fc_state_sub = create_subscription<msg::FusedState>("fused_state", 1, [this](msg::FusedState::ConstSharedPtr s) {
+			const bool changed =
+			        _fc_state.reset_counter != s->reset_counter || _fc_state.navigation_session != s->navigation_session;
+			_fc_state = *s;
+			if (changed || !s->fc_state_valid) processOutput();
+		});
+	}
 	_health_sub = create_subscription<msg::Health>("health", 1, [this](msg::Health::ConstSharedPtr message) {
 		_health = *message;
 		_health_receive_time = monotonicSeconds();
 		const bool navigation_ready =
-		        _navigation_policy == agi::hardware::NavigationPolicy::Gnss
+		        _navigation_policy == agi::hardware::NavigationPolicy::FcFused ? _health.fc_estimator_healthy
+			: _navigation_policy == agi::hardware::NavigationPolicy::Gnss
 		                ? (_mode == "hardware" ? _health.fc_imu_ready
-		                                      : (_health.imu_ready && _health.estimator_ready && _health.navigation_ready))
+		                                       : (_health.imu_ready && _health.estimator_ready && _health.navigation_ready))
 		                : (_health.imu_calibrated && _health.converged);
 		if (!navigation_ready || !_health.config_verified || !_health.thrust_mapping_ready ||
 		    (_mode != "hardware" && !_health.geofence_ok) || !_health.transport_healthy ||
@@ -376,6 +383,14 @@ void CommandOutputNode::processOutput(bool new_command) {
 	evidence.imu_ready = evidence.imu_ready && health_fresh && (_mode == "hardware" ? _health.fc_imu_ready : _health.imu_ready);
 	evidence.estimator_ready = evidence.estimator_ready && health_fresh && (_mode == "hardware" || _health.estimator_ready);
 	evidence.navigation_ready = evidence.navigation_ready && health_fresh && (_mode == "hardware" || _health.navigation_ready);
+	if (_navigation_policy == agi::hardware::NavigationPolicy::FcFused) {
+		agi::hardware::Evidence latest;
+		latest.now = wall;
+		setFcEvidence(_fc_state, latest);
+		evidence.fc_valid = evidence.fc_valid && _fc_state.clock_id == _clock_id && !SafetyGate::fcFailure(latest) &&
+		                    evidence.fc_session == latest.fc_session && evidence.fc_generation == latest.fc_generation &&
+		                    evidence.fc_reset_counter == latest.fc_reset_counter;
+	}
 	bool active = _gate->update(evidence) && _command.permit_override;
 	// Heartbeats and watchdog callbacks may revoke, but never transmit another
 	// copy of a healthy hardware command or claim a new physical write.

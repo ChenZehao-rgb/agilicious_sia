@@ -27,7 +27,10 @@
 #include <utility>
 #include <vector>
 
+#include "agi_ros2/fc_protocol.h"
 #include "agi_ros2/msg/barometer.hpp"
+#include "agi_ros2/msg/fc_estimated_state.hpp"
+#include "agi_ros2/msg/fc_estimator_status.hpp"
 #include "agi_ros2/msg/heading.hpp"
 #include "agi_ros2/msg/imu_timing.hpp"
 #include "agi_ros2/msg/navigation.hpp"
@@ -53,6 +56,9 @@ public:
 		_sys = declare_parameter<int>("system_id", 1, desc);
 		_comp = declare_parameter<int>("component_id", 1, desc);
 		if (_sys < 1 || _sys > 255 || _comp < 1 || _comp > 255) throw std::invalid_argument("Invalid source IDs");
+		const auto source = declare_parameter<std::string>("state_source", "ros_ekf", desc);
+		if (source != "ros_ekf" && source != "fc_fused") throw std::invalid_argument("Invalid state_source");
+		_fc_fused = source == "fc_fused";
 		_gps_mode = declare_parameter<std::string>("gps_mode", "gnss", desc);
 		_altitude_source = declare_parameter<std::string>("altitude_source", "unknown", desc);
 		if (_gps_mode != "gnss" && _gps_mode != "rtk") throw std::invalid_argument("gps_mode must be gnss or rtk");
@@ -82,11 +88,19 @@ public:
 			RCLCPP_WARN(get_logger(),
 			            "Props-off bench: synthetic 10 Hz GPS/zero velocity; real ATTITUDE yaw has no mag-health flag");
 		}
-		_rate_requests = {{{MAVLINK_MSG_ID_HIGHRES_IMU, _imu_hz},
-		                   {MAVLINK_MSG_ID_GPS_RAW_INT, _gps_hz},
-		                   {MAVLINK_MSG_ID_GLOBAL_POSITION_INT, _gps_hz},
-		                   {MAVLINK_MSG_ID_ATTITUDE, _attitude_hz},
-		                   {MAVLINK_MSG_ID_SCALED_PRESSURE, _baro_hz}}};
+		_rate_requests = {{MAVLINK_MSG_ID_HIGHRES_IMU, _imu_hz},
+		                  {MAVLINK_MSG_ID_GPS_RAW_INT, _gps_hz},
+		                  {MAVLINK_MSG_ID_GLOBAL_POSITION_INT, _gps_hz},
+		                  {MAVLINK_MSG_ID_ATTITUDE, _attitude_hz},
+		                  {MAVLINK_MSG_ID_SCALED_PRESSURE, _baro_hz}};
+		const int odometry_hz = rate("odometry_rate_hz", 100, 100);
+		const int status_hz = rate("estimator_status_rate_hz", 50, 50);
+		if (_fc_fused) {
+			if (_bench_fixed_gps || odometry_hz != 100 || status_hz != 50)
+				throw std::invalid_argument("fc_fused requires real 100 Hz state / 50 Hz health");
+			_rate_requests = {{MAVLINK_MSG_ID_ODOMETRY, odometry_hz}, {MAVLINK_MSG_ID_V2_EXTENSION, status_hz}};
+			_imu_hz = _gps_hz = _attitude_hz = _baro_hz = 0;
+		}
 		_baro_max_age_s = declare_parameter<double>("baro_max_age_s", .25, desc);
 		_baro_pressure_variance_pa2 = declare_parameter<double>("baro_pressure_variance_pa2", 0., desc);
 		_baro_temperature_variance_c2 = declare_parameter<double>("baro_temperature_variance_c2", 0., desc);
@@ -102,6 +116,8 @@ public:
 			if (v.size() != 3 || std::any_of(v.begin(), v.end(), [](double x) { return !std::isfinite(x) || x < 0; }))
 				throw std::invalid_argument("Variance must have three finite nonnegative entries (all zero means unknown)");
 		}
+		_fc_state_pub = create_publisher<agi_ros2::msg::FcEstimatedState>("sensors/fc/estimated_state", 1);
+		_fc_status_pub = create_publisher<agi_ros2::msg::FcEstimatorStatus>("sensors/fc/estimator_status", 1);
 		auto qos = rclcpp::SensorDataQoS();
 		_imu_pub = create_publisher<sensor_msgs::msg::Imu>("sensors/imu", qos);
 		_imu_timing_pub = create_publisher<agi_ros2::msg::ImuTiming>("sensors/imu/timing", 100);
@@ -166,8 +182,24 @@ private:
 		out.reason = _baro_reason;
 		_baro_pub->publish(out);
 	}
+	void invalidateFc(const std::string& reason) {
+		if (!_fc_fused || !_fc_state_pub) return;
+		agi_ros2::msg::FcEstimatedState out;
+		out.clock_id = _clock_id;
+		out.source_session = _source_session;
+		out.reason = reason;
+		out.validity_epoch = ++_fc_validity_epoch;
+		_fc_state_good = false;
+		out.sample_steady_time = nan;
+		out.receive_steady_time = steady();
+		out.published_steady_time = steady();
+		_fc_state_pub->publish(out);
+	}
 	void resetEpoch(const std::string& reason) {
 		_source_session = (_bench_fixed_gps ? "bench_fixed_gps:" : "") + std::to_string(steady());
+		_last_fc_time = _last_health_time = 0;
+		_last_health_sequence = 0;
+		invalidateFc(reason);
 		_next_bench_gps = 0;
 		_last_imu_receive = 0;
 		_sync_count = 0;
@@ -394,8 +426,18 @@ private:
 		if (_sync_count < 5 || !std::isfinite(remote)) return false;
 		double mapped = remote + _offset + _ros_offset;
 		double age = now().seconds() - mapped;
-		const double max_age = id == MAVLINK_MSG_ID_SCALED_PRESSURE ? _baro_max_age_s : id == 105 ? .05 : .5;
+		const double max_age = id == MAVLINK_MSG_ID_ODOMETRY          ? .015
+		                       : id == MAVLINK_MSG_ID_SCALED_PRESSURE ? _baro_max_age_s
+		                       : id == 105                            ? .05
+		                                                              : .5;
 		if (age < 0 || age > max_age) {
+			if (id == MAVLINK_MSG_ID_ODOMETRY) {
+				if (age < 0)
+					++_fc_future;
+				else
+					++_fc_expired;
+				_fc_stamp_reason = age < 0 ? "FC sample mapped to future" : "FC sample older than 15 ms";
+			}
 			++_stale;
 			if (id == MAVLINK_MSG_ID_SCALED_PRESSURE) ++_baro_stale;
 			return false;
@@ -412,6 +454,7 @@ private:
 		const int64_t mapped_ns = static_cast<int64_t>(mapped * 1e9);
 		auto mapped_it = _last_mapped_stamp.find(id);
 		if (mapped_it != _last_mapped_stamp.end() && mapped_ns <= mapped_it->second) {
+			if (id == MAVLINK_MSG_ID_ODOMETRY) _fc_stamp_reason = "FC mapped timestamp regressed";
 			++_mapping_regressions;
 			return false;
 		}
@@ -426,6 +469,111 @@ private:
 		double now_remote = _last_remote_ns * 1e-9;
 		double value = ms * .001;
 		return value + std::round((now_remote - value) / wrap) * wrap;
+	}
+	void handleFc(const mavlink_message_t& m, double received) {
+		if (m.msgid == MAVLINK_MSG_ID_ODOMETRY) {
+			mavlink_odometry_t v{};
+			agi_ros2::fc::State converted;
+			if (!agi_ros2::fc::decodeOdometry(m, v, converted)) {
+				++_fc_invalid;
+				invalidateFc("Invalid FC odometry");
+				return;
+			}
+			if (_last_fc_time && v.time_usec < _last_fc_time) {
+				++_fc_reordered;
+				resetEpoch("FC state timestamp regressed");
+				return;
+			}
+			if (v.time_usec == _last_fc_time) {
+				++_duplicates;
+				return;
+			}
+			if (_last_fc_time && v.time_usec - _last_fc_time > 15000) ++_fc_gaps;
+			_last_fc_time = v.time_usec;
+			agi_ros2::msg::FcEstimatedState out;
+			if (!stamp(m.msgid, v.time_usec * 1e-6, out.header.stamp)) {
+				invalidateFc(_fc_stamp_reason);
+				return;
+			}
+			out.header.frame_id = "odom";
+			out.clock_id = _clock_id;
+			out.source_session = _source_session;
+			out.validity_epoch = _fc_validity_epoch;
+			out.fc_time_usec = v.time_usec;
+			out.sample_steady_time = v.time_usec * 1e-6 + _offset;
+			out.receive_steady_time = received;
+			out.clock_aligned = out.valid = true;
+			out.position.x = converted.position[0];
+			out.position.y = converted.position[1];
+			out.position.z = converted.position[2];
+			out.velocity.x = converted.velocity[0];
+			out.velocity.y = converted.velocity[1];
+			out.velocity.z = converted.velocity[2];
+			out.body_rates.x = converted.rates[0];
+			out.body_rates.y = converted.rates[1];
+			out.body_rates.z = converted.rates[2];
+			out.orientation.w = converted.orientation[0];
+			out.orientation.x = converted.orientation[1];
+			out.orientation.y = converted.orientation[2];
+			out.orientation.z = converted.orientation[3];
+			std::copy_n(v.pose_covariance, 21, out.pose_covariance.begin());
+			std::copy_n(v.velocity_covariance, 21, out.velocity_covariance.begin());
+			out.reset_counter = v.reset_counter;
+			out.estimator_type = v.estimator_type;
+			out.quality = v.quality;
+			out.published_steady_time = steady();
+			_fc_state_pub->publish(out);
+			_fc_state_good = true;
+			++_fc_count;
+		} else if (m.msgid == MAVLINK_MSG_ID_V2_EXTENSION) {
+			agi_ros2::fc::Health h;
+			if (!agi_ros2::fc::decodeHealth(m, h)) {
+				++_fc_invalid;
+				invalidateFc("Invalid BF estimator health");
+				return;
+			}
+			if (_last_health_time &&
+			    (h.time < _last_health_time || (h.reset == _last_health_reset && h.sequence != _last_health_sequence &&
+			                                    uint32_t(h.sequence - _last_health_sequence) > 0x7fffffff))) {
+				++_fc_reordered;
+				resetEpoch("FC health timestamp/sequence regressed");
+				return;
+			}
+			_last_health_time = h.time;
+			_last_health_sequence = h.sequence;
+			_last_health_reset = h.reset;
+			agi_ros2::msg::FcEstimatorStatus out;
+			out.sample_steady_time = h.time * 1e-6 + _offset;
+
+			out.header.frame_id = "odom";
+			out.clock_id = _clock_id;
+			out.source_session = _source_session;
+			out.fc_time_usec = h.time;
+			out.receive_steady_time = received;
+			out.clock_aligned = true;
+			out.valid = received >= out.sample_steady_time && received - out.sample_steady_time <= .060;
+			out.reason = out.valid ? "decoded" : "FC health stale/future";
+			// Validate the mapped epoch before converting an untrusted uint64 to ROS signed nanoseconds.
+			if (out.valid)
+				out.header.stamp = rclcpp::Time(int64_t((out.sample_steady_time + _ros_offset) * 1e9));
+			else
+				invalidateFc(out.reason);
+			out.version = 1;
+			out.payload_length = 68;
+			out.flags = h.flags;
+			out.state_sequence = h.sequence;
+			out.reset_counter = h.reset;
+			out.xy_observation_age_us = h.xy_age;
+			out.z_observation_age_us = h.z_age;
+			out.trust_xy = h.trust_xy;
+			out.trust_z = h.trust_z;
+			out.source_flags = h.sources;
+			out.gps_fix_type = h.fix;
+			out.position_variance = h.position;
+			out.velocity_variance = h.velocity;
+			_fc_status_pub->publish(out);
+			++_fc_health_count;
+		}
 	}
 	void handle(const mavlink_message_t &m) {
 		const double received = steady();
@@ -447,6 +595,10 @@ private:
 			return;
 		}
 		if (_sync_count < 5 || _publisher_conflict) return;
+		if (_fc_fused) {
+			handleFc(m, received);
+			return;
+		}
 		if (m.msgid == MAVLINK_MSG_ID_SCALED_PRESSURE && _baro_hz) {
 			mavlink_scaled_pressure_t value{};
 			mavlink_msg_scaled_pressure_decode(&m, &value);
@@ -702,11 +854,16 @@ private:
 		_baro_publisher_conflict = count_publishers(_pressure_pub->get_topic_name()) > 1 ||
 		                           count_publishers(_temperature_pub->get_topic_name()) > 1 ||
 		                           count_publishers(_baro_pub->get_topic_name()) > 1;
-		const bool publisher_conflict =
-		        imu_publisher_conflict || _baro_publisher_conflict || count_publishers(_fix_pub->get_topic_name()) > 1 ||
-		        count_publishers(_velocity_pub->get_topic_name()) > 1 || count_publishers(_attitude_pub->get_topic_name()) > 1 ||
-		        count_publishers(_navigation_pub->get_topic_name()) > 1 || count_publishers(_heading_pub->get_topic_name()) > 1;
+		const bool publisher_conflict = _fc_fused ? (count_publishers(_fc_state_pub->get_topic_name()) > 1 ||
+		                                             count_publishers(_fc_status_pub->get_topic_name()) > 1)
+		                                          : (imu_publisher_conflict || _baro_publisher_conflict ||
+		                                             count_publishers(_fix_pub->get_topic_name()) > 1 ||
+		                                             count_publishers(_velocity_pub->get_topic_name()) > 1 ||
+		                                             count_publishers(_attitude_pub->get_topic_name()) > 1 ||
+		                                             count_publishers(_navigation_pub->get_topic_name()) > 1 ||
+		                                             count_publishers(_heading_pub->get_topic_name()) > 1);
 		if (publisher_conflict && !_publisher_conflict) {
+			invalidateFc("FC publisher conflict");
 			invalidateNavigation();
 			invalidateBarometer("Sensor publisher conflict", false, true);
 		}
@@ -717,8 +874,12 @@ private:
 		s.name = "mavlink_sensor";
 		s.hardware_id = _device;
 		bool synchronized = _sync_count >= 5 && steady() - _last_sync < 2;
-		const bool degraded =
-		        !synchronized || _commands_failed || (_imu_hz && steady() - _last_imu_receive > .1) || (_baro_hz && !_baro_valid);
+		const bool fc_state_fresh = _fc_state_good && _last_fc_time && steady() >= _last_fc_time * 1e-6 + _offset &&
+		                            steady() - (_last_fc_time * 1e-6 + _offset) <= .015;
+		const bool fc_health_fresh = _last_health_time && steady() >= _last_health_time * 1e-6 + _offset &&
+		                             steady() - (_last_health_time * 1e-6 + _offset) <= .060;
+		const bool degraded = (_fc_fused && (!fc_state_fresh || !fc_health_fresh)) || !synchronized || _commands_failed ||
+		                      (_imu_hz && steady() - _last_imu_receive > .1) || (_baro_hz && !_baro_valid);
 		s.level = _fd < 0 || _publisher_conflict ? s.ERROR : degraded ? s.WARN : s.OK;
 		s.message = _fd >= 0 && synchronized ? "Receiving; timestamps are FC update times, not hardware PPS" : _reason;
 		if (_bench_fixed_gps && _fd >= 0 && synchronized)
@@ -772,6 +933,16 @@ private:
 		add("rejected_sync", std::to_string(_rejected_sync));
 		add("tx_errors", std::to_string(_tx_errors));
 		double t = steady(), elapsed = t - _diagnostic_time;
+		add("fc_odometry_hz", std::to_string(_fc_count / elapsed));
+		add("fc_health_hz", std::to_string(_fc_health_count / elapsed));
+		add("fc_invalid", std::to_string(_fc_invalid));
+		add("fc_reordered", std::to_string(_fc_reordered));
+		add("fc_state_fresh", fc_state_fresh ? "true" : "false");
+		add("fc_health_fresh", fc_health_fresh ? "true" : "false");
+		add("fc_future_samples", std::to_string(_fc_future));
+		add("fc_expired_samples", std::to_string(_fc_expired));
+		add("fc_gaps", std::to_string(_fc_gaps));
+		_fc_count = _fc_health_count = 0;
 		_diagnostic_time = t;
 		const std::array<std::string, 6> names{"imu_hz", "gps_fix_hz", "gps_velocity_hz", "attitude_hz", "heading_hz", "baro_hz"};
 		for (size_t i = 0; i < names.size(); ++i) {
@@ -781,6 +952,14 @@ private:
 		out.status.push_back(s);
 		_status_pub->publish(out);
 	}
+	uint64_t _fc_validity_epoch{0}, _fc_future{0}, _fc_expired{0};
+	std::string _fc_stamp_reason;
+	bool _fc_fused{false}, _fc_state_good{false};
+	uint64_t _last_fc_time{0}, _last_health_time{0}, _fc_invalid{0}, _fc_reordered{0}, _fc_gaps{0};
+	uint32_t _last_health_sequence{0}, _last_health_reset{0};
+	unsigned _fc_count{0}, _fc_health_count{0};
+	rclcpp::Publisher<agi_ros2::msg::FcEstimatedState>::SharedPtr _fc_state_pub;
+	rclcpp::Publisher<agi_ros2::msg::FcEstimatorStatus>::SharedPtr _fc_status_pub;
 	bool _heading_valid{false};
 	bool _bench_fixed_gps{false};
 	double _bench_gps_latitude, _bench_gps_longitude, _bench_gps_altitude_msl;
@@ -795,7 +974,7 @@ private:
 	std::string _source_session;
 	std::string _clock_id;
 	int _fd{-1}, _baud, _sys, _comp, _imu_hz, _gps_hz, _attitude_hz, _baro_hz;
-	std::array<std::pair<uint32_t, int>, 5> _rate_requests{};
+	std::vector<std::pair<uint32_t, int>> _rate_requests{};
 	double _baro_max_age_s, _baro_pressure_variance_pa2, _baro_temperature_variance_c2;
 	double _last_baro_receive{0}, _baro_arrival_age_s{nan};
 	bool _baro_valid{false}, _baro_publisher_conflict{false};

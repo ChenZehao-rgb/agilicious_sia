@@ -75,7 +75,9 @@ class RuntimeProfiles(unittest.TestCase):
     def context(self, **values):
         context = LaunchContext()
         context.launch_configurations.update(runtime.DEFAULTS)
-        context.launch_configurations.update(record_bag='false')
+        # These existing graph/bench tests exercise the retained ROS EKF path.
+        # FC default and mutual exclusion are covered in test_fc_fused_launch.py.
+        context.launch_configurations.update(record_bag='false', state_source='ros_ekf')
         context.launch_configurations.update(values)
         return context
 

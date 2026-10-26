@@ -14,7 +14,7 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
-DEFAULTS = dict(mode='sitl', runtime_config='', controller='', trajectory='', thrust_model='', thrust_table='',
+DEFAULTS = dict(state_source='', mode='sitl', runtime_config='', controller='', trajectory='', thrust_model='', thrust_table='',
                 shadow_only='', diagnostic_only='', sitl_delay_test='', record_bag='', bag_output='',
                 device='', baud='', mavlink_device='', mavlink_baud='', mavlink_enabled='',
                 mavlink_gps_mode='', mavlink_altitude_source='', mavlink_imu_rate_hz='',
@@ -197,11 +197,16 @@ def assemble(context, forced_shadow=False, sensor_only=False, msp_only=False):
     if mode == 'hardware' and arg('mavlink_enabled') and not boolean(arg('mavlink_enabled')):
         raise ValueError('The hardware profile requires MAVLink sensors')
     trajectory = resolve_data_path(path, flight.get('trajectory', ''))
-    navigation_source = 'rtk' if mode == 'sitl' else 'gnss'
+    state_source = arg('state_source') or profile.get('state', {}).get('source', 'ros_ekf')
+    if state_source not in ('ros_ekf', 'fc_fused') or (mode != 'hardware' and state_source == 'fc_fused'):
+        raise ValueError('state.source must be ros_ekf or hardware fc_fused')
+    fc_fused = state_source == 'fc_fused'
+    navigation_source = 'fc_fused' if fc_fused else ('rtk' if mode == 'sitl' else 'gnss')
     common = dict(mode=mode, use_sim_time=mode == 'sitl', runtime_config=str(path),
                   controller=controller, navigation_source=navigation_source, sitl_delay_test=delay_test)
     output = dict(profile['output'])
     mavlink = dict(profile.get('mavlink', {}))
+    mavlink['state_source'] = state_source
     navigation = dict(profile.get('navigation', {}))
     evidence = dict(profile.get('evidence', {}))
     if arg('bench_fixed_gps'):
@@ -210,7 +215,7 @@ def assemble(context, forced_shadow=False, sensor_only=False, msp_only=False):
         if arg(name):
             mavlink[name] = float(arg(name))
     bench_fixed_gps = boolean(mavlink.get('bench_fixed_gps', False))
-    if bench_fixed_gps and (mode != 'hardware' or msp_only):
+    if bench_fixed_gps and (mode != 'hardware' or msp_only or fc_fused):
         raise ValueError('bench_fixed_gps requires hardware MAVLink sensors')
     for name in ('device', 'baud'):
         if arg(name):
@@ -244,7 +249,7 @@ def assemble(context, forced_shadow=False, sensor_only=False, msp_only=False):
             checked_devices(output, mavlink)
         elif not (mavlink if sensor_only else output).get('device'):
             raise ValueError('The diagnostic serial device must be specified in hardware.yaml or launch arguments')
-        if not sensor_only and mavlink.get('gps_mode') != 'gnss':
+        if not sensor_only and not fc_fused and mavlink.get('gps_mode') != 'gnss':
             raise ValueError('The hardware profile requires gps_mode=gnss')
     if not (diagnostic or sensor_only or msp_only):
         checked_model(profile, controller)
@@ -255,7 +260,8 @@ def assemble(context, forced_shadow=False, sensor_only=False, msp_only=False):
 
     processes = []
     if not (sensor_only or msp_only):
-        processes.append(node('state_fusion_node', {**profile['fusion'], **common}))
+        processes.append(node('fc_state_adapter_node' if fc_fused else 'state_fusion_node',
+                              common if fc_fused else {**profile['fusion'], **common}))
         if not diagnostic:
             processes.append(node('control_node', {**common, 'shadow_only': shadow, 'trajectory': trajectory}))
             processes.append(node('command_output_node', {
@@ -263,13 +269,14 @@ def assemble(context, forced_shadow=False, sensor_only=False, msp_only=False):
     if mode == 'hardware':
         if not msp_only:
             processes.append(node('mavlink_sensor_node', {**mavlink, 'use_sim_time': False}))
-            # Co-location is an unmeasured approximation; fusion has no barometer lever-arm model.
-            processes.append(Node(package='tf2_ros', executable='static_transform_publisher',
-                                  name='baro_static_transform', output='screen', parameters=[{'use_sim_time': False}],
-                                  arguments=['--x', '0', '--y', '0', '--z', '0',
-                                             '--roll', '0', '--pitch', '0', '--yaw', '0',
-                                             '--frame-id', 'base_link', '--child-frame-id', 'baro_link']))
-        if not (sensor_only or msp_only):
+            if not fc_fused:
+                # Co-location is an unmeasured approximation; fusion has no barometer lever-arm model.
+                processes.append(Node(package='tf2_ros', executable='static_transform_publisher',
+                                      name='baro_static_transform', output='screen', parameters=[{'use_sim_time': False}],
+                                      arguments=['--x', '0', '--y', '0', '--z', '0',
+                                                 '--roll', '0', '--pitch', '0', '--yaw', '0',
+                                                 '--frame-id', 'base_link', '--child-frame-id', 'baro_link']))
+        if not (sensor_only or msp_only or fc_fused):
             processes.append(node('gnss_adapter.py', {**navigation, 'use_sim_time': False}))
         if diagnostic or msp_only:
             processes.append(node('betaflight_msp_node', {**output, 'mode': 'monitor', 'use_sim_time': False}))

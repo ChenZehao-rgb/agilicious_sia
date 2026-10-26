@@ -60,3 +60,18 @@ bool heading_trusted
 uint8 navigation_phase
 geometry_msgs/Vector3 gyro_bias
 geometry_msgs/Vector3 acceleration_bias
+
+# FC path: initialized/IMU/EKF fields above are not applicable (false/NaN).
+string state_source
+bool acceleration_available
+bool fc_state_valid
+uint64 fc_time_usec
+float64 fc_state_sample_steady_time
+float64 fc_state_receive_steady_time
+float64 fc_health_sample_steady_time
+float64 fc_health_receive_steady_time
+float64 fc_xy_observation_time
+float64 fc_z_observation_time
+uint16 fc_flags
+uint32 fc_reset_counter
+uint32 fc_state_sequence

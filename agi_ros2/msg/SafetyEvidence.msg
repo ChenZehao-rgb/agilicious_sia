@@ -40,3 +40,19 @@ bool armed
 bool auto_switch
 bool kill
 bool rc_link
+
+# FC fused evidence; unused legacy times stay NaN.
+bool fc_valid
+float64 fc_sample_time
+float64 fc_receive_time
+float64 fc_publish_time
+float64 fc_health_sample_time
+float64 fc_health_receive_time
+float64 fc_xy_observation_time
+float64 fc_z_observation_time
+uint16 fc_flags
+uint64 fc_generation
+uint32 fc_reset_counter
+string fc_session
+float64[3] fc_position_variance
+float64[3] fc_velocity_variance

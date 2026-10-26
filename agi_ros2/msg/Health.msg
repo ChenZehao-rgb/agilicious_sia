@@ -15,3 +15,11 @@ bool geofence_ok
 bool transport_healthy
 float64 battery_voltage
 string reason
+
+# Independent FC estimator summary; does not imply IMU calibration or ROS EKF convergence.
+string state_source
+string state_session
+uint64 state_reset_counter
+bool fc_estimator_healthy
+bool msp_healthy
+bool control_output_healthy

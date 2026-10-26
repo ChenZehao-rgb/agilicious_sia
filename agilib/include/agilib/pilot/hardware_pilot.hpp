@@ -48,6 +48,10 @@ private:
 	bool _previous_auto{true};
 	bool _shadow_low_seen{false};
 	double _previous_tick{NAN};
+	double _previous_fc_sample{NAN};
+	std::string _fc_session;
+	uint64_t _fc_generation{0};
+	uint32_t _fc_reset_counter{0};
 	double _reference_start{NAN};
 };
 }  // namespace agi::hardware

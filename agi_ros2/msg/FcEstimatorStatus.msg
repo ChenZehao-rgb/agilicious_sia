@@ -1,0 +1,23 @@
+# BF_ESTIMATOR_HEALTH_V1; age and ENU variances belong to fc_time_usec.
+std_msgs/Header header
+string clock_id
+string source_session
+uint64 fc_time_usec
+float64 sample_steady_time
+float64 receive_steady_time
+bool clock_aligned
+bool valid
+string reason
+uint8 version
+uint8 payload_length
+uint16 flags
+uint32 state_sequence
+uint32 reset_counter
+uint32 xy_observation_age_us
+uint32 z_observation_age_us
+float32 trust_xy
+float32 trust_z
+uint32 source_flags
+uint8 gps_fix_type
+float32[3] position_variance
+float32[3] velocity_variance

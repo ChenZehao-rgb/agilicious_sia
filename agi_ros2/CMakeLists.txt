@@ -12,6 +12,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/ComputationStatus.msg" "msg/MspState.msg"
   "msg/Heading.msg" "msg/FusedState.msg" "msg/SafetyEvidence.msg" "msg/NavigationUpdate.msg"
   "msg/ControlCommand.msg" "msg/OutputStatus.msg" "msg/MspEvent.msg"
+  "msg/FcEstimatedState.msg" "msg/FcEstimatorStatus.msg"
   "msg/ImuTiming.msg" "msg/OutputTiming.msg" "msg/MspWriteTiming.msg"
   DEPENDENCIES std_msgs geometry_msgs builtin_interfaces)
 rosidl_get_typesupport_target(typesupport ${PROJECT_NAME} rosidl_typesupport_cpp)
@@ -30,16 +31,17 @@ target_link_libraries(ros2_node_common agilib Eigen3::Eigen "${typesupport}")
 ament_target_dependencies(ros2_node_common rclcpp builtin_interfaces)
 add_executable(state_fusion_node src/state_fusion_main.cpp
   src/state_fusion_node.cpp ${AGILIB_ROOT}/apps/companion_ahrs.cpp)
+add_executable(fc_state_adapter_node src/fc_state_adapter_main.cpp src/fc_state_adapter_node.cpp)
 add_executable(control_node src/control_main.cpp src/control_node.cpp)
 add_executable(command_output_node src/command_output_main.cpp
   src/command_output_node.cpp src/msp_telemetry.cpp)
-foreach(target ros2_node_common state_fusion_node control_node command_output_node)
+foreach(target ros2_node_common state_fusion_node fc_state_adapter_node control_node command_output_node)
   # Match agilib's Eigen alignment across the ABI boundary.
   if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64)$" AND NOT DEFINED CATKIN_DEVEL_PREFIX)
     target_compile_options(${target} PRIVATE -march=native)
   endif()
 endforeach()
-foreach(target state_fusion_node control_node command_output_node)
+foreach(target state_fusion_node fc_state_adapter_node control_node command_output_node)
   target_link_libraries(${target} ros2_node_common agilib acados_mpc agilib
     Eigen3::Eigen "${typesupport}")
   ament_target_dependencies(${target} rclcpp sensor_msgs nav_msgs std_msgs)
@@ -72,16 +74,18 @@ if(AGI_ROS2_GAZEBO)
  install(TARGETS gazebo_sensors DESTINATION lib/${PROJECT_NAME})
 endif()
 add_executable(mavlink_sensor_node src/mavlink_sensor_node.cpp)
+target_include_directories(mavlink_sensor_node PRIVATE include)
 target_include_directories(mavlink_sensor_node SYSTEM PRIVATE third_party/mavlink)
 target_link_libraries(mavlink_sensor_node "${typesupport}")
 ament_target_dependencies(mavlink_sensor_node rclcpp sensor_msgs geometry_msgs diagnostic_msgs)
 target_compile_options(mavlink_sensor_node PRIVATE -Wall -Wextra -Werror -fno-finite-math-only)
 install(TARGETS mavlink_sensor_node DESTINATION lib/${PROJECT_NAME})
-install(FILES README.md MAVLINK_SENSORS.md SHADOW_EVALUATION.md
+install(FILES MAVLINK_FC_FUSED.md README.md MAVLINK_SENSORS.md SHADOW_EVALUATION.md
   RUNTIME_WALKTHROUGH.zh-CN.md HARDWARE_ADAPTATION_VALIDATION.zh-CN.md RATE_MPC_VALIDATION.zh-CN.md
   PIPELINE_TIMING.zh-CN.md EKF_RECOVERY_VALIDATION.zh-CN.md
   DESTINATION share/${PROJECT_NAME})
-install(DIRECTORY test/results/rate_mpc_20260922 DESTINATION share/${PROJECT_NAME}/test/results)
+install(DIRECTORY test/results/rate_mpc_20260922 test/results/fc_fused_20261026
+  DESTINATION share/${PROJECT_NAME}/test/results)
 install(DIRECTORY launch config DESTINATION share/${PROJECT_NAME})
 install(DIRECTORY ${AGILIB_ROOT}/params/ DESTINATION share/${PROJECT_NAME}/params)
 install(PROGRAMS scripts/sim_rc.py scripts/gnss_adapter.py scripts/msp_evidence.py scripts/summarize_shadow_bag.py
@@ -89,3 +93,17 @@ install(PROGRAMS scripts/sim_rc.py scripts/gnss_adapter.py scripts/msp_evidence.
 install(FILES scripts/shadow_support.py DESTINATION lib/${PROJECT_NAME})
 ament_export_dependencies(rosidl_default_runtime)
 ament_package()
+
+option(AGI_ROS2_FC_TESTS "Build deterministic FC protocol/safety/controller tests" ON)
+if(AGI_ROS2_FC_TESTS)
+  enable_testing()
+  find_package(GTest REQUIRED)
+  add_executable(fc_fused_test test/test_fc_fused.cpp)
+  target_include_directories(fc_fused_test SYSTEM PRIVATE third_party/mavlink)
+  target_compile_definitions(fc_fused_test PRIVATE FC_PROFILE="${CMAKE_CURRENT_SOURCE_DIR}/config/hardware.yaml")
+  if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64)$")
+    target_compile_options(fc_fused_test PRIVATE -march=native)
+  endif()
+  target_link_libraries(fc_fused_test ros2_node_common GTest::gtest_main util)
+  add_test(NAME fc_fused_test COMMAND fc_fused_test)
+endif()

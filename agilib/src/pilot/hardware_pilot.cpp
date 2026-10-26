@@ -38,6 +38,9 @@ HardwarePilot::HardwarePilot(const PilotParams& params, TimeFunction clock, Time
 		        "HardwarePilot requires External estimator/bridge, MPC or GEO, Time, no inner controller/guard, "
 		        "world velocity and dt=0.01");
 	}
+	if (policy == NavigationPolicy::FcFused && cfg.outer_controller_cfg.parameters["drag_compensation"].isDefined() &&
+	    cfg.outer_controller_cfg.parameters["drag_compensation"].as<bool>())
+		throw ParameterException("FC state has no measured acceleration; drag compensation must be disabled");
 	_pilot = std::make_unique<Pilot>(params, _clock);
 	if (!_pilot->registerExternalEstimator(std::make_shared<FeedthroughEstimator>(nullptr)))
 		throw std::runtime_error("could not register fused-state handoff");
@@ -76,6 +79,18 @@ void HardwarePilot::reportOutputFault() {
 
 ControlDecision HardwarePilot::tick(const QuadState& state, Evidence evidence, bool shadow_only, bool navigation_valid) {
 	checkOwner();
+	if (_navigation_policy == NavigationPolicy::FcFused &&
+	    (evidence.fc_session != _fc_session || evidence.fc_generation != _fc_generation ||
+	     evidence.fc_reset_counter != _fc_reset_counter)) {
+		reportOutputFault();
+		_fc_session = evidence.fc_session;
+		_fc_generation = evidence.fc_generation;
+		_fc_reset_counter = evidence.fc_reset_counter;
+		_previous_fc_sample = NAN;
+	}
+	const bool new_fc_sample = _navigation_policy != NavigationPolicy::FcFused || !std::isfinite(_previous_fc_sample) ||
+	                           evidence.fc_sample_time > _previous_fc_sample;
+	_previous_fc_sample = evidence.fc_sample_time;
 	ControlDecision result;
 	const double now = _clock();
 	evidence.now = _steady_clock();
@@ -86,7 +101,8 @@ ControlDecision HardwarePilot::tick(const QuadState& state, Evidence evidence, b
 	const bool cadence_ok =
 	        !std::isfinite(_previous_tick) || (now > _previous_tick && (!evidence.timing_checks || now - _previous_tick <= .025));
 	_previous_tick = now;
-	const bool state_ok = state.valid() && SafetyGate::fresh(now, state.t, SafetyGate::kStateMaxAge, evidence.timing_checks) &&
+	const bool state_ok = (_navigation_policy != NavigationPolicy::FcFused || !SafetyGate::fcFailure(evidence)) && state.valid() &&
+	                      SafetyGate::fresh(now, state.t, SafetyGate::kStateMaxAge, evidence.timing_checks) &&
 	                      std::abs(state.q().norm() - 1.0) < 1e-3;
 	result.state_valid = state_ok && cadence_ok && (!shadow_only || navigation_valid);
 	const bool receiver_ok = evidence.rc_link && !evidence.kill &&
@@ -141,7 +157,7 @@ ControlDecision HardwarePilot::tick(const QuadState& state, Evidence evidence, b
 		}
 		evidence.solve_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count();
 		if (evidence.command_valid && (!evidence.timing_checks || evidence.solve_seconds <= .008)) {
-			_warm_cycles = std::min(_warm_cycles + 1, 50u);
+			if (new_fc_sample) _warm_cycles = std::min(_warm_cycles + 1, 50u);
 		} else {
 			_warm_cycles = 0;
 			result.command = Command();

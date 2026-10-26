@@ -5,6 +5,8 @@
 # Dedicated MSP and MAVLink UARTs are mandatory. A table CSV path is relative to this file.
 # bridge host/port/hover_throttle/motor_idle are compatibility fields; hardware uses the selected thrust model.
 mode: hardware
+state:
+  source: fc_fused
 flight:
   trajectory: ''
   thrust_model: quadratic
@@ -195,6 +197,9 @@ output:
   msp.analog.enabled: false
   msp.gps.enabled: false
 mavlink:
+  odometry_rate_hz: 100
+  estimator_status_rate_hz: 50
+  # Legacy rates below apply only to state.source=ros_ekf.
   device: '/dev/ttyAMA2'
   baud: 921600
   gps_mode: gnss

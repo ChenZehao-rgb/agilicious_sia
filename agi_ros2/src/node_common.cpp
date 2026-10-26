@@ -73,6 +73,20 @@ msg::SafetyEvidence encodeEvidence(const agi::hardware::Evidence& evidence) {
 	message.kill = evidence.kill;
 	message.rc_link = evidence.rc_link;
 	message.receiver_valid = evidence.receiver_valid;
+	message.fc_valid = evidence.fc_valid;
+	message.fc_sample_time = evidence.fc_sample_time;
+	message.fc_receive_time = evidence.fc_receive_time;
+	message.fc_publish_time = evidence.fc_publish_time;
+	message.fc_health_sample_time = evidence.fc_health_sample_time;
+	message.fc_health_receive_time = evidence.fc_health_receive_time;
+	message.fc_xy_observation_time = evidence.fc_xy_observation_time;
+	message.fc_z_observation_time = evidence.fc_z_observation_time;
+	message.fc_flags = evidence.fc_flags;
+	message.fc_generation = evidence.fc_generation;
+	message.fc_reset_counter = evidence.fc_reset_counter;
+	message.fc_session = evidence.fc_session;
+	message.fc_position_variance = evidence.fc_position_variance;
+	message.fc_velocity_variance = evidence.fc_velocity_variance;
 	return message;
 }
 
@@ -111,6 +125,20 @@ agi::hardware::Evidence decodeEvidence(const msg::SafetyEvidence& message) {
 	evidence.kill = message.kill;
 	evidence.rc_link = message.rc_link;
 	evidence.receiver_valid = message.receiver_valid;
+	evidence.fc_valid = message.fc_valid;
+	evidence.fc_sample_time = message.fc_sample_time;
+	evidence.fc_receive_time = message.fc_receive_time;
+	evidence.fc_publish_time = message.fc_publish_time;
+	evidence.fc_health_sample_time = message.fc_health_sample_time;
+	evidence.fc_health_receive_time = message.fc_health_receive_time;
+	evidence.fc_xy_observation_time = message.fc_xy_observation_time;
+	evidence.fc_z_observation_time = message.fc_z_observation_time;
+	evidence.fc_flags = message.fc_flags;
+	evidence.fc_generation = message.fc_generation;
+	evidence.fc_reset_counter = message.fc_reset_counter;
+	evidence.fc_session = message.fc_session;
+	evidence.fc_position_variance = message.fc_position_variance;
+	evidence.fc_velocity_variance = message.fc_velocity_variance;
 	return evidence;
 }
 

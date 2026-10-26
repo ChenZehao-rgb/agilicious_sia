@@ -952,6 +952,8 @@ void StateFusionNode::onImu(sensor_msgs::msg::Imu::ConstSharedPtr message) {
 
 void StateFusionNode::publishState(double imu_receive_time) {
 	msg::FusedState out;
+	out.state_source = "ros_ekf";
+	out.acceleration_available = true;
 	out.header.stamp = rosStamp(std::isfinite(_state.t) ? _state.t : now().seconds());
 	out.header.frame_id = "odom";
 	out.position.x = _state.p.x();
