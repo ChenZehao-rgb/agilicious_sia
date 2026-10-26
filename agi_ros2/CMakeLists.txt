@@ -85,7 +85,7 @@ install(FILES MAVLINK_FC_FUSED.md README.md MAVLINK_SENSORS.md SHADOW_EVALUATION
   PIPELINE_TIMING.zh-CN.md EKF_RECOVERY_VALIDATION.zh-CN.md
   DESTINATION share/${PROJECT_NAME})
 install(DIRECTORY test/results/rate_mpc_20260922 test/results/fc_fused_20261026
-  DESTINATION share/${PROJECT_NAME}/test/results)
+  DESTINATION share/${PROJECT_NAME}/test/results OPTIONAL)
 install(DIRECTORY launch config DESTINATION share/${PROJECT_NAME})
 install(DIRECTORY ${AGILIB_ROOT}/params/ DESTINATION share/${PROJECT_NAME}/params)
 install(PROGRAMS scripts/sim_rc.py scripts/gnss_adapter.py scripts/msp_evidence.py scripts/summarize_shadow_bag.py
@@ -94,7 +94,15 @@ install(FILES scripts/shadow_support.py DESTINATION lib/${PROJECT_NAME})
 ament_export_dependencies(rosidl_default_runtime)
 ament_package()
 
-option(AGI_ROS2_FC_TESTS "Build deterministic FC protocol/safety/controller tests" ON)
+set(AGI_ROS2_FC_TESTS_DEFAULT OFF)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_fc_fused.cpp")
+  set(AGI_ROS2_FC_TESTS_DEFAULT ON)
+endif()
+option(AGI_ROS2_FC_TESTS "Build deterministic FC protocol/safety/controller tests" ${AGI_ROS2_FC_TESTS_DEFAULT})
+if(AGI_ROS2_FC_TESTS AND NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_fc_fused.cpp")
+  message(WARNING "FC test source is missing; skipping fc_fused_test despite AGI_ROS2_FC_TESTS=ON")
+  set(AGI_ROS2_FC_TESTS OFF)
+endif()
 if(AGI_ROS2_FC_TESTS)
   enable_testing()
   find_package(GTest REQUIRED)
