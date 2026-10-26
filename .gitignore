@@ -49,4 +49,7 @@ log/
 # Local analysis scripts, datasets, and results
 /agi_ros2/analysis/
 analysis/
-/agi_ros2/test/
+/agi_ros2/test/*
+!/agi_ros2/test/data/
+/agi_ros2/test/data/*
+!/agi_ros2/test/data/auto_mode_transition_20261023.json

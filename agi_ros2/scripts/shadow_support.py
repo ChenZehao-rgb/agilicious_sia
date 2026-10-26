@@ -147,6 +147,7 @@ class MspEvidence:
         self.mode_versions = {105: 0, 150: 0}
         self.low_rc_version = -1
         self.low_status_version = -1
+        self.pending_manual_status_version = None
         self.mode_fault_versions = None
         self.mode_failure_reason = ''
         self.clock_recovery_pending = False
@@ -163,11 +164,13 @@ class MspEvidence:
         self.mode_request_steady.clear()
         self.mode_versions = {105: 0, 150: 0}
         self.low_rc_version = self.low_status_version = -1
+        self.pending_manual_status_version = None
         self.mode_fault_versions = dict(self.mode_versions)
         self.mode_failure_reason = 'Local clock changed; fresh disarmed RC/STATUS and physical AUTO low required'
         self.clock_recovery_pending = True
 
     def invalidate_modes(self, reason):
+        self.pending_manual_status_version = None
         if self.mode_fault_versions is None:
             self.mode_fault_versions = dict(self.mode_versions)
         self.mode_failure_reason = reason
@@ -188,6 +191,7 @@ class MspEvidence:
             self.mode_request_steady.clear()
             self.mode_versions = {105: 0, 150: 0}
             self.low_rc_version = self.low_status_version = -1
+            self.pending_manual_status_version = None
             self.mode_fault_versions = dict(self.mode_versions) if changed_session else None
             self.mode_failure_reason = 'MSP session changed; fresh physical AUTO low required' if changed_session else ''
         if event in ('mode_timeout', 'mode_rx_unmatched'):
@@ -378,6 +382,8 @@ class MspEvidence:
                 # A later AUTO rise must not reuse FC-high evidence from before this low.
                 self.low_rc_version = self.mode_versions[105]
                 self.low_status_version = self.mode_versions[150]
+            if not physical_auto:
+                self.pending_manual_status_version = None
             auto_switch = physical_auto
             waiting = False
             if physical_auto and (previous is None or not previous['auto_switch']):
@@ -388,13 +394,26 @@ class MspEvidence:
                         return result
                     auto_switch = False
                     waiting = True
+                    if self.pending_manual_status_version is None:
+                        self.pending_manual_status_version = self.mode_versions[150]
             elif not physical_auto and mode(50) and previous is None:
                 result['reason'] = 'Waiting for initial coherent receiver modes'
                 return result
             # AUX low is authoritative immediately, including while FC STATUS is
             # still high. STATUS low alone must not invent a physical AUTO edge.
             conflicting = sorted(box for box in self.CONFLICTING_MODES if box in ids and mode(box))
-            control_mode_ok = not high(self.auto_channel) or not conflicting
+            # A new AUX high can precede the STATUS that leaves manual ANGLE.
+            # Preserve manual health only for that cached STATUS. A new STATUS
+            # still reporting ANGLE must fail, even if RC high keeps refreshing:
+            # otherwise a held AUTO high could rewarm using a retained logical
+            # low. Original request-age bounds also apply to the cached STATUS.
+            # Same-STATUS override/conflict and conflicts after confirmed AUTO
+            # are never exempted.
+            pending_manual_status = (waiting and not mode(50) and
+                                     self.mode_versions[150] == self.pending_manual_status_version)
+            control_mode_ok = not physical_auto or not conflicting or pending_manual_status
+            if auto_switch:
+                self.pending_manual_status_version = None
             result.update(receiver_valid=True, armed=high(self.arm_channel) and mode(0), auto_switch=auto_switch,
                           kill=kill, rc_link=rc_link, imu_ready=imu_ready, control_mode_ok=control_mode_ok,
                           reason=(('Waiting for coherent AUTO rise; retaining confirmed physical low' if waiting else

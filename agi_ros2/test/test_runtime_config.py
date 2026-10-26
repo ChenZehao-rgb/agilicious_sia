@@ -404,7 +404,7 @@ class RuntimeProfiles(unittest.TestCase):
         self.assertEqual(nodes['state_fusion_node']['baro_bias_random_walk'], 0.0)
         self.assertEqual(nodes['state_fusion_node']['navigation_horizontal_nis_threshold'], 18.46682695290317)
         self.assertEqual(nodes['state_fusion_node']['navigation_position_nis_threshold'], 13.815510557964274)
-        self.assertEqual(nodes['state_fusion_node']['navigation_velocity_nis_threshold'], 13.815510557964274)
+        self.assertEqual(nodes['state_fusion_node']['navigation_velocity_nis_threshold'], 30.0)
         self.assertEqual(nodes['state_fusion_node']['navigation_heading_nis_threshold'], 10.827566170662733)
         self.assertEqual(nodes['state_fusion_node']['ekf_process_noise_model'], 'continuous_psd')
         self.assertEqual(nodes['state_fusion_node']['ekf_integration_step'], .001)

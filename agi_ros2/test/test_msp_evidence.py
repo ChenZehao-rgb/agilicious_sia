@@ -132,6 +132,50 @@ class OutputFreshnessTest(unittest.TestCase):
 
 
 class ModeEventTest(unittest.TestCase):
+    def test_angle_to_auto_publishes_healthy_manual_until_pair_is_confirmed(self):
+        high = struct.pack('<7H', 1500, 1500, 1000, 1500, 1800, 1800, 1000)
+        for rc_first in (True, False):
+            with self.subTest(rc_first=rc_first):
+                wall_now = [10.01]
+                node = SimpleNamespace(
+                    decoder=ready_decoder(10., request_steady=100., angle=True),
+                    battery_timeout=1.5, clock_id='test-boot', minimum=[0.]*3, maximum=[0.]*3,
+                    fused=None, output=None,
+                    get_clock=lambda: SimpleNamespace(now=lambda: SimpleNamespace(nanoseconds=round(wall_now[0]*1e9))))
+                node.decoder.session = 'test-boot:1'
+                for name in ('decoded_pub', 'authority_pub', 'health_pub', 'status_pub'):
+                    setattr(node, name, CapturedPublisher())
+                node.publish = lambda: EvidenceNode.publish(node)
+                events = [(105, high), (150, status_frame(auto=True))]
+                if not rc_first:
+                    events.reverse()
+                with patch('msp_evidence.time.monotonic', side_effect=lambda: wall_now[0]+90.):
+                    node.publish()
+                    for i, (code, payload) in enumerate(events):
+                        request = 10.02 + .02*i
+                        wall_now[0] = request + .001
+                        message = MspEvent(code=code, payload=list(payload), event='rx',
+                                           session_id='test-boot:1', steady_time=wall_now[0]+90.,
+                                           request_stamp=stamp(request), request_steady_time=request+90.)
+                        message.header.stamp = stamp(wall_now[0])
+                        EvidenceNode.on_event(node, message)
+                        node.publish()  # Includes a timer publication during the pending interval.
+                        self.assertTrue(all(h.config_verified for h in node.health_pub.messages))
+                        authority = node.authority_pub.messages[-1]
+                        self.assertTrue(authority.receiver_valid and authority.armed)
+                        self.assertEqual(authority.auto_switch, i == 1)
+                        self.assertFalse(authority.kill)
+                    # A real conflict remains visible through the published Health,
+                    # and cannot turn the physical high into a new low edge.
+                    wall_now[0] = 10.061
+                    message = MspEvent(code=150, payload=list(status_frame(auto=True, angle=True)),
+                                       event='rx', session_id='test-boot:1', steady_time=100.061,
+                                       request_stamp=stamp(10.06), request_steady_time=100.06)
+                    message.header.stamp = stamp(10.061)
+                    EvidenceNode.on_event(node, message)
+                    self.assertFalse(node.health_pub.messages[-1].config_verified)
+                    self.assertTrue(node.authority_pub.messages[-1].auto_switch)
+
     def test_authority_heartbeat_preserves_original_request_clock(self):
         wall_now = [10.04]
         node = SimpleNamespace(

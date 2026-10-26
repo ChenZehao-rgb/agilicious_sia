@@ -110,9 +110,10 @@ fusion:
   height_fusion_mode: baro_gnss_weighted
   # Four-row XY position/velocity diagnostic only (99.9%); it does not veto independent groups.
   navigation_horizontal_nis_threshold: 18.46682695290317
-  # 99.9% chi-square: two degrees of freedom for each XY group, one for heading.
+  # 99.9% chi-square: two degrees of freedom for XY position, one for heading.
   navigation_position_nis_threshold: 13.815510557964274
-  navigation_velocity_nis_threshold: 13.815510557964274
+  # Relaxed XY velocity innovation gate for evaluation; requires dynamic validation.
+  navigation_velocity_nis_threshold: 30.0
   navigation_heading_nis_threshold: 10.827566170662733
   # Full prior/posterior matrices are opt-in; replay always enables them.
   navigation_diagnostics: false

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Pure contract tests; no ROS, sockets or physical devices."""
+import json
 import math
 from pathlib import Path
 import struct
@@ -31,9 +32,9 @@ def config_frames():
             64: bytes((0, 1, 3, 2, 4, 5, 6, 7)), 44: rx, 119: bytes((27, 50, 0)), 111: rates, 125: bytes(5)}
 
 
-def status_frame(armed=True, auto=False, failsafe=False, flags=0, pid_profile=0, rate_profile=0):
+def status_frame(armed=True, auto=False, failsafe=False, flags=0, pid_profile=0, rate_profile=0, angle=False):
     data = bytearray(26)
-    data[6] = (4 if armed else 0) | (2 if auto else 0) | (1 if failsafe else 0)
+    data[6] = (4 if armed else 0) | (2 if auto else 0) | (1 if failsafe else 0) | (8 if angle else 0)
     struct.pack_into('<H', data, 4, 0x21)
     data[10] = pid_profile
     data[13] = 6
@@ -43,14 +44,17 @@ def status_frame(armed=True, auto=False, failsafe=False, flags=0, pid_profile=0,
     return data
 
 
-def ready_decoder(t=10., request_steady=None):
+def ready_decoder(t=10., request_steady=None, angle=False):
     d = MspEvidence(EXPECTED)
-    for code, payload in config_frames().items():
+    frames = config_frames()
+    if angle:
+        frames[119] += bytes((1,))
+    for code, payload in frames.items():
         d.accept(code, payload, t, 'one')
     for name, value in [('msp_override_channels_mask', '15'), ('msp_override_failsafe', 'OFF'), ('msp_override_timeout_ms', '50')]:
         d.accept(0x3010, f'{name} = {value}'.encode(), t, 'one', name)
     d.accept(105, struct.pack('<7H', 1500, 1500, 1000, 1500, 1800, 1000, 1000), t, 'one', request_steady=request_steady)
-    d.accept(150, status_frame(), t, 'one', request_steady=request_steady)
+    d.accept(150, status_frame(angle=angle), t, 'one', request_steady=request_steady)
     return d
 
 
@@ -263,6 +267,126 @@ class EvidenceTests(unittest.TestCase):
         d.snapshot(10.01)
         d.accept(105, struct.pack('<7H', 1500, 1500, 1000, 1500, 1800, 1800, 1800), 10.02, 'one')
         self.assertTrue(d.snapshot(10.03)['kill'])
+
+    def test_angle_to_auto_wait_preserves_manual_health_in_both_reply_orders(self):
+        high = struct.pack('<7H', 1500, 1500, 1000, 1500, 1800, 1800, 1000)
+        for rc_first in (True, False):
+            with self.subTest(rc_first=rc_first):
+                d = ready_decoder(request_steady=100., angle=True)
+                self.assertTrue(d.snapshot(10.01, steady_now=100.01)['control_mode_ok'])
+                events = [(105, high), (150, status_frame(auto=True))]
+                if not rc_first:
+                    events.reverse()
+                for i, (code, payload) in enumerate(events):
+                    t = 10.02 + .02*i
+                    d.accept(code, payload, t, 'one', observed_steady=t+90., request_steady=t+90.)
+                    result = d.snapshot(t+.001, steady_now=t+90.001)
+                    self.assertTrue(result['receiver_valid'] and result['config_verified'], result)
+                    self.assertTrue(result['control_mode_ok'], result)
+                    self.assertFalse(result['kill'])
+                    self.assertEqual(result['auto_switch'], i == 1)
+                    if i == 0:
+                        versions = dict(d.mode_versions)
+                        requests = dict(d.mode_request_steady)
+                        # Heartbeats and duplicate replies cannot confirm the rise.
+                        d.accept(code, payload, t, 'one', observed_steady=t+90., request_steady=t+90.)
+                        repeated = d.snapshot(t+.002, steady_now=t+90.002)
+                        self.assertFalse(repeated['auto_switch'])
+                        self.assertEqual(d.mode_versions, versions)
+                        self.assertEqual(d.mode_request_steady, requests)
+
+    def test_recorded_third_auto_transition_keeps_health_until_confirmed(self):
+        fixture = json.loads((Path(__file__).parent / 'data' / 'auto_mode_transition_20261023.json').read_text())
+        d = MspEvidence(fixture['expected'])
+        checked = 0
+        for event in fixture['events']:
+            d.accept(event['code'], bytes.fromhex(event['payload']), event['stamp'], event['session'], event['name'],
+                     observed_steady=event['observed_steady'], request_steady=event['request_steady'])
+            result = d.snapshot(event['now'], steady_now=event['observed_steady'])
+            if event['t'] < 129.2:
+                continue
+            checked += 1
+            self.assertTrue(result['receiver_valid'] and result['config_verified'], result)
+            self.assertTrue(result['control_mode_ok'], result)
+            self.assertEqual(result['auto_switch'], event['t'] >= 129.377257505)
+            if event['code'] == 105 and event['t'] == 129.373044204:
+                self.assertIn('Waiting for coherent AUTO rise', result['reason'])
+                self.assertAlmostEqual(d.mode_request_steady[105] - d.mode_request_steady[150], .033927601)
+        self.assertEqual(checked, 16)
+
+    def test_waiting_never_hides_same_status_auto_and_angle_conflict(self):
+        d = ready_decoder(angle=True)
+        d.snapshot(10.005)
+        # Physical low is authoritative even if the previous STATUS is still high.
+        d.accept(150, status_frame(auto=True, angle=True), 10.01, 'one')
+        d.accept(105, struct.pack('<7H', 1500, 1500, 1000, 1500, 1800, 1000, 1000), 10.012, 'one')
+        self.assertTrue(d.snapshot(10.02)['control_mode_ok'])
+        d.accept(105, struct.pack('<7H', 1500, 1500, 1000, 1500, 1800, 1800, 1000), 10.03, 'one')
+        result = d.snapshot(10.04)
+        self.assertTrue(result['receiver_valid'])
+        self.assertFalse(result['auto_switch'], 'STATUS predates the observed physical low')
+        self.assertFalse(result['control_mode_ok'], result)
+        self.assertIn('AUTO conflicts', result['reason'])
+
+    def test_repeated_high_polls_do_not_extend_cached_manual_status_grace(self):
+        d = ready_decoder(angle=True)
+        d.snapshot(10.01)
+        high = struct.pack('<7H', 1500, 1500, 1000, 1500, 1800, 1800, 1000)
+        d.accept(105, high, 10.02, 'one')
+        self.assertTrue(d.snapshot(10.025)['control_mode_ok'])
+        # One new STATUS is enough to distinguish a persistent conflict from
+        # the cached manual STATUS at the edge. New RC requests cannot renew it.
+        for code, payload, t in ((150, status_frame(angle=True), 10.04), (105, high, 10.06),
+                                 (150, status_frame(angle=True), 10.08)):
+            d.accept(code, payload, t, 'one')
+            result = d.snapshot(t+.001)
+            self.assertTrue(result['receiver_valid'])
+            self.assertFalse(result['auto_switch'] or result['control_mode_ok'], result)
+        # Only a new physical low begins another transition.
+        d.accept(105, struct.pack('<7H', 1500, 1500, 1000, 1500, 1800, 1000, 1000), 10.09, 'one')
+        self.assertTrue(d.snapshot(10.095)['control_mode_ok'])
+        d.accept(105, high, 10.10, 'one')
+        self.assertTrue(d.snapshot(10.105)['control_mode_ok'])
+        self.assertFalse(d.snapshot(10.105)['auto_switch'])
+
+    def test_angle_wait_without_previous_receiver_snapshot_cannot_invent_low(self):
+        d = ready_decoder(angle=True)
+        d.accept(105, struct.pack('<7H', 1500, 1500, 1000, 1500, 1800, 1800, 1000), 10.02, 'one')
+        result = d.snapshot(10.03)
+        self.assertFalse(result['receiver_valid'] or result['control_mode_ok'])
+        self.assertIsNone(d.receiver_snapshot)
+
+    def test_angle_after_confirmed_auto_remains_a_conflict(self):
+        for fc_auto in (True, False):
+            with self.subTest(fc_auto=fc_auto):
+                d = ready_decoder(angle=True)
+                d.snapshot(10.01)
+                d.accept(105, struct.pack('<7H', 1500, 1500, 1000, 1500, 1800, 1800, 1000), 10.02, 'one')
+                d.accept(150, status_frame(auto=True), 10.03, 'one')
+                self.assertTrue(d.snapshot(10.04)['auto_switch'])
+                d.accept(150, status_frame(auto=fc_auto, angle=True), 10.05, 'one')
+                result = d.snapshot(10.06)
+                self.assertTrue(result['auto_switch'], 'A mode conflict must not fabricate physical low')
+                self.assertFalse(result['control_mode_ok'], result)
+
+    def test_angle_wait_preserves_kill_arm_and_failsafe_checks(self):
+        for fault in ('kill', 'arm_low', 'rx_failsafe'):
+            with self.subTest(fault=fault):
+                d = ready_decoder(angle=True)
+                d.snapshot(10.01)
+                d.accept(105, struct.pack('<7H', 1500, 1500, 1000, 1500,
+                                         1000 if fault == 'arm_low' else 1800,
+                                         1800, 1800 if fault == 'kill' else 1000), 10.02, 'one')
+                if fault == 'rx_failsafe':
+                    d.accept(150, status_frame(angle=True, flags=4), 10.025, 'one')
+                result = d.snapshot(10.03)
+                self.assertFalse(result['auto_switch'])
+                if fault == 'arm_low':
+                    self.assertFalse(result['armed'])
+                else:
+                    self.assertTrue(result['kill'])
+                if fault == 'rx_failsafe':
+                    self.assertFalse(result['rc_link'])
 
     def test_each_successful_mode_request_expires_independently(self):
         for stale_code in (105, 150):
