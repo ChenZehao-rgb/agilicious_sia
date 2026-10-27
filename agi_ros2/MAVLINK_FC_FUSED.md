@@ -61,9 +61,12 @@ FC 适配器继承旧融合节点的 25，支持线程仍为 5。它拒绝已有
 
 ODOMETRY 必须为 MAVLink2、LOCAL_NED(1) / BODY_FRD(12)、AUTOPILOT(8)。
 保留 FC uint64 启动微秒、reset_counter 的低 8 位、quality 和原始 21 元素协方差数组。
-拒绝错误来源、无效枚举、非有限位置/速度/角速度、非单位四元数、quality=-1 或超出范围。
+拒绝错误来源、无效枚举、非有限位置/速度/角速度、非单位四元数及 quality 超出 [-1,100] 范围。
+2026-10-27 起，ROS 接受并保留 quality=-1，由其余独立检查决定状态能否用于控制，无需修改飞控固件。
 四元数平方范数容差 1e-3；接受后只消除该浮点范数误差。
-quality=0 在该固件中表示没有校准的质量评分，不能单独证明有效；还必须通过全部健康检查。
+quality=0 在该固件中表示没有校准的质量评分，不能单独证明有效。
+FC 路径的 heading_valid 和 mag_heading_fresh 只作为诊断信息，持续失效也不会单独清零 warm 或撤销接管。
+XY/Z、融合启用、快照存在、数值、时间、方差、会话及接收机/输出检查仍生效；旧 ROS EKF 路径仍要求航向有效。
 未知整块协方差（首元素 NaN）保留未知，有限协方差检查数值及对角线。
 
 `BF_ESTIMATOR_HEALTH_V1` 是 V2_EXTENSION 私有类型 `0xBF01`，目标 network/system/component 都为 0。
@@ -133,7 +136,8 @@ initialized、imu_ready、rtk_fixed、synchronized 为 false。FC 的有效性�
   XY 观测最多 300 ms、Z 最多 250 ms。FcFused 即使 timing_checks=false 也不能跳过这些检查。
 - 平移各轴位置方差上限 1 m²、速度方差上限 0.09 m²/s²，沿用当前硬件就绪标准
   （1 m、0.3 m/s），仅为初始工程限值，未经新固件实机精度验证。
-- XY/Z/heading/snapshot/XY fusion flags、有限数值和时钟对齐独立检查。
+- XY/Z/snapshot/XY fusion flags（掩码 0xc3）、有限数值和时钟对齐独立检查。
+  heading_valid 原值保留，不参与 FC 控制授权；该策略允许真实航向失效时继续控制。
   mag_heading_fresh 保留为单独证据，不冒充 GPS/PPS 或标定结果。
 - RC/STATUS、ARM/AUTO/KILL、接收链路、配置回读、地理围栏、推力映射、电池、输出传输、
   25 ms 命令租约、8 ms 求解预算和原 MSP 写入截止时间仍有效。
@@ -182,7 +186,7 @@ agilib/build/tests --gtest_filter='EkfImuRtk.*:EkfImuBaro.*:HardwareGeo.*'
 未知协方差、畸形版本/长度/枚举/数值、四个方位及正负 roll/pitch/yaw、六向速度与角速度转换。
 状态测试覆盖健康/状态丢失、冻结重复、时间延迟、FC 时间超过 uint32、回退/重启/重连、
 TIMESYNC 丢失/恢复、ROS stamp 异常、完整 reset=256 与低八位=0、会话错配、
-XYZ/heading/观测年龄/方差拒绝。控制测试实际调用 MPC/GEO、预热、AUTO 边沿、重置后参考重捕获、
+XYZ/观测年龄/方差拒绝，以及 quality=-1 和航向健康掉落放行。控制测试实际调用 MPC/GEO、预热、AUTO 边沿、重置后参考重捕获、
 ARM/KILL、求解失败证据、MSP 超时与撤权，不修改控制器核心求解器。
 
 ## 验证边界与待办

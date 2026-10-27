@@ -64,8 +64,9 @@ struct State {
 inline bool decodeOdometry(const mavlink_message_t& message, mavlink_odometry_t& v, State& out) {
 	if (message.magic != MAVLINK_STX || message.msgid != MAVLINK_MSG_ID_ODOMETRY) return false;
 	mavlink_msg_odometry_decode(&message, &v);
+	// Preserve quality=-1 as diagnostic evidence; downstream checks decide control usability.
 	if (v.frame_id != MAV_FRAME_LOCAL_NED || v.child_frame_id != MAV_FRAME_BODY_FRD ||
-	    v.estimator_type != MAV_ESTIMATOR_TYPE_AUTOPILOT || v.quality < 0 || v.quality > 100 || !v.time_usec)
+	    v.estimator_type != MAV_ESTIMATOR_TYPE_AUTOPILOT || v.quality < -1 || v.quality > 100 || !v.time_usec)
 		return false;
 	for (float x : {v.x, v.y, v.z, v.vx, v.vy, v.vz, v.rollspeed, v.pitchspeed, v.yawspeed})
 		if (!std::isfinite(x)) return false;

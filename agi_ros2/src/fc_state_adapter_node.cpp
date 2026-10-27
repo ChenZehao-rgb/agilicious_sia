@@ -52,7 +52,8 @@ void FcStateAdapterNode::onHealth(msg::FcEstimatorStatus::ConstSharedPtr h) {
 		_have_reset = true;
 	}
 	_health = *h;
-	if (!h->valid || !h->clock_aligned || (h->flags & 0xc7) != 0xc7) invalidate("FC estimator health invalid");
+	// Heading flags remain observable, but do not revoke FC control state.
+	if (!h->valid || !h->clock_aligned || (h->flags & 0xc3) != 0xc3) invalidate("FC estimator health invalid");
 	// A healthy status never republishes an old odometry sample as new state.
 }
 void FcStateAdapterNode::onState(msg::FcEstimatedState::ConstSharedPtr s) {
@@ -121,7 +122,7 @@ void FcStateAdapterNode::onState(msg::FcEstimatedState::ConstSharedPtr s) {
 		finite = finite && std::isfinite(v);
 	const bool exclusive = count_publishers("fused_state") == 1 && count_publishers("state") == 1 &&
 	                       count_publishers("sensors/fc/estimated_state") == 1 && count_publishers("sensors/fc/estimator_status") == 1;
-	out.fc_state_valid = exclusive && finite && s->header.frame_id == "odom" && s->quality >= 0 && s->quality <= 100 &&
+	out.fc_state_valid = exclusive && finite && s->header.frame_id == "odom" && s->quality >= -1 && s->quality <= 100 &&
 	                     s->estimator_type == 8 && _have_reset && _health.valid && _health.source_session == s->source_session &&
 	                     uint8_t(_health.reset_counter) == s->reset_counter && _health.version == 1 && _health.payload_length == 68 &&
 	                     SafetyGate::fresh(now().seconds(), stampSeconds(s->header.stamp), .015);

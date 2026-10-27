@@ -91,7 +91,7 @@ public:
 		} else if (!fresh(e.now, e.rc_time, .100, e.timing_checks) || !e.rc_link) {
 			return "RC timeout/future/link unavailable";
 		}
-		if (!e.heading_valid) return "heading unavailable";
+		if (policy != NavigationPolicy::FcFused && !e.heading_valid) return "heading unavailable";
 		if (!e.accuracy_ok) return "navigation accuracy rejected";
 		if (policy == NavigationPolicy::Gnss) {
 			if (!e.clock_aligned) return "GNSS clock not aligned";
@@ -127,7 +127,8 @@ public:
 		if (e.fc_receive_time < e.fc_sample_time || e.fc_publish_time < e.fc_receive_time) return "FC timestamp ordering invalid";
 		if (!fresh(e.now, e.fc_health_sample_time, .060) || !fresh(e.now, e.fc_health_receive_time, .060))
 			return "FC estimator health stale/future";
-		if ((e.fc_flags & 0xc7) != 0xc7) return "FC XY/Z/heading/snapshot unavailable";
+		// FC heading validity/freshness is diagnostic; retain XY, Z, fusion and snapshot requirements.
+		if ((e.fc_flags & 0xc3) != 0xc3) return "FC XY/Z/fusion/snapshot unavailable";
 		if (!fresh(e.now, e.fc_xy_observation_time, .300)) return "FC XY observation stale/future";
 		if (!fresh(e.now, e.fc_z_observation_time, .250)) return "FC Z observation stale/future";
 		// Initial limits retain the existing hardware readiness standard (1m, 0.3m/s).
