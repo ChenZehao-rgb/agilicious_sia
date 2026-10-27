@@ -19,3 +19,5 @@ float64 state_published_steady_time
 float64 state_received_steady_time
 float64 control_start_steady_time
 float64 published_steady_time
+# Host monotonic end of decision construction, before ROS publication.
+float64 control_end_steady_time

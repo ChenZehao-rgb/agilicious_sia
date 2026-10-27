@@ -340,7 +340,7 @@ bool BetaflightMspBridge::sendOverride(const std::array<uint16_t, 4>& channels, 
 	checked.now = monotonicSeconds();  // Never trust a producer's frozen clock.
 	checked.command_valid =
 	        checked.command_valid && std::all_of(channels.begin(), channels.end(), [](uint16_t x) { return x >= 1000 && x <= 2000; });
-	if (!gate_.update(checked)) {
+	if (!gate_.update(checked, FcStateCheck::CommandHold)) {
 		_last_write_diagnostic = {};
 		_last_write_diagnostic.code = 200;
 		_last_write_diagnostic.outcome = MspWriteOutcome::GateRejected;

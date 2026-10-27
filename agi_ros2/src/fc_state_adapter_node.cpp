@@ -169,7 +169,7 @@ void FcStateAdapterNode::watchdog() {
 	agi::hardware::Evidence e;
 	e.now = t;
 	setFcEvidence(_output, e);
-	if (const char* failure = SafetyGate::fcFailure(e))
+	if (const char* failure = SafetyGate::fcFailure(e, agi::hardware::FcStateCheck::Hold))
 		invalidate(failure);
 	else if (count_publishers("fused_state") > 1 || count_publishers("state") > 1 ||
 	         count_publishers("sensors/fc/estimated_state") > 1 || count_publishers("sensors/fc/estimator_status") > 1)

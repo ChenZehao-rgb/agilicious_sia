@@ -22,3 +22,14 @@ uint64 fc_time_usec
 float64 fc_sample_age
 float64 fc_receive_age
 float64 fc_publish_delay
+# Explicit identity and timing; success above is command_valid, not acados status.
+float64 control_session_start
+uint64 command_sequence
+uint64 fc_generation
+string fc_session
+bool computation_requested
+float64 fc_sample_age_before
+float64 fc_sample_age_after
+uint64 ignored_states
+uint64 coalesced_states
+uint64 warm_resets

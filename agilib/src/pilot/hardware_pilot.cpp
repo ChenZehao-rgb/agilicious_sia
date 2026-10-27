@@ -77,20 +77,21 @@ void HardwarePilot::reportOutputFault() {
 	_shadow_low_seen = false;
 }
 
-ControlDecision HardwarePilot::tick(const QuadState& state, Evidence evidence, bool shadow_only, bool navigation_valid) {
+ControlDecision HardwarePilot::tick(const QuadState& state, Evidence evidence, bool shadow_only, bool navigation_valid,
+                                    bool computation_requested) {
 	checkOwner();
 	if (_navigation_policy == NavigationPolicy::FcFused &&
 	    (evidence.fc_session != _fc_session || evidence.fc_generation != _fc_generation ||
 	     evidence.fc_reset_counter != _fc_reset_counter)) {
 		reportOutputFault();
+		if (evidence.fc_session != _fc_session || evidence.fc_reset_counter != _fc_reset_counter) _previous_fc_sample = NAN;
 		_fc_session = evidence.fc_session;
 		_fc_generation = evidence.fc_generation;
 		_fc_reset_counter = evidence.fc_reset_counter;
-		_previous_fc_sample = NAN;
 	}
 	const bool new_fc_sample = _navigation_policy != NavigationPolicy::FcFused || !std::isfinite(_previous_fc_sample) ||
 	                           evidence.fc_sample_time > _previous_fc_sample;
-	_previous_fc_sample = evidence.fc_sample_time;
+	if (new_fc_sample) _previous_fc_sample = evidence.fc_sample_time;
 	ControlDecision result;
 	const double now = _clock();
 	evidence.now = _steady_clock();
@@ -116,7 +117,7 @@ ControlDecision HardwarePilot::tick(const QuadState& state, Evidence evidence, b
 	const bool compute_healthy =
 	        shadow_only ? navigation_valid
 	                    : SafetyGate::inputsHealthy(evidence, _navigation_policy, _observation_delay, _receiver_policy);
-	const bool ready = result.state_valid && compute_healthy && !evidence.kill &&
+	const bool ready = computation_requested && new_fc_sample && result.state_valid && compute_healthy && !evidence.kill &&
 	                   (_receiver_policy != ReceiverPolicy::LatchedSwitches || (receiver_ok && evidence.armed));
 	if (!ready || !receiver_ok || !evidence.armed || !evidence.auto_switch) {
 		_reference_active = false;
@@ -167,14 +168,21 @@ ControlDecision HardwarePilot::tick(const QuadState& state, Evidence evidence, b
 	_previous_auto = evidence.auto_switch;
 	evidence.controller_warm = _warm_cycles >= 50;
 	evidence.now = _steady_clock();
+	const bool fc_fresh_after = _navigation_policy != NavigationPolicy::FcFused || !SafetyGate::fcFailure(evidence);
+	if (!fc_fresh_after) {
+		_warm_cycles = 0;
+		evidence.controller_warm = false;
+		_shadow_low_seen = false;
+	}
 	const bool authorized = _gate.update(evidence);
 	result.permit_override = !shadow_only && authorized && (_reference_active || candidate);
-	const bool commit = candidate && evidence.command_valid && evidence.controller_warm && (shadow_only || authorized);
+	const bool commit =
+	        candidate && evidence.command_valid && evidence.controller_warm && fc_fresh_after && (shadow_only || authorized);
 	if (commit) {
 		_reference_active = true;
 		_reference_start = now;
 	}
-	if (!evidence.command_valid || (!shadow_only && !result.permit_override)) {
+	if (!evidence.command_valid || !fc_fresh_after || (!shadow_only && !result.permit_override)) {
 		_reference_active = false;
 		_reference_start = NAN;
 		if (!evidence.command_valid) _shadow_low_seen = false;
@@ -190,6 +198,10 @@ ControlDecision HardwarePilot::tick(const QuadState& state, Evidence evidence, b
 	if (!cadence_ok) result.reason += "; cadence";
 	if (!state_ok) result.reason += "; state age/validity";
 	if (shadow_only && !navigation_valid) result.reason += "; navigation unavailable";
+	if (!computation_requested)
+		result.reason += "; safety check; no new computation";
+	else if (!new_fc_sample)
+		result.reason += "; duplicate/regressed FC sample";
 	return result;
 }
 }  // namespace agi::hardware

@@ -203,7 +203,8 @@ CommandOutputNode::CommandOutputNode()
 			}
 		});
 	}
-	_watchdog = create_wall_timer(std::chrono::milliseconds(5), std::bind(&CommandOutputNode::watchdog, this));
+	_watchdog = create_wall_timer(std::chrono::milliseconds(_navigation_policy == agi::hardware::NavigationPolicy::FcFused ? 1 : 5),
+	                              std::bind(&CommandOutputNode::watchdog, this));
 }
 
 CommandOutputNode::~CommandOutputNode() {
@@ -387,11 +388,12 @@ void CommandOutputNode::processOutput(bool new_command) {
 		agi::hardware::Evidence latest;
 		latest.now = wall;
 		setFcEvidence(_fc_state, latest);
-		evidence.fc_valid = evidence.fc_valid && _fc_state.clock_id == _clock_id && !SafetyGate::fcFailure(latest) &&
+		evidence.fc_valid = evidence.fc_valid && _fc_state.clock_id == _clock_id &&
+		                    !SafetyGate::fcFailure(latest, agi::hardware::FcStateCheck::Hold) &&
 		                    evidence.fc_session == latest.fc_session && evidence.fc_generation == latest.fc_generation &&
 		                    evidence.fc_reset_counter == latest.fc_reset_counter;
 	}
-	bool active = _gate->update(evidence) && _command.permit_override;
+	bool active = _gate->update(evidence, agi::hardware::FcStateCheck::CommandHold) && _command.permit_override;
 	// Heartbeats and watchdog callbacks may revoke, but never transmit another
 	// copy of a healthy hardware command or claim a new physical write.
 	if (active && !new_command && _msp) {
@@ -406,7 +408,7 @@ void CommandOutputNode::processOutput(bool new_command) {
 		} catch (const std::exception& error) {
 			reportFault(error.what());
 			evidence.command_valid = false;
-			_gate->update(evidence);
+			_gate->update(evidence, agi::hardware::FcStateCheck::CommandHold);
 			active = false;
 		}
 	}
@@ -484,7 +486,10 @@ void CommandOutputNode::watchdog() {
 	}
 	_previous_ros_time = ros_time;
 	const double safety_now = _simulation_time ? ros_time : wall;
-	if (!_timing_checks || !timely(wall, _command_receive_time, _simulation_time ? kSitlWallTimeout : 0.025) ||
+	// Source-sample hold expiry and command expiry use different epochs.
+	// Recheck both even if an adapter invalid event is overwritten at depth 1.
+	if (_navigation_policy == agi::hardware::NavigationPolicy::FcFused || !_timing_checks ||
+	    !timely(wall, _command_receive_time, _simulation_time ? kSitlWallTimeout : 0.025) ||
 	    !timely(safety_now, _command.evidence.now, 0.025)) {
 		processOutput();
 	} else {
@@ -505,6 +510,14 @@ void CommandOutputNode::publishStatus() {
 	status.header.stamp = now();
 	status.clock_id = _clock_id;
 	status.steady_time = monotonicSeconds();
+	status.output_check_steady_time = _output_check_time;
+	status.control_session_start = _command.control_session_start;
+	status.command_sequence = _command.sequence;
+	status.fc_sample_age_at_check = _navigation_policy == agi::hardware::NavigationPolicy::FcFused
+	                                        ? _output_check_time - _command.evidence.fc_sample_time
+	                                        : NAN;
+	status.fc_generation = _command.evidence.fc_generation;
+	status.fc_session = _command.evidence.fc_session;
 	status.transport_healthy = _transport_healthy;
 	status.thrust_calibrated = _mode == "sitl" || static_cast<bool>(_thrust);
 	status.thrust_mapping_ready = _mode == "sitl" || _thrust || _quadratic_thrust;

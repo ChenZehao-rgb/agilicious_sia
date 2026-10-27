@@ -7,7 +7,11 @@
 int main(int argc, char** argv) {
 	rclcpp::init(argc, argv);
 	try {
-		rclcpp::spin(std::make_shared<agi_ros2::ControlNode>());
+		// Construction and every callback stay on the HardwarePilot owner thread.
+		auto node = std::make_shared<agi_ros2::ControlNode>();
+		rclcpp::executors::SingleThreadedExecutor executor;
+		executor.add_node(node);
+		executor.spin();
 	} catch (const std::exception& error) {
 		RCLCPP_FATAL(rclcpp::get_logger("flight_control"), "%s", error.what());
 		rclcpp::shutdown();

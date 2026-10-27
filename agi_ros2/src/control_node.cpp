@@ -53,6 +53,7 @@ ControlNode::ControlNode()
 	_shadow_only = declare_parameter<bool>("shadow_only", profile ? profile->section("flight")["shadow_only"].as<bool>() : false,
 	                                       shadow_descriptor);
 	_navigation_policy = declareNavigationPolicy(*this, profile, _mode);
+	_fc_event_control = _mode == "hardware" && _navigation_policy == agi::hardware::NavigationPolicy::FcFused;
 	if (_shadow_only && _mode != "hardware") throw std::invalid_argument("shadow_only requires hardware mode");
 	if (_mode != "sitl" && _mode != "hardware") {
 		throw std::invalid_argument("mode must be sitl or hardware");
@@ -110,7 +111,11 @@ ControlNode::ControlNode()
 	_reference_pub = create_publisher<nav_msgs::msg::Odometry>("reference", 1);
 	_diagnostic_pub = create_publisher<std_msgs::msg::Float64MultiArray>("control_diagnostics", 10);
 	_status_pub = create_publisher<std_msgs::msg::String>("status", 1);
-	if (_simulation_time) {
+	if (_fc_event_control) {
+		// Subscription admission drives normal computation. This timer services
+		// coalesced samples and independently checks safety when input stops.
+		_timer = create_wall_timer(std::chrono::milliseconds(1), std::bind(&ControlNode::dispatchFcState, this));
+	} else if (_simulation_time) {
 		// A paused /clock must not run duplicate control ticks or consume warmup.
 		_timer = rclcpp::create_timer(this, get_clock(), rclcpp::Duration::from_seconds(0.01), std::bind(&ControlNode::tick, this));
 	} else {
@@ -121,7 +126,19 @@ ControlNode::ControlNode()
 void ControlNode::onState(msg::FusedState::ConstSharedPtr message) {
 	const double received = monotonicSeconds();
 	if (message->clock_id != _clock_id) {
+		if (_fc_event_control) {
+			_output_fault = true;
+			_state.fc_state_valid = false;
+			runCycle(false);
+		}
 		return;
+	}
+	FcControlSchedule::Update update = FcControlSchedule::Update::Sample;
+	if (_fc_event_control) {
+		update = _fc_schedule.observe(message->navigation_session, message->reset_counter, message->fc_reset_counter,
+		                              message->fc_time_usec, message->fc_state_sample_steady_time, message->published_steady_time,
+		                              received, message->state_source == "fc_fused" && message->fc_state_valid);
+		if (update == FcControlSchedule::Update::Ignore) return;
 	}
 	if ((!_state.clock_id.empty() && message->reset_counter != _state.reset_counter) ||
 	    (_navigation_policy == agi::hardware::NavigationPolicy::FcFused &&
@@ -130,6 +147,15 @@ void ControlNode::onState(msg::FusedState::ConstSharedPtr message) {
 	}
 	_state = *message;
 	_state_receive_time = received;
+	if (_fc_event_control) {
+		if (update == FcControlSchedule::Update::Fault) {
+			_state.fc_state_valid = false;
+			_output_fault = true;
+			runCycle(false);
+		} else {
+			dispatchFcState();
+		}
+	}
 }
 
 void ControlNode::onOutputStatus(msg::OutputStatus::ConstSharedPtr message) {
@@ -143,18 +169,33 @@ void ControlNode::onOutputStatus(msg::OutputStatus::ConstSharedPtr message) {
 	_output_receive_time = monotonicSeconds();
 }
 
-void ControlNode::tick() {
+void ControlNode::tick() { runCycle(true); }
+
+void ControlNode::dispatchFcState() { runCycle(_fc_schedule.take(monotonicSeconds())); }
+
+void ControlNode::runCycle(bool computation_requested) {
+	const bool holding = _fc_event_control && !computation_requested;
+	const auto fc_check = holding ? agi::hardware::FcStateCheck::Hold : agi::hardware::FcStateCheck::Input;
+	const double state_max_age = holding ? SafetyGate::kFcHoldMaxAge : SafetyGate::kStateMaxAge;
 	const auto cycle_start = std::chrono::steady_clock::now();
 	_cycle_start_time = monotonicSeconds();
 	const auto timely = [this](double now, double sample, double limit) {
 		return SafetyGate::fresh(now, sample, limit, _timing_checks);
 	};
-	_control_time = alignedRosTime(*this, std::max({stampSeconds(_state.header.stamp), stampSeconds(_state.navigation_sample_stamp),
-	                                                stampSeconds(_authority.header.stamp), stampSeconds(_health.header.stamp)}));
+	// FC epochs already share the host clock. Reject future evidence through
+	// the normal gates instead of sleeping on the sole safety/control thread.
+	_control_time =
+	        _fc_event_control
+	                ? now().seconds()
+	                : alignedRosTime(*this, std::max({stampSeconds(_state.header.stamp), stampSeconds(_state.navigation_sample_stamp),
+	                                                  stampSeconds(_authority.header.stamp), stampSeconds(_health.header.stamp)}));
 	const double wall = monotonicSeconds();
 	const double safety_now = _simulation_time ? _control_time : wall;
-	if (_output_fault || (std::isfinite(_previous_clock) &&
-	                      (_control_time < _previous_clock || (_timing_checks && _control_time - _previous_clock > 0.25)))) {
+	const bool fault =
+	        _output_fault || (std::isfinite(_previous_clock) &&
+		                  (_control_time < _previous_clock || (_timing_checks && _control_time - _previous_clock > 0.25)));
+	const auto warm_before = _pilot->warmCycles();
+	if (fault) {
 		_pilot->reportOutputFault();
 		_output_fault = false;
 	}
@@ -165,7 +206,7 @@ void ControlNode::tick() {
 	state.t = kUnknownTime;
 	if ((_navigation_policy == agi::hardware::NavigationPolicy::FcFused ? _state.fc_state_valid : _state.initialized) &&
 	    _state.clock_id == _clock_id && _state.header.frame_id == "odom" &&
-	    timely(wall, _state.published_steady_time, _simulation_time ? kSitlWallTimeout : SafetyGate::kStateMaxAge)) {
+	    timely(wall, _state.published_steady_time, _simulation_time ? kSitlWallTimeout : state_max_age)) {
 		state.t = stampSeconds(_state.header.stamp);
 		state.p = agi::Vector<3>{_state.position.x, _state.position.y, _state.position.z};
 		state.v = agi::Vector<3>{_state.velocity.x, _state.velocity.y, _state.velocity.z};
@@ -235,11 +276,35 @@ void ControlNode::tick() {
 	        timely(wall, _state.imu_receive_time, .010);
 	if (_navigation_policy == agi::hardware::NavigationPolicy::FcFused) {
 		setFcEvidence(_state, evidence);
-		navigation_valid = SafetyGate::fcFailure(evidence) == nullptr;
+		navigation_valid = SafetyGate::fcFailure(evidence, fc_check) == nullptr;
 		evidence.estimator_ready = evidence.navigation_ready = navigation_valid;
 		evidence.accuracy_ok = navigation_valid;
 	}
-	const auto decision = _pilot->tick(state, evidence, _shadow_only, navigation_valid);
+	const bool healthy_idle = _fc_event_control && !computation_requested && !fault && navigation_valid && state.valid() &&
+	                          timely(_control_time, state.t, state_max_age) && evidence.receiver_valid && evidence.rc_link &&
+	                          evidence.armed && !evidence.kill &&
+	                          timely(safety_now, evidence.rc_time, SafetyGate::kReceiverEvidenceMaxAge) &&
+	                          timely(safety_now, evidence.status_time, SafetyGate::kReceiverEvidenceMaxAge) &&
+	                          (_shadow_only || SafetyGate::inputsHealthy(evidence, _navigation_policy, _observation_delay,
+	                                                                     agi::hardware::ReceiverPolicy::LatchedSwitches, fc_check));
+	if (healthy_idle) {
+		_fc_fault_reported = false;
+		return;
+	}
+	// Evaluate every millisecond, notify immediately on failure, then retain a
+	// 100 Hz NaN diagnostic heartbeat while the same failure persists.
+	if (_fc_event_control && !computation_requested) {
+		if (_fc_fault_reported && !fault && wall - _last_fault_publication < .010) return;
+		_fc_fault_reported = true;
+		_last_fault_publication = wall;
+	} else {
+		_fc_fault_reported = false;
+	}
+	_computation_requested = computation_requested;
+	_sample_age_before = _fc_event_control ? monotonicSeconds() - evidence.fc_sample_time : NAN;
+	const auto decision = _pilot->tick(state, evidence, _shadow_only, navigation_valid, computation_requested);
+	_cycle_end_time = monotonicSeconds();
+	if (warm_before > 0 && (fault || _pilot->warmCycles() < warm_before)) ++_warm_resets;
 	_cycle_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - cycle_start).count();
 	publishDecision(decision, state);
 }
@@ -267,6 +332,7 @@ void ControlNode::publishDecision(const agi::hardware::ControlDecision& decision
 	command.state_published_steady_time = _state.published_steady_time;
 	command.state_received_steady_time = _state_receive_time;
 	command.control_start_steady_time = _cycle_start_time;
+	command.control_end_steady_time = _cycle_end_time;
 	command.published_steady_time = monotonicSeconds();
 	_command_pub->publish(command);
 	msg::ComputationStatus computation;
@@ -286,6 +352,16 @@ void ControlNode::publishDecision(const agi::hardware::ControlDecision& decision
 	computation.imu_age = decision.evidence.now - decision.evidence.imu_time;
 	computation.state_source = _state.state_source;
 	computation.fc_time_usec = _state.fc_time_usec;
+	computation.control_session_start = _session_start;
+	computation.command_sequence = command.sequence;
+	computation.fc_generation = _state.reset_counter;
+	computation.fc_session = _state.navigation_session;
+	computation.computation_requested = _computation_requested;
+	computation.fc_sample_age_before = _sample_age_before;
+	computation.fc_sample_age_after = _fc_event_control ? _cycle_end_time - _state.fc_state_sample_steady_time : NAN;
+	computation.ignored_states = _fc_schedule.ignored;
+	computation.coalesced_states = _fc_schedule.coalesced;
+	computation.warm_resets = _warm_resets;
 	computation.fc_sample_age = _state.state_source == "fc_fused" ? decision.evidence.now - _state.fc_state_sample_steady_time : NAN;
 	computation.fc_receive_age = _state.state_source == "fc_fused" ? decision.evidence.now - _state.fc_state_receive_steady_time : NAN;
 	computation.fc_publish_delay =

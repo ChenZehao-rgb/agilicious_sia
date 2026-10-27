@@ -25,7 +25,8 @@ public:
 	                       NavigationPolicy policy = NavigationPolicy::Rtk, double observation_delay = 0.0,
 	                       ReceiverPolicy receiver_policy = ReceiverPolicy::FreshSamples);
 	bool setTrajectory(const SetpointVector& relative_setpoints);
-	ControlDecision tick(const QuadState& fused_state, Evidence evidence, bool shadow_only = false, bool navigation_valid = false);
+	ControlDecision tick(const QuadState& fused_state, Evidence evidence, bool shadow_only = false, bool navigation_valid = false,
+	                     bool computation_requested = true);
 	void reportOutputFault();
 	Mode mode() const { return _gate.mode(); }
 	unsigned warmCycles() const { return _warm_cycles; }

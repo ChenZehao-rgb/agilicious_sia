@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "agi_ros2/fc_control_schedule.h"
 #include "agi_ros2/msg/authority.hpp"
 #include "agi_ros2/msg/computation_status.hpp"
 #include "agi_ros2/msg/control_command.hpp"
@@ -30,6 +31,8 @@ private:
 	void onState(msg::FusedState::ConstSharedPtr message);
 	void onOutputStatus(msg::OutputStatus::ConstSharedPtr message);
 	void tick();
+	void dispatchFcState();
+	void runCycle(bool computation_requested);
 	void publishDecision(const agi::hardware::ControlDecision& decision, const agi::QuadState& state);
 
 	const std::string _clock_id;
@@ -40,6 +43,14 @@ private:
 	bool _shadow_only = false;
 	bool _simulation_time = false;
 	bool _timing_checks = true;
+	bool _fc_event_control = false;
+	FcControlSchedule _fc_schedule;
+	double _cycle_end_time = NAN;
+	double _sample_age_before = NAN;
+	bool _computation_requested = false;
+	uint64_t _warm_resets = 0;
+	bool _fc_fault_reported = false;
+	double _last_fault_publication = NAN;
 	agi::hardware::NavigationPolicy _navigation_policy = agi::hardware::NavigationPolicy::Rtk;
 	double _cycle_seconds = 0.0;
 	double _observation_delay = 0.0;
