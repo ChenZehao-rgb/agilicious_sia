@@ -112,7 +112,9 @@ class DeliveryHarness(ShadowHarness):
             command.control_session_start = 1.
             command.published_steady_time = time.monotonic()
             e = command.evidence
-            e.now = e.command_time = e.rc_time = e.status_time = now
+            # Command creation follows state publication, as in the real pipeline.
+            e.now = e.command_time = command.published_steady_time
+            e.rc_time = e.status_time = now
             e.solve_seconds = .001
             for field in ('command_valid','controller_warm','receiver_valid','rc_link','armed',
                           'heading_valid','accuracy_ok','clock_aligned','config_verified','thrust_mapping_ready',

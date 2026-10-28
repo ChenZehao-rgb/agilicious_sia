@@ -71,7 +71,7 @@ pilot:
     mass: 0.790
     omega_max: [1.0, 1.0, 0.5]
     thrust_min: 0.0
-    thrust_max: 3.599
+    thrust_max: 7.84
   dt_min: 0.01
   outerloop_divisor: 1
   dt_telemetry: 0.1

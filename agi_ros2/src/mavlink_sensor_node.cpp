@@ -204,6 +204,9 @@ private:
 		_last_imu_receive = 0;
 		_sync_count = 0;
 		_offset = nan;
+		_sync_remote_time = nan;
+		_clock_skew = 0.;
+		_sync_residual = nan;
 		_last_remote_ns = 0;
 		_requests.clear();
 		_last_stamp.clear();
@@ -409,22 +412,39 @@ private:
 			_reason = "Flight controller restarted";
 			return;
 		}
-		_last_remote_ns = ts.tc1;
-		double candidate = (sent + received) * .5 - ts.tc1 * 1e-9;
-		if (std::isfinite(_offset) && std::abs(candidate - _offset) > .05) {
+		if (ts.tc1 == _last_remote_ns) {
+			++_rejected_sync;
+			return;
+		}
+		const double remote = ts.tc1 * 1e-9;
+		const double candidate = (sent + received) * .5 - remote;
+		const double predicted = std::isfinite(_offset) ? _offset + _clock_skew * (remote - _sync_remote_time) : candidate;
+		_sync_residual = candidate - predicted;
+		if (std::abs(_sync_residual) > .05) {
 			resetEpoch("Device clock discontinuity");
 			_reason = "Device clock discontinuity";
 			return;
 		}
-		_offset = std::isfinite(_offset) ? .9 * _offset + .1 * candidate : candidate;
+		if (std::isfinite(_offset)) {
+			// Alpha-beta tracking predicts offset between exchanges instead of
+			// treating clock-rate changes as a persistently lagging phase error.
+			const double elapsed = (ts.tc1 - _last_remote_ns) * 1e-9;
+			_offset = predicted + .5 * _sync_residual;
+			_clock_skew = std::clamp(_clock_skew + .1 * _sync_residual / elapsed, -.02, .02);
+		} else {
+			_offset = candidate;
+		}
+		_sync_remote_time = remote;
+		_last_remote_ns = ts.tc1;
 		_rtt_ms = rtt * 1000;
 		_last_sync = received;
 		++_sync_count;
 		if (_sync_count == 5 && _baro_hz && !_baro_valid) _baro_reason = "Waiting for pressure";
 	}
+	double mapFcToSteady(double remote) const { return remote + _offset + _clock_skew * (remote - _sync_remote_time); }
 	bool stamp(uint32_t id, double remote, builtin_interfaces::msg::Time &out) {
 		if (_sync_count < 5 || !std::isfinite(remote)) return false;
-		double mapped = remote + _offset + _ros_offset;
+		double mapped = mapFcToSteady(remote) + _ros_offset;
 		double age = now().seconds() - mapped;
 		const double max_age = id == MAVLINK_MSG_ID_ODOMETRY          ? .015
 		                       : id == MAVLINK_MSG_ID_SCALED_PRESSURE ? _baro_max_age_s
@@ -500,7 +520,7 @@ private:
 			out.source_session = _source_session;
 			out.validity_epoch = _fc_validity_epoch;
 			out.fc_time_usec = v.time_usec;
-			out.sample_steady_time = v.time_usec * 1e-6 + _offset;
+			out.sample_steady_time = mapFcToSteady(v.time_usec * 1e-6);
 			out.receive_steady_time = received;
 			out.clock_aligned = out.valid = true;
 			out.position.x = converted.position[0];
@@ -543,7 +563,7 @@ private:
 			_last_health_sequence = h.sequence;
 			_last_health_reset = h.reset;
 			agi_ros2::msg::FcEstimatorStatus out;
-			out.sample_steady_time = h.time * 1e-6 + _offset;
+			out.sample_steady_time = mapFcToSteady(h.time * 1e-6);
 
 			out.header.frame_id = "odom";
 			out.clock_id = _clock_id;
@@ -874,10 +894,10 @@ private:
 		s.name = "mavlink_sensor";
 		s.hardware_id = _device;
 		bool synchronized = _sync_count >= 5 && steady() - _last_sync < 2;
-		const bool fc_state_fresh = _fc_state_good && _last_fc_time && steady() >= _last_fc_time * 1e-6 + _offset &&
-		                            steady() - (_last_fc_time * 1e-6 + _offset) <= .015;
-		const bool fc_health_fresh = _last_health_time && steady() >= _last_health_time * 1e-6 + _offset &&
-		                             steady() - (_last_health_time * 1e-6 + _offset) <= .060;
+		const double state_age = steady() - mapFcToSteady(_last_fc_time * 1e-6);
+		const double health_age = steady() - mapFcToSteady(_last_health_time * 1e-6);
+		const bool fc_state_fresh = _fc_state_good && _last_fc_time && state_age >= 0 && state_age <= .015;
+		const bool fc_health_fresh = _last_health_time && health_age >= 0 && health_age <= .060;
 		const bool degraded = (_fc_fused && (!fc_state_fresh || !fc_health_fresh)) || !synchronized || _commands_failed ||
 		                      (_imu_hz && steady() - _last_imu_receive > .1) || (_baro_hz && !_baro_valid);
 		s.level = _fd < 0 || _publisher_conflict ? s.ERROR : degraded ? s.WARN : s.OK;
@@ -899,6 +919,8 @@ private:
 		add("rate_commands_ok", _command_index == _rate_requests.size() && !_commands_failed ? "true" : "false");
 		add("source_session", _source_session);
 		add("mapping_regressions", std::to_string(_mapping_regressions));
+		add("sync_clock_skew_ppm", std::to_string(_clock_skew * 1e6));
+		add("sync_residual_ms", std::to_string(_sync_residual * 1000));
 		add("imu_timestamp_semantics", "FC acceleration-update snapshot; physical sensor/filter latency unknown");
 		add("gps_timestamp_semantics", "FC new-solution capture; receiver PVT epoch not transmitted");
 		add("baro_enabled", _baro_hz ? "true" : "false");
@@ -995,6 +1017,7 @@ private:
 	bool _publisher_conflict{false};
 	double _next_connect{0}, _last_receive{0}, _next_sync{0}, _offset{nan}, _ros_offset{nan}, _last_sync{0}, _rtt_ms{0},
 	        _command_sent{0}, _diagnostic_time{0}, _last_fix_receive{0}, _msl{nan};
+	double _sync_remote_time{nan}, _clock_skew{0}, _sync_residual{nan};
 	int64_t _last_remote_ns{0};
 	unsigned _sync_count{0}, _command_index{0}, _command_attempts{0};
 	bool _command_waiting{false}, _commands_failed{false}, _velocity_valid{false}, _ellipsoid_valid{false}, _accuracy_valid{false};
