@@ -248,6 +248,8 @@ class EvidenceNode(Node):
         health.config_verified = data['config_verified'] and data['control_mode_ok']
         health.transport_healthy = data['transport_healthy']
         health.battery_voltage = data['battery_voltage']
+        for key in ('battery_session', 'battery_sequence', 'battery_request_steady_time', 'battery_receive_steady_time'):
+            setattr(health, key, data[key])
         output_diagnostic = output_freshness(self.output, self.clock_id, now, time.monotonic(),
                                              getattr(self, 'output_received_steady', None))
         # Mapping is configuration, not a heartbeat. Control checks the output

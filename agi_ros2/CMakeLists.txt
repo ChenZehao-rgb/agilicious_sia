@@ -24,6 +24,7 @@ set(UNSAFE_MATH OFF CACHE BOOL "" FORCE)
 set(AGILIB_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../agilib")
 add_subdirectory(${AGILIB_ROOT} ${CMAKE_CURRENT_BINARY_DIR}/agilib)
 find_package(Eigen3 REQUIRED)
+find_package(yaml-cpp REQUIRED)
 add_library(ros2_node_common STATIC src/node_common.cpp)
 target_include_directories(ros2_node_common PUBLIC include ${AGILIB_ROOT}/include
   ${AGILIB_ROOT}/apps ${EIGEN3_INCLUDE_DIRS})
@@ -35,6 +36,7 @@ add_executable(fc_state_adapter_node src/fc_state_adapter_main.cpp src/fc_state_
 add_executable(control_node src/control_main.cpp src/control_node.cpp)
 add_executable(command_output_node src/command_output_main.cpp
   src/command_output_node.cpp src/msp_telemetry.cpp)
+target_link_libraries(command_output_node yaml-cpp)
 foreach(target ros2_node_common state_fusion_node fc_state_adapter_node control_node command_output_node)
   # Match agilib's Eigen alignment across the ABI boundary.
   if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64)$" AND NOT DEFINED CATKIN_DEVEL_PREFIX)
@@ -87,6 +89,8 @@ install(FILES MAVLINK_FC_FUSED.md README.md MAVLINK_SENSORS.md SHADOW_EVALUATION
 install(DIRECTORY test/results/rate_mpc_20260922 test/results/fc_fused_20261026
   DESTINATION share/${PROJECT_NAME}/test/results OPTIONAL)
 install(DIRECTORY launch config DESTINATION share/${PROJECT_NAME})
+install(DIRECTORY tools/thrust_calibration DESTINATION share/${PROJECT_NAME}/tools
+  PATTERN "__pycache__" EXCLUDE)
 install(DIRECTORY ${AGILIB_ROOT}/params/ DESTINATION share/${PROJECT_NAME}/params)
 install(PROGRAMS scripts/sim_rc.py scripts/gnss_adapter.py scripts/msp_evidence.py scripts/summarize_shadow_bag.py
   scripts/analyze_pipeline_timing.py scripts/wait_for_clock.py DESTINATION lib/${PROJECT_NAME})

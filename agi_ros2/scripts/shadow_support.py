@@ -134,6 +134,9 @@ class MspEvidence:
                 any(type(index) is not int or not 0 <= index < 14 for index in self.aux_indices)):
             raise ValueError('arm_aux, auto_aux and kill_aux must be distinct zero-based AUX indices 0..13')
         self.arm_channel, self.auto_channel, self.kill_channel = (4 + index for index in self.aux_indices)
+        self.battery_sequence = 0
+        self.battery_report = (math.nan, math.nan)
+        self.battery_epoch = 0
         self.session = None
         self.frames = {}
         self.settings = {}
@@ -160,6 +163,8 @@ class MspEvidence:
                        if code in self.CONFIG_CODES}
         self.settings = {name: (value, -math.inf) for name, (value, _) in self.settings.items()}
         self.last_event = math.nan
+        self.battery_report = (math.nan, math.nan)
+        self.battery_epoch += 1
         self.mode_order.clear()
         self.mode_request_steady.clear()
         self.mode_versions = {105: 0, 150: 0}
@@ -183,6 +188,8 @@ class MspEvidence:
             if self.session is not None:
                 self.retired_sessions.add(self.session)
             self.session = session
+            self.battery_sequence = 0
+            self.battery_report = (math.nan, math.nan)
             self.frames.clear()
             self.settings.clear()
             self.failed = False
@@ -237,6 +244,10 @@ class MspEvidence:
             self.failed = True
             self.reason = 'Configuration changed; restart required'
         if code not in self.frames or stamp > self.frames[code][1]:
+            if code == 130:
+                self.battery_sequence += 1
+                self.battery_report = (request_steady if request_steady is not None else math.nan,
+                                       observed_steady if observed_steady is not None else math.nan)
             self.frames[code] = payload, stamp
 
     def configuration(self, now):
@@ -303,6 +314,10 @@ class MspEvidence:
         result = dict(config_verified=verified, receiver_valid=False, armed=False, auto_switch=False,
                       kill=True, rc_link=False, battery_voltage=float('nan'), rc_stamp=0., status_stamp=0.,
                       battery_stamp=0., transport_healthy=not self.failed,
+                      battery_session=(self.session + ':voltage:' + str(self.battery_epoch)) if self.session else '',
+                      battery_sequence=self.battery_sequence,
+                      battery_request_steady_time=self.battery_report[0],
+                      battery_receive_steady_time=self.battery_report[1],
                       imu_ready=False, control_mode_ok=False, pid_profile=255, rate_profile=255,
                       override_timeout_ms=0, reason=reason)
         if self.receiver_snapshot is not None:

@@ -23,3 +23,28 @@ uint64 command_sequence
 float64 fc_sample_age_at_check
 uint64 fc_generation
 string fc_session
+
+# Reference-table mapping diagnostics; NaN when no successful current mapping exists.
+string calibration_id
+string reference_mapping_reason
+float64 voltage_raw_v
+float64 voltage_filtered_v
+float64 voltage_sample_age_s
+float64 reference_voltage_v
+float64 voltage_exponent_p
+float64 thrust_voltage_scale
+float64 desired_total_thrust_n
+float64 reference_lookup_thrust_n
+float64 mapped_rc_throttle
+float64 model_min_total_thrust_n
+float64 model_max_total_thrust_n
+uint32 calibration_schema_version
+string calibration_provenance
+float64 calibration_voltage_min_v
+float64 calibration_voltage_max_v
+float64 calibration_rc_min
+float64 calibration_rc_max
+
+string calibration_status
+bool reference_lower_saturated
+bool reference_idle_requested

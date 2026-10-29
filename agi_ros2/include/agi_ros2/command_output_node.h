@@ -19,6 +19,7 @@
 #include "agilib/bridge/betaflight/betaflight_rc_mapper.hpp"
 #include "agilib/bridge/betaflight/hardware_safety.hpp"
 #include "agilib/bridge/betaflight/quadratic_thrust_model.h"
+#include "agilib/bridge/betaflight/reference_thrust_model.h"
 #include "agilib/bridge/betaflight/thrust_table.hpp"
 #include "agilib/bridge/betaflight_udp/betaflight_udp_bridge_params.hpp"
 #include "rclcpp/rclcpp.hpp"
@@ -38,7 +39,7 @@ private:
 	void watchdog();
 	void publishStatus();
 	void reportFault(const std::string& reason);
-	std::array<uint16_t, 4> mapCommand() const;
+	std::array<uint16_t, 4> mapCommand();
 	bool sendUdp(const std::array<uint16_t, 4>& channels, bool armed);
 
 	const std::string _clock_id;
@@ -60,6 +61,10 @@ private:
 	rclcpp::TimerBase::SharedPtr _msp_timer;
 	std::unique_ptr<agi::hardware::ThrustTable> _thrust;
 	std::unique_ptr<agi::hardware::QuadraticThrustModel> _quadratic_thrust;
+	std::unique_ptr<agi::hardware::ReferenceThrustModel> _reference_thrust;
+	agi::hardware::ReferenceVoltageFilter _reference_voltage;
+	agi::hardware::ReferenceThrustModel::Mapping _reference_mapping{NAN, NAN, NAN, 0, NAN, NAN};
+	std::string _reference_mapping_reason = "No reference mapping";
 	std::unique_ptr<agi::hardware::SafetyGate> _gate;
 	msg::ControlCommand _command;
 	msg::Authority _authority;

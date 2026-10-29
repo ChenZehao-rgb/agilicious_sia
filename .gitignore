@@ -51,4 +51,4 @@ log/
 analysis/
 /agi_ros2/test/*
 experiments/
-
+!/agi_ros2/test/test_reference_runtime.py

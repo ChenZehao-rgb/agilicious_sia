@@ -84,11 +84,11 @@ CommandOutputNode::CommandOutputNode()
 	                                                       ? profile->section("flight")["thrust_model"].as<std::string>()
 	                                                       : "table",
 	                                               shadow_descriptor);
-	if (_thrust_model != "table" && _thrust_model != "quadratic") {
-		throw std::invalid_argument("thrust_model must be table or quadratic");
+	if (_thrust_model != "table" && _thrust_model != "quadratic" && _thrust_model != "reference_table") {
+		throw std::invalid_argument("thrust_model must be table, quadratic or reference_table");
 	}
-	if (_thrust_model == "quadratic" && _mode != "hardware") {
-		throw std::invalid_argument("quadratic thrust_model requires hardware mode");
+	if ((_thrust_model == "quadratic" || _thrust_model == "reference_table") && _mode != "hardware") {
+		throw std::invalid_argument("Selected thrust_model requires hardware mode");
 	}
 	const auto thrust_file =
 	        declare_parameter<std::string>("thrust_table",
@@ -135,11 +135,19 @@ CommandOutputNode::CommandOutputNode()
 		            "Thrust model: quadratic (manufacturer_estimate), factor=%.12g, max_total_thrust_n=%.12g; "
 		            "linear RC approximation, no voltage compensation, not measured calibration",
 		            factor, maximum);
+	} else if (_thrust_model == "reference_table") {
+		const auto calibration_file = declare_parameter<std::string>(
+		        "thrust_calibration",
+		        profile && profile->section("flight")["thrust_calibration"].isDefined()
+		                ? profile->resolvePath(profile->section("flight")["thrust_calibration"].as<std::string>())
+		                : "",
+		        shadow_descriptor);
+		_reference_thrust = std::make_unique<agi::hardware::ReferenceThrustModel>(calibration_file, _shadow_only);
 	} else if (!thrust_file.empty()) {
 		loadThrustTable(thrust_file);
 	}
 	if (_mode == "hardware") {
-		if (!_thrust && !_quadratic_thrust && !_shadow_only) {
+		if (!_thrust && !_quadratic_thrust && !_reference_thrust && !_shadow_only) {
 			throw std::invalid_argument("Hardware output requires a thrust_table");
 		}
 		_msp = std::make_unique<agi::hardware::BetaflightMspBridge>(device, baud, policy, _observation_delay, receiver_policy);
@@ -172,6 +180,7 @@ CommandOutputNode::CommandOutputNode()
 		_fc_state_sub = create_subscription<msg::FusedState>("fused_state", 1, [this](msg::FusedState::ConstSharedPtr s) {
 			const bool changed =
 			        _fc_state.reset_counter != s->reset_counter || _fc_state.navigation_session != s->navigation_session;
+			if (changed) _reference_voltage.invalidate();
 			_fc_state = *s;
 			if (changed || !s->fc_state_valid) processOutput();
 		});
@@ -179,13 +188,29 @@ CommandOutputNode::CommandOutputNode()
 	_health_sub = create_subscription<msg::Health>("health", 1, [this](msg::Health::ConstSharedPtr message) {
 		_health = *message;
 		_health_receive_time = monotonicSeconds();
+		bool reference_voltage_valid = true;
+		if (_reference_thrust) {
+			try {
+				if (_health.battery_session.rfind(_clock_id + ":", 0) != 0) {
+					_reference_voltage.invalidate();
+					throw std::out_of_range("Voltage report clock/session mismatch");
+				}
+				_reference_voltage.update(*_reference_thrust, _health_receive_time, _health.battery_session,
+				                          _health.battery_sequence, _health.battery_request_steady_time,
+				                          _health.battery_receive_steady_time, _health.battery_voltage);
+			} catch (const std::exception& error) {
+				reference_voltage_valid = false;
+				_reference_mapping = {NAN, NAN, NAN, 0, NAN, NAN};
+				_reference_mapping_reason = error.what();
+			}
+		}
 		const bool navigation_ready =
 		        _navigation_policy == agi::hardware::NavigationPolicy::FcFused ? _health.fc_estimator_healthy
 			: _navigation_policy == agi::hardware::NavigationPolicy::Gnss
 		                ? (_mode == "hardware" ? _health.fc_imu_ready
 		                                       : (_health.imu_ready && _health.estimator_ready && _health.navigation_ready))
 		                : (_health.imu_calibrated && _health.converged);
-		if (!navigation_ready || !_health.config_verified || !_health.thrust_mapping_ready ||
+		if (!reference_voltage_valid || !navigation_ready || !_health.config_verified || !_health.thrust_mapping_ready ||
 		    (_mode != "hardware" && !_health.geofence_ok) || !_health.transport_healthy ||
 		    (_mode == "hardware" && (!std::isfinite(_health.battery_voltage) || _health.battery_voltage <= 0)))
 			processOutput();
@@ -277,7 +302,8 @@ void CommandOutputNode::onCommand(msg::ControlCommand::ConstSharedPtr message) {
 	_timing_pub->publish(timing);
 }
 
-std::array<uint16_t, 4> CommandOutputNode::mapCommand() const {
+std::array<uint16_t, 4> CommandOutputNode::mapCommand() {
+	_reference_mapping = {NAN, NAN, NAN, 0, NAN, NAN};
 	if (!std::isfinite(_command.total_thrust) || _command.total_thrust < 0 || !std::isfinite(_command.body_rates.x) ||
 	    !std::isfinite(_command.body_rates.y) || !std::isfinite(_command.body_rates.z)) {
 		throw std::invalid_argument("Nonfinite or negative thrust/rates command");
@@ -299,8 +325,23 @@ std::array<uint16_t, 4> CommandOutputNode::mapCommand() const {
 		if (!std::isfinite(_health.battery_voltage) || _health.battery_voltage <= 0) {
 			throw std::out_of_range("Battery voltage unavailable/stale/nonpositive");
 		}
-		channels[2] = _quadratic_thrust ? _quadratic_thrust->totalThrustToRc(_command.total_thrust)
-		                                : _thrust->collectiveThrustToRc(acceleration, _mass, _health.battery_voltage);
+		if (_reference_thrust) {
+			try {
+				_reference_mapping = _reference_thrust->map(
+				        _command.total_thrust, _reference_voltage.value(*_reference_thrust, monotonicSeconds()));
+				_reference_mapping_reason = "Mapped total N; single-motor x4 assumption; flight validation not performed";
+				channels[2] = _reference_mapping.idle_requested ? kIdleChannels[2] : _reference_mapping.rc;
+				if (_reference_mapping.idle_requested)
+					_reference_mapping_reason = "idle_requested; not a measured zero-force point";
+				if (_reference_mapping.lower_saturated) _reference_mapping_reason = "lower_saturated: minimum_supported_rc";
+			} catch (const std::exception& error) {
+				_reference_mapping_reason = error.what();
+				throw;
+			}
+		} else {
+			channels[2] = _quadratic_thrust ? _quadratic_thrust->totalThrustToRc(_command.total_thrust)
+			                                : _thrust->collectiveThrustToRc(acceleration, _mass, _health.battery_voltage);
+		}
 	} else {
 		const double motor = (_bridge_params.motor_idle + (1 - _bridge_params.motor_idle) * _bridge_params.hover_throttle) *
 		                     std::sqrt(acceleration / kGravity);
@@ -321,6 +362,13 @@ void CommandOutputNode::reportFault(const std::string& reason) {
 void CommandOutputNode::processOutput(bool new_command) {
 	// Independent hardware interlock, including forged permit_override messages.
 	if (_shadow_only) {
+		if (_reference_thrust && new_command) {
+			try {
+				(void)mapCommand();
+			} catch (const std::exception& error) {
+				_reference_mapping_reason = error.what();
+			}
+		}
 		_override_active = false;
 		_reason = "Shadow only: serial control frames disabled";
 		publishStatus();
@@ -370,7 +418,16 @@ void CommandOutputNode::processOutput(bool new_command) {
 	evidence.auto_switch = _authority.auto_switch;
 	// Battery freshness is encoded as NaN by the MSP evidence producer. The
 	// quadratic model ignores voltage for mapping, but retains this interlock.
-	const bool battery_valid = _mode != "hardware" || (std::isfinite(_health.battery_voltage) && _health.battery_voltage > 0);
+	bool battery_valid = _mode != "hardware" || (std::isfinite(_health.battery_voltage) && _health.battery_voltage > 0);
+	if (_reference_thrust) {
+		try {
+			(void)_reference_voltage.value(*_reference_thrust, monotonicSeconds());
+		} catch (const std::exception& error) {
+			battery_valid = false;
+			_reference_mapping = {NAN, NAN, NAN, 0, NAN, NAN};
+			_reference_mapping_reason = error.what();
+		}
+	}
 	evidence.command_valid = evidence.command_valid && command_fresh && authority_matches && battery_valid &&
 	                         (!_authority.auto_switch || _command.permit_override);
 	evidence.msp_healthy = evidence.msp_healthy && _transport_healthy && health_fresh && _health.transport_healthy;
@@ -378,7 +435,7 @@ void CommandOutputNode::processOutput(bool new_command) {
 	evidence.geofence_ok = evidence.geofence_ok && health_fresh && (_mode == "hardware" || _health.geofence_ok);
 	evidence.thrust_calibrated = evidence.thrust_calibrated && health_fresh && _health.thrust_calibrated;
 	evidence.thrust_mapping_ready = evidence.thrust_mapping_ready && health_fresh && _health.thrust_mapping_ready &&
-	                                (_mode == "sitl" || _thrust || _quadratic_thrust);
+	                                (_mode == "sitl" || _thrust || _quadratic_thrust || _reference_thrust);
 	evidence.imu_calibrated = evidence.imu_calibrated && health_fresh && _health.imu_calibrated;
 	evidence.converged = evidence.converged && health_fresh && _health.converged;
 	evidence.imu_ready = evidence.imu_ready && health_fresh && (_mode == "hardware" ? _health.fc_imu_ready : _health.imu_ready);
@@ -488,7 +545,7 @@ void CommandOutputNode::watchdog() {
 	const double safety_now = _simulation_time ? ros_time : wall;
 	// Source-sample hold expiry and command expiry use different epochs.
 	// Recheck both even if an adapter invalid event is overwritten at depth 1.
-	if (_navigation_policy == agi::hardware::NavigationPolicy::FcFused || !_timing_checks ||
+	if (_reference_thrust || _navigation_policy == agi::hardware::NavigationPolicy::FcFused || !_timing_checks ||
 	    !timely(wall, _command_receive_time, _simulation_time ? kSitlWallTimeout : 0.025) ||
 	    !timely(safety_now, _command.evidence.now, 0.025)) {
 		processOutput();
@@ -519,13 +576,39 @@ void CommandOutputNode::publishStatus() {
 	status.fc_generation = _command.evidence.fc_generation;
 	status.fc_session = _command.evidence.fc_session;
 	status.transport_healthy = _transport_healthy;
-	status.thrust_calibrated = _mode == "sitl" || static_cast<bool>(_thrust);
-	status.thrust_mapping_ready = _mode == "sitl" || _thrust || _quadratic_thrust;
+	status.thrust_calibrated = _mode == "sitl" || static_cast<bool>(_thrust) || (_reference_thrust && _reference_thrust->measured());
+	status.thrust_mapping_ready = _mode == "sitl" || _thrust || _quadratic_thrust || _reference_thrust;
 	status.thrust_model = _mode == "sitl" ? "sitl" : _thrust_model;
 	status.thrust_model_source = _mode == "sitl"     ? "simulation"
 	                             : _quadratic_thrust ? "manufacturer_estimate"
 	                             : _thrust           ? "measured_table"
 	                                                 : "unavailable";
+	if (_reference_thrust) {
+		status.thrust_model_source =
+		        _reference_thrust->measured() ? "measured_single_motor_scaled" : _reference_thrust->provenance();
+		status.calibration_id = _reference_thrust->id();
+	}
+	status.calibration_status = _reference_thrust ? _reference_thrust->status() : "";
+	status.reference_lower_saturated = _reference_mapping.lower_saturated;
+	status.reference_idle_requested = _reference_mapping.idle_requested;
+	status.calibration_schema_version = _reference_thrust ? 1 : 0;
+	status.calibration_provenance = _reference_thrust ? _reference_thrust->provenance() : "";
+	status.calibration_voltage_min_v = _reference_thrust ? _reference_thrust->minimumVoltage() : NAN;
+	status.calibration_voltage_max_v = _reference_thrust ? _reference_thrust->maximumVoltage() : NAN;
+	status.calibration_rc_min = _reference_thrust ? _reference_thrust->minimumRc() : NAN;
+	status.calibration_rc_max = _reference_thrust ? _reference_thrust->maximumRc() : NAN;
+	status.reference_mapping_reason = _reference_mapping_reason;
+	status.voltage_raw_v = _health.battery_voltage;
+	status.voltage_filtered_v = _reference_voltage.filtered();
+	status.voltage_sample_age_s = _reference_voltage.age(wall);
+	status.reference_voltage_v = _reference_thrust ? _reference_thrust->referenceVoltage() : NAN;
+	status.voltage_exponent_p = _reference_thrust ? _reference_thrust->exponent() : NAN;
+	status.thrust_voltage_scale = _reference_mapping.scale;
+	status.desired_total_thrust_n = _command.total_thrust;
+	status.reference_lookup_thrust_n = _reference_mapping.lookup_n;
+	status.mapped_rc_throttle = std::isfinite(_reference_mapping.rc_continuous) ? _reference_mapping.rc : NAN;
+	status.model_min_total_thrust_n = _reference_mapping.minimum_n;
+	status.model_max_total_thrust_n = _reference_mapping.maximum_n;
 	status.fault_count = _fault_count;
 	status.session_start = _session_start;
 	status.override_active = _override_active;

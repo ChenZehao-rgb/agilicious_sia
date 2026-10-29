@@ -354,7 +354,7 @@ class RuntimeProfiles(unittest.TestCase):
             runtime.checked_thrust_mapping(flight, 'sitl', path, False)
         for invalid in ('', 'unknown', None):
             flight['thrust_model'] = invalid
-            with self.subTest(value=invalid), self.assertRaisesRegex(ValueError, 'table or quadratic'):
+            with self.subTest(value=invalid), self.assertRaisesRegex(ValueError, 'table.*quadratic'):
                 runtime.checked_thrust_mapping(flight, 'hardware', path, True)
         del flight['thrust_model']
         parameters = runtime.checked_thrust_mapping(flight, 'hardware', path, True)

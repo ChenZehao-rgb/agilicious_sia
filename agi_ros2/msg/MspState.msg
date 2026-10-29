@@ -18,3 +18,9 @@ uint8 rate_profile
 uint32 override_timeout_ms
 float64 battery_voltage
 string reason
+
+# Original MSP130 report identity, host monotonic request/receive times (not physical ADC epoch).
+string battery_session
+uint64 battery_sequence
+float64 battery_request_steady_time
+float64 battery_receive_steady_time

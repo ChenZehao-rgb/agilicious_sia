@@ -1,0 +1,39 @@
+selected_target_profile: dynamic_nominal
+pid_profile_index: 1
+rate_profile_index: 0
+firmware_refs:
+  betaflight: 6b92b586eeb53b2783c58348810b2b9af091e25b
+  px4_force_consumer: 09ca172b71887b1db6435b90275f39fda5fbb258
+parameters:
+  rx_range_min: 1000
+  rx_range_max: 2000
+  mincheck: 1050
+  motor_idle: 550
+  dyn_idle_min_rpm: 40
+  nominal_dynamic_idle_increment: 0
+  thr_mid: 50
+  thr_expo: 0
+  thr_hover: 50
+  motor_output_limit: 100
+  throttle_limit_type: 0
+  vbat_sag_compensation: 0
+  thrust_linear: 0
+  rpm_limit: false
+  feature_3d: false
+parameter_source:
+  target_selection: historical active profile1, /home/sia/bag/20261026test/BTFL_cli_20261026_223339_GEPRC_TAKER_H743.txt; no newer complete flight config found
+  dyn_idle_min_rpm: historical diff profile1 explicitly 40; trial assumption, not live FC readback
+  mincheck: workspace hardware.yaml bridge.min_check=1050 and firmware default
+  rx_range: assumed identity 1000..2000; no live readback
+  motor_idle: bench BFL headers 550; static comparison assumption
+  throttle_curve_and_limits: linear/unlimited firmware defaults plus bench headers; assumed target values, not complete flight config
+  dynamic_increment: zero at moderate steady outputs; active dynamic idle region approximate
+source_paths:
+  - src/main/flight/mixer_init.c: dynIdleMinRps changes motorOutputLow to DSHOT_MIN_THROTTLE
+  - src/main/flight/mixer.c: motorRangeMinIncrease and max(throttle,0.01)
+  - src/main/fc/rc.c: RX mincheck normalization and throttle lookup
+  - src/main/drivers/dshot.c: DShot endpoints
+assumptions:
+  - non-3D, linear throttle, no output/RPM limit, no FC voltage compensation or thrust linearization
+  - zero steady PID torque, four identical propulsion units; measured single motor multiplied by four once
+  - continuous nominal formula; firmware integer rounding and transient RC smoothing not fitted

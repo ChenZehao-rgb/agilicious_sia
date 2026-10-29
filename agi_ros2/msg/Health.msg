@@ -23,3 +23,9 @@ uint64 state_reset_counter
 bool fc_estimator_healthy
 bool msp_healthy
 bool control_output_healthy
+
+# Original MSP130 report identity, host monotonic request/receive times (not physical ADC epoch).
+string battery_session
+uint64 battery_sequence
+float64 battery_request_steady_time
+float64 battery_receive_steady_time

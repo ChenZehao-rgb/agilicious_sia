@@ -1,0 +1,8 @@
+# Example fragment only: merge into a COPY of hardware.yaml after offline validation.
+# This is deliberately incomplete; no real measured calibration is supplied.
+flight:
+  shadow_only: true
+  thrust_model: reference_table
+  thrust_calibration: null  # Relative to runtime profile, points to generated calibration.yaml.
+  thrust_table: ''
+# Vref/p/filter/domain live only in calibration.yaml. Never duplicate them here.

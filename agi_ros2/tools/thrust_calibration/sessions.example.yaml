@@ -1,0 +1,26 @@
+sessions:
+  - run_id: replace_with_unique_segment_id
+    battery_id: null
+    block_id: null
+    arm_cycle: null
+    split: train  # Preassign whole blocks; reserve validation and final test blocks.
+    tested_motor_index: null
+    provenance: measured
+    pairing_evidence: null
+    manual_control_source_evidence: null
+    original_source_evidence: null  # Original BF/ULog paths, SHA256, log index, decoder version/command/statistics
+    configuration_file: null
+    direction: unknown
+    throttle_raised: unknown
+    bf:
+      file: null
+      log_index: null
+      interval_s: null  # Original BF clock seconds, NOT relative to the first record.
+    px4:
+      file: null
+      topic: null
+      instance: null
+      interval_s: null
+    no_thrust_intervals_px4_s: []  # Independently verified no-thrust baselines before/after; never armed idle.
+    anchors: []  # {bf_s: ..., px4_s: ..., direction: +/-1, role: fit/check, evidence: ...}
+    # >=6 fit and >=2 held-out common edges covering both beginning/end.

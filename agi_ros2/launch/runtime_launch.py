@@ -137,8 +137,8 @@ def checked_model(profile, controller=''):
 
 def checked_thrust_mapping(flight, mode, path, shadow):
     model = flight.get('thrust_model', 'table')
-    if model not in ('table', 'quadratic'):
-        raise ValueError('flight.thrust_model must be table or quadratic')
+    if model not in ('table', 'quadratic', 'reference_table'):
+        raise ValueError('flight.thrust_model must be table, quadratic or reference_table')
     if model == 'table':
         table = resolve_data_path(path, flight.get('thrust_table', ''))
         if mode == 'hardware' and not shadow and not table:
@@ -146,7 +146,18 @@ def checked_thrust_mapping(flight, mode, path, shadow):
                              'use diagnostic_only:=true for sensor checks')
         return {'thrust_model': model, 'thrust_table': table}
     if mode != 'hardware':
-        raise ValueError('flight.thrust_model=quadratic requires mode=hardware')
+        raise ValueError('Selected flight.thrust_model requires mode=hardware')
+    if model == 'reference_table':
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("reference_calibration", Path(__file__).with_name("reference_calibration.py"))
+        contract = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(contract)
+        load_calibration = contract.load_calibration
+        calibration = resolve_data_path(path, flight.get('thrust_calibration', ''))
+        if not calibration:
+            raise ValueError('flight.thrust_calibration is required')
+        load_calibration(calibration, shadow=shadow)
+        return {'thrust_model': model, 'thrust_table': '', 'thrust_calibration': calibration}
     quadratic = flight.get('thrust_quadratic')
     if not isinstance(quadratic, dict):
         raise ValueError('flight.thrust_quadratic must contain thrust_factor and max_total_thrust_n')

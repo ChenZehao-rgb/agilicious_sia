@@ -132,6 +132,27 @@ class EvidenceTests(unittest.TestCase):
         self.assertFalse(d.snapshot(10.11)['kill'])
         self.assertTrue(math.isnan(d.snapshot(11.1)['battery_voltage']))
 
+    def test_voltage_identity_survives_heartbeats_and_resets(self):
+        d = ready_decoder()
+        battery = bytearray(11)
+        battery[0] = 6
+        struct.pack_into('<H', battery, 9, 2250)
+        d.accept(130, battery, 10.01, 'one', request_steady=20., observed_steady=20.02)
+        first = d.snapshot(10.02)
+        for _ in range(10):
+            current = d.snapshot(10.1)
+            for key in ('battery_sequence', 'battery_session', 'battery_request_steady_time', 'battery_receive_steady_time'):
+                self.assertEqual(first[key], current[key])
+        d.accept(130, battery, 10.01, 'one', request_steady=20.1, observed_steady=20.12)
+        self.assertEqual(d.snapshot(10.2)['battery_sequence'], first['battery_sequence'])
+        d.accept(130, battery, 10.5, 'one', request_steady=20.5, observed_steady=20.52)
+        self.assertEqual(d.snapshot(10.6)['battery_sequence'], first['battery_sequence'] + 1)
+        d.reset_clock_epoch()
+        reset = d.snapshot(10.6)
+        self.assertNotEqual(first['battery_session'], reset['battery_session'])
+        self.assertTrue(math.isnan(reset['battery_request_steady_time']))
+        self.assertTrue(math.isnan(reset['battery_voltage']))
+
     def test_bad_versions_ranges_and_mask(self):
         for code, payload in [(1, bytes((0, 1, 47))), (34, b'bad'), (150, b'bad'), (119, bytes((0, 0, 50)))]:
             d = ready_decoder()

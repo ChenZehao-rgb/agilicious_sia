@@ -1,0 +1,439 @@
+schema_version: 1
+model: reference_table
+command_axis: msp_raw_rc_throttle
+axis_mapping_basis: source_and_config_assumptions
+thrust_unit: N
+thrust_scope: total_vehicle
+calibration_voltage_source: blackbox_vbatLatest
+runtime_voltage_source: msp130_display_filtered
+voltage_compatibility: steady_state
+no_ir_correction: true
+tested_motor_count: 1
+measured_motor_count: 1
+motor_count: 4
+measured_motor_index: 0
+aggregation: single_motor_times_four
+calibration_id: motor0_20261029_run1_trial
+axis_source: motor[0] measured; target nominal MSP200 map
+axis_conversion: Tref(C)=4*fref(G_target(C)); nominal zero PID torque
+axis_evidence: target_fc_mapping.yaml; local Betaflight source; documented defaults
+  and historical profile assumptions
+provenance: measured_motor_curve_with_nominal_rc_conversion
+calibration_status: provisional
+flight_validation_status: not_performed
+selected_target_profile: dynamic_nominal
+reference_voltage_v: 24.0
+voltage_exponent_p: 1.253471255346232
+table_file: reference_thrust.csv
+valid_voltage_min_v: 21.0
+valid_voltage_max_v: 24.66
+valid_rc_min: 1103
+valid_rc_max: 1702
+valid_motor_range:
+- 158.0
+- 1421.439299123905
+voltage_filter_time_constant_s: 0.0
+max_voltage_sample_age_s: 1.5
+max_voltage_sample_age_source: hardware profile evidence.battery_timeout; request
+  time remains age origin
+lower_policy: minimum_supported_rc
+zero_policy: output_layer_idle
+upper_policy: reject
+force_topic: pressure_force_sensor
+force_instance: 0
+force_field: sensor2
+force_unit: gf
+gf_to_n: 0.00980665
+baseline_gf:
+  run1: 147
+  run2: 196
+  run2_tail_sensitivity: 142
+force_unit_evidence: PX4 09ca172b71887b1db6435b90275f39fda5fbb258 thrust_feedback_control_bemt.cpp
+  kGramForceToNewton
+firmware_refs: &id001
+  betaflight: 6b92b586eeb53b2783c58348810b2b9af091e25b
+  px4_force_consumer: 09ca172b71887b1db6435b90275f39fda5fbb258
+target_mapping:
+  selected_target_profile: dynamic_nominal
+  pid_profile_index: 1
+  rate_profile_index: 0
+  firmware_refs: *id001
+  parameters:
+    rx_range_min: 1000
+    rx_range_max: 2000
+    mincheck: 1050
+    motor_idle: 550
+    dyn_idle_min_rpm: 40
+    nominal_dynamic_idle_increment: 0
+    thr_mid: 50
+    thr_expo: 0
+    thr_hover: 50
+    motor_output_limit: 100
+    throttle_limit_type: 0
+    vbat_sag_compensation: 0
+    thrust_linear: 0
+    rpm_limit: false
+    feature_3d: false
+  parameter_source:
+    target_selection: historical active profile1, /home/sia/bag/20261026test/BTFL_cli_20261026_223339_GEPRC_TAKER_H743.txt;
+      no newer complete flight config found
+    dyn_idle_min_rpm: historical diff profile1 explicitly 40; trial assumption, not
+      live FC readback
+    mincheck: workspace hardware.yaml bridge.min_check=1050 and firmware default
+    rx_range: assumed identity 1000..2000; no live readback
+    motor_idle: bench BFL headers 550; static comparison assumption
+    throttle_curve_and_limits: linear/unlimited firmware defaults plus bench headers;
+      assumed target values, not complete flight config
+    dynamic_increment: zero at moderate steady outputs; active dynamic idle region
+      approximate
+  source_paths:
+  - src/main/flight/mixer_init.c: dynIdleMinRps changes motorOutputLow to DSHOT_MIN_THROTTLE
+  - src/main/flight/mixer.c: motorRangeMinIncrease and max(throttle,0.01)
+  - src/main/fc/rc.c: RX mincheck normalization and throttle lookup
+  - src/main/drivers/dshot.c: DShot endpoints
+  assumptions:
+  - non-3D, linear throttle, no output/RPM limit, no FC voltage compensation or thrust
+    linearization
+  - zero steady PID torque, four identical propulsion units; measured single motor
+    multiplied by four once
+  - continuous nominal formula; firmware integer rounding and transient RC smoothing
+    not fitted
+data_selection: run1 up curve; run1 down p selection; run2 up auxiliary; run2 down
+  excluded from main fit
+sources:
+  1.BFL: 70b1852921d004f21bf2187569d032bcae304a59e47a25112aacfcbc6a76d2fb
+  1.ulg: 3e9910337a67911beb78861d7588edc8c839894bc550f11efded403a33f4b0ea
+  2.BFL: 83d782e2c13cc5c7e320e37601bef18651f08e87df9a6449730cef6053d4a90f
+  2.ulg: 4a17880e7a693bb767317d48ddb1040f3af1bdc1a6a24e843b0822649a20de83
+alignment:
+  '1':
+    a: 1.0
+    b: 94.143109
+    checks:
+    - bf_edge_s: 28.142253999999774
+      residual_shift_s: 2.220446049250313e-16
+      correlation: 0.9184811033688085
+    - bf_edge_s: 31.5822539999997
+      residual_shift_s: 2.220446049250313e-16
+      correlation: 0.9649450167945954
+    - bf_edge_s: 35.102253999999625
+      residual_shift_s: 0.0050000000000002265
+      correlation: 0.9807832639838607
+    - bf_edge_s: 37.70225399999957
+      residual_shift_s: 2.220446049250313e-16
+      correlation: 0.9969133458129624
+    - bf_edge_s: 40.002253999999525
+      residual_shift_s: -0.009999999999999787
+      correlation: 0.994746984006741
+    - bf_edge_s: 43.46225399999945
+      residual_shift_s: -0.004999999999999782
+      correlation: 0.9936132616984776
+    - bf_edge_s: 45.9222539999994
+      residual_shift_s: 0.0050000000000002265
+      correlation: 0.990472519186632
+    - bf_edge_s: 48.18225399999935
+      residual_shift_s: 0.010000000000000231
+      correlation: 0.9935768929780551
+    - bf_edge_s: 50.2222539999993
+      residual_shift_s: 0.0050000000000002265
+      correlation: 0.9920615190995649
+    - bf_edge_s: 55.68225399999919
+      residual_shift_s: 0.02000000000000024
+      correlation: 0.992293354075757
+    - bf_edge_s: 57.74225399999914
+      residual_shift_s: 0.025000000000000244
+      correlation: 0.995207261595691
+    - bf_edge_s: 61.862253999999055
+      residual_shift_s: 0.025000000000000244
+      correlation: 0.9861112575365637
+    - bf_edge_s: 63.96225399999901
+      residual_shift_s: 0.025000000000000244
+      correlation: 0.9933068733298158
+    - bf_edge_s: 66.12225399999896
+      residual_shift_s: 0.03000000000000025
+      correlation: 0.9907412080818416
+    - bf_edge_s: 68.5422539999989
+      residual_shift_s: 0.04000000000000026
+      correlation: 0.9971313415334279
+    - bf_edge_s: 71.44225399999885
+      residual_shift_s: 0.04000000000000026
+      correlation: 0.9944621119726373
+    - bf_edge_s: 75.32225399999876
+      residual_shift_s: 0.050000000000000266
+      correlation: 0.9845304224391884
+    - bf_edge_s: 79.22225399999869
+      residual_shift_s: 0.060000000000000275
+      correlation: 0.9926292156110947
+    - bf_edge_s: 82.80225399999861
+      residual_shift_s: 0.05500000000000027
+      correlation: 0.9953092375623016
+    - bf_edge_s: 89.70225399999846
+      residual_shift_s: 0.060000000000000275
+      correlation: 0.985461612344269
+    meaning: fixed response alignment includes force sensor delay; not hardware clock
+      sync
+  '2':
+    a: 1.0
+    b: 116.526271
+    checks:
+    - bf_edge_s: 25.031684999999925
+      residual_shift_s: 0.03000000000000025
+      correlation: 0.9409864689455908
+    - bf_edge_s: 28.411684999999853
+      residual_shift_s: 0.025000000000000244
+      correlation: 0.9890146131845473
+    - bf_edge_s: 32.071684999999775
+      residual_shift_s: 0.0050000000000002265
+      correlation: 0.9960929567950205
+    - bf_edge_s: 34.37168499999973
+      residual_shift_s: 0.0050000000000002265
+      correlation: 0.9978054339893385
+    - bf_edge_s: 37.51168499999966
+      residual_shift_s: 0.0050000000000002265
+      correlation: 0.9959225968312331
+    - bf_edge_s: 39.97168499999961
+      residual_shift_s: 0.010000000000000231
+      correlation: 0.9918245309390517
+    - bf_edge_s: 42.01168499999956
+      residual_shift_s: 0.015000000000000235
+      correlation: 0.9917375896202535
+    - bf_edge_s: 44.17168499999951
+      residual_shift_s: 0.02000000000000024
+      correlation: 0.9707314546867996
+    - bf_edge_s: 46.43168499999947
+      residual_shift_s: 0.02000000000000024
+      correlation: 0.996679934345523
+    - bf_edge_s: 48.75168499999942
+      residual_shift_s: 0.025000000000000244
+      correlation: 0.9900033393991744
+    - bf_edge_s: 51.99168499999935
+      residual_shift_s: 0.025000000000000244
+      correlation: 0.9907812566090365
+    - bf_edge_s: 54.411684999999295
+      residual_shift_s: 0.03500000000000025
+      correlation: 0.993510093964242
+    - bf_edge_s: 56.77168499999925
+      residual_shift_s: 0.03500000000000025
+      correlation: 0.9900527050063416
+    - bf_edge_s: 59.45168499999919
+      residual_shift_s: 0.03500000000000025
+      correlation: 0.9963599440666485
+    - bf_edge_s: 61.51168499999915
+      residual_shift_s: 0.04500000000000026
+      correlation: 0.9962659693289768
+    - bf_edge_s: 64.77168499999908
+      residual_shift_s: 0.04500000000000026
+      correlation: 0.995165003965205
+    meaning: fixed response alignment includes force sensor delay; not hardware clock
+      sync
+analysis_code_sha256:
+  motor0_trial.py: a7e10001dffb34445c114f65190d7a7664b247ff4da16afa0fe78f9314563c0f
+  log_io.py: b0628470fb1083fc0dc3d2c23acb148d9d68d3a371aa32c6d1d7460b267e0558
+  fit_reference.py: 40b93153bba5b837647f459754d02878316d5478e9924379316e687c6a6fb375
+primary_windows: 17
+primary_unique_motor_points: 16
+alignment_sensitivity:
+- offset_perturbation_s: -0.08
+  p_fitted: 1.2552109057510132
+- offset_perturbation_s: 0.08
+  p_fitted: 1.2590629432381366
+observed_voltage_range:
+  '1':
+  - 21.84
+  - 24.66
+  '2':
+  - 20.82
+  - 23.66
+fitted_steady_voltage_range:
+- 22.9
+- 24.63
+allowed_model_voltage_range:
+- 21.0
+- 24.66
+allowed_voltage_basis: finite trial approximation within overall observations; 20.82V
+  transient excluded; sparse steady coverage
+candidate_metrics:
+  '0.0':
+    count: 3
+    low_force_count: 2
+    low_force_max_absolute_error_n: 0.06321705884991735
+    mean_absolute_relative_error: 0.044872552472804556
+    max_absolute_relative_error: 0.04884623833348038
+    points:
+    - run: 1
+      window: 17
+      motor: 515.0
+      voltage: 23.54220122290161
+      measured_single_n: 1.7757663894444444
+      predicted_single_n: 1.8625058977278317
+      relative_error: 0.04884623833348038
+    - run: 1
+      window: 18
+      motor: 447.0
+      voltage: 23.594463519313305
+      measured_single_n: 1.410336365
+      predicted_single_n: 1.468225343585115
+      relative_error: 0.041046221328282124
+    - run: 1
+      window: 19
+      motor: 360.99758620689653
+      voltage: 23.648989655172418
+      measured_single_n: 0.940997270415225
+      predicted_single_n: 0.9830835594230148
+      relative_error: 0.04472519775665115
+  '1.0':
+    count: 3
+    low_force_count: 2
+    low_force_max_absolute_error_n: 0.04546583613734323
+    mean_absolute_relative_error: 0.008923863411788918
+    max_absolute_relative_error: 0.013061734481831263
+    points:
+    - run: 1
+      window: 17
+      motor: 515.0
+      voltage: 23.54220122290161
+      measured_single_n: 1.7757663894444444
+      predicted_single_n: 1.798960978525128
+      relative_error: 0.013061734481831263
+    - run: 1
+      window: 18
+      motor: 447.0
+      voltage: 23.594463519313305
+      measured_single_n: 1.410336365
+      predicted_single_n: 1.417357767970632
+      relative_error: 0.004978530756832551
+    - run: 1
+      window: 19
+      motor: 360.99758620689653
+      voltage: 23.648989655172418
+      measured_single_n: 0.940997270415225
+      predicted_single_n: 0.9492134234042306
+      relative_error: 0.008731324996702938
+  '2.0':
+    count: 3
+    low_force_count: 2
+    low_force_max_absolute_error_n: 0.028310995250365123
+    mean_absolute_relative_error: 0.025786787665161886
+    max_absolute_relative_error: 0.029839183991236955
+    points:
+    - run: 1
+      window: 17
+      motor: 515.0
+      voltage: 23.54220122290161
+      measured_single_n: 1.7757663894444444
+      predicted_single_n: 1.7375864325676762
+      relative_error: -0.02150055159491614
+    - run: 1
+      window: 18
+      motor: 447.0
+      voltage: 23.594463519313305
+      measured_single_n: 1.410336365
+      predicted_single_n: 1.3682530787152327
+      relative_error: -0.029839183991236955
+    - run: 1
+      window: 19
+      motor: 360.99758620689653
+      voltage: 23.648989655172418
+      measured_single_n: 0.940997270415225
+      predicted_single_n: 0.9165119310485514
+      relative_error: -0.026020627409332555
+  '1.253471255346232':
+    count: 3
+    low_force_count: 2
+    low_force_max_absolute_error_n: 0.041061957269915794
+    mean_absolute_relative_error: 0.0027811951474306026
+    max_absolute_relative_error: 0.004187229507664716
+    points:
+    - run: 1
+      window: 17
+      motor: 515.0
+      voltage: 23.54220122290161
+      measured_single_n: 1.7757663894444444
+      predicted_single_n: 1.7832019308690454
+      relative_error: 0.004187229507664716
+    - run: 1
+      window: 18
+      motor: 447.0
+      voltage: 23.594463519313305
+      measured_single_n: 1.410336365
+      predicted_single_n: 1.4047468041750146
+      relative_error: -0.0039632820678104025
+    - run: 1
+      window: 19
+      motor: 360.99758620689653
+      voltage: 23.648989655172418
+      measured_single_n: 0.940997270415225
+      predicted_single_n: 0.940815588433562
+      relative_error: -0.00019307386681668976
+auxiliary:
+  count: 4
+  low_force_count: 2
+  low_force_max_absolute_error_n: 0.006320425707439514
+  mean_absolute_relative_error: 0.01747325081510645
+  max_absolute_relative_error: 0.034817418495589225
+  points:
+  - run: 2
+    window: 2
+    motor: 521.0
+    voltage: 23.336815773984696
+    measured_single_n: 1.7939206198224853
+    predicted_single_n: 1.7972736267631009
+    relative_error: 0.0018690943755066314
+  - run: 2
+    window: 3
+    motor: 640.0
+    voltage: 23.197172643869894
+    measured_single_n: 2.6495933858333336
+    predicted_single_n: 2.6772132214308826
+    relative_error: 0.01042417894957953
+  - run: 2
+    window: 4
+    motor: 743.9787234042553
+    voltage: 23.04898623279099
+    measured_single_n: 3.4914156696202534
+    predicted_single_n: 3.5709581887711668
+    relative_error: 0.02278231143975042
+  - run: 2
+    window: 5
+    motor: 912.5307582260372
+    voltage: 22.782532188841202
+    measured_single_n: 4.969981794927536
+    predicted_single_n: 5.143023730996988
+    relative_error: 0.034817418495589225
+auxiliary_baseline142:
+  count: 4
+  low_force_count: 2
+  low_force_max_absolute_error_n: 0.5273001624318391
+  mean_absolute_relative_error: 0.14027547555750805
+  max_absolute_relative_error: 0.22647328856375237
+  points:
+  - run: 2
+    window: 2
+    motor: 521.0
+    voltage: 23.336815773984696
+    measured_single_n: 2.323479719822485
+    predicted_single_n: 1.7972736267631009
+    relative_error: -0.22647328856375237
+  - run: 2
+    window: 3
+    motor: 640.0
+    voltage: 23.197172643869894
+    measured_single_n: 3.1791524858333338
+    predicted_single_n: 2.6772132214308826
+    relative_error: -0.15788461441819787
+  - run: 2
+    window: 4
+    motor: 743.9787234042553
+    voltage: 23.04898623279099
+    measured_single_n: 4.020974769620254
+    predicted_single_n: 3.5709581887711668
+    relative_error: -0.11191728539286183
+  - run: 2
+    window: 5
+    motor: 912.5307582260372
+    voltage: 22.782532188841202
+    measured_single_n: 5.499540894927536
+    predicted_single_n: 5.143023730996988
+    relative_error: -0.0648267138552201
+unsupported: motor above stable measured endpoint; nonzero PID allocation; active
+  dynamic idle increment; rapid voltage transient; four-motor variability
