@@ -66,7 +66,7 @@ class RuntimeProfileNodes(unittest.TestCase):
         simulation = yaml.safe_load((ROOT / 'agi_ros2/config/simulation.yaml').read_text())
         document['pilot']['quadrotor'] = simulation['pilot']['quadrotor']
         document['bridge'] = simulation['bridge']
-        valid = {'thrust_factor': 898 / 2231, 'max_total_thrust_n': 87.5145446}
+        valid = dict(document['flight']['thrust_quadratic'])
         cases = [('missing_model', None), ('empty_model', {})]
         for key in valid:
             missing = dict(valid)
@@ -75,8 +75,7 @@ class RuntimeProfileNodes(unittest.TestCase):
             for value in (True, False, '0.4', '.4junk', '87.5junk', float('nan'), float('inf')):
                 cases.append((key + '=' + repr(value), {**valid, key: value}))
         cases.extend((name, {**valid, key: value}) for name, key, value in (
-            ('negative_factor', 'thrust_factor', -0.1), ('large_factor', 'thrust_factor', 1.1),
-            ('zero_maximum', 'max_total_thrust_n', 0.0), ('negative_maximum', 'max_total_thrust_n', -1.0)))
+            ('zero_voltage', 'reference_voltage_v', 0.0), ('negative_voltage', 'reference_voltage_v', -1.0)))
         with tempfile.TemporaryDirectory(prefix='agi_quadratic_profile_') as directory:
             profile = Path(directory) / 'hardware.yaml'
             missing_device = Path(directory) / 'no_physical_uart'
@@ -94,13 +93,13 @@ class RuntimeProfileNodes(unittest.TestCase):
                         capture_output=True, text=True, timeout=10)
                     output = result.stdout + result.stderr
                     self.assertNotEqual(result.returncode, 0, output)
-                    self.assertRegex(output, 'quadratic thrust model|thrust_quadratic', output)
+                    self.assertRegex(output, 'measured cubic thrust model|thrust_quadratic', output)
                     self.assertNotIn('open ' + str(missing_device), output,
                                      'Invalid model was accepted and reached the UART constructor')
 
             # A selected table in shadow may be absent; unselected estimates must not be parsed.
             document['flight'].update(thrust_model='table', thrust_table='', shadow_only=True,
-                                      thrust_quadratic={'thrust_factor': '.4junk', 'max_total_thrust_n': True})
+                                      thrust_quadratic={'a1_n': '.4junk', 'reference_voltage_v': True})
             profile.write_text(dump_profile(document))
             result = subprocess.run([
                 str(BIN / 'command_output_node'), '--ros-args', '-p', 'mode:=hardware',

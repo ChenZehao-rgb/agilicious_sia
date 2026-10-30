@@ -293,8 +293,8 @@ class RuntimeProfiles(unittest.TestCase):
                     output = nodes['command_output_node']
                     self.assertEqual(output['thrust_model'], 'quadratic')
                     self.assertEqual(output['thrust_table'], '')
-                    self.assertEqual(output['thrust_quadratic.thrust_factor'], 898 / 2231)
-                    self.assertEqual(output['thrust_quadratic.max_total_thrust_n'], 87.5145446)
+                    for key, value in profile['flight']['thrust_quadratic'].items():
+                        self.assertEqual(output['thrust_quadratic.' + key], value)
 
     def test_thrust_model_launch_override_selects_only_requested_model(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -310,13 +310,13 @@ class RuntimeProfiles(unittest.TestCase):
             output = nodes['command_output_node']
             self.assertEqual(output['thrust_model'], 'table')
             self.assertEqual(output['thrust_table'], str(Path(directory) / 'measured.csv'))
-            self.assertNotIn('thrust_quadratic.thrust_factor', output)
+            self.assertNotIn('thrust_quadratic.a1_n', output)
 
     def test_quadratic_parameters_are_required_and_validated_without_fallback(self):
         path, profile = runtime.load_profile('hardware')
         flight = profile['flight']
         flight['thrust_table'] = 'measured.csv'
-        for key in ('thrust_factor', 'max_total_thrust_n'):
+        for key in ('a1_n', 'a2_n', 'a3_n', 'reference_voltage_v', 'voltage_exponent_p'):
             valid = flight['thrust_quadratic'][key]
             for invalid in (None, True, '0.5', float('nan'), float('inf'), float('-inf')):
                 with self.subTest(key=key, value=invalid):
@@ -327,8 +327,7 @@ class RuntimeProfiles(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, key):
                 runtime.checked_thrust_mapping(flight, 'hardware', path, True)
             flight['thrust_quadratic'][key] = valid
-        for key, invalid in (('thrust_factor', -0.01), ('thrust_factor', 1.01),
-                             ('max_total_thrust_n', 0), ('max_total_thrust_n', -1)):
+        for key, invalid in (('reference_voltage_v', 0), ('reference_voltage_v', -1)):
             valid = flight['thrust_quadratic'][key]
             flight['thrust_quadratic'][key] = invalid
             with self.subTest(key=key, value=invalid), self.assertRaisesRegex(ValueError, key):
@@ -342,14 +341,14 @@ class RuntimeProfiles(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'flight.thrust_quadratic'):
             runtime.checked_thrust_mapping(flight, 'hardware', path, True)
 
-    def test_thrust_model_selection_and_quadratic_coefficient_endpoints(self):
+    def test_thrust_model_selection_and_finite_cubic_coefficients(self):
         path, profile = runtime.load_profile('hardware')
         flight = profile['flight']
-        for coefficient in (0, 1):
-            flight['thrust_quadratic']['thrust_factor'] = coefficient
+        for coefficient in (-1, 0, 1):
+            flight['thrust_quadratic']['a1_n'] = coefficient
             parameters = runtime.checked_thrust_mapping(flight, 'hardware', path, True)
-            self.assertEqual(parameters['thrust_quadratic.thrust_factor'], coefficient)
-            self.assertIsInstance(parameters['thrust_quadratic.thrust_factor'], float)
+            self.assertEqual(parameters['thrust_quadratic.a1_n'], coefficient)
+            self.assertIsInstance(parameters['thrust_quadratic.a1_n'], float)
         with self.assertRaisesRegex(ValueError, 'requires mode=hardware'):
             runtime.checked_thrust_mapping(flight, 'sitl', path, False)
         for invalid in ('', 'unknown', None):

@@ -149,17 +149,15 @@ def checked_thrust_mapping(flight, mode, path, shadow):
         raise ValueError('flight.thrust_model=quadratic requires mode=hardware')
     quadratic = flight.get('thrust_quadratic')
     if not isinstance(quadratic, dict):
-        raise ValueError('flight.thrust_quadratic must contain thrust_factor and max_total_thrust_n')
+        raise ValueError('flight.thrust_quadratic must contain a1_n, a2_n, a3_n, reference_voltage_v and voltage_exponent_p')
     values = {}
-    for key in ('thrust_factor', 'max_total_thrust_n'):
+    for key in ('a1_n', 'a2_n', 'a3_n', 'reference_voltage_v', 'voltage_exponent_p'):
         value = quadratic.get(key)
         if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value):
             raise ValueError('flight.thrust_quadratic.' + key + ' must be finite')
         values[key] = float(value)
-    if not 0 <= values['thrust_factor'] <= 1:
-        raise ValueError('flight.thrust_quadratic.thrust_factor must be in [0, 1]')
-    if values['max_total_thrust_n'] <= 0:
-        raise ValueError('flight.thrust_quadratic.max_total_thrust_n must be positive')
+    if values['reference_voltage_v'] <= 0:
+        raise ValueError('flight.thrust_quadratic.reference_voltage_v must be positive')
     return {'thrust_model': model, 'thrust_table': '',
             **{'thrust_quadratic.' + key: value for key, value in values.items()}}
 

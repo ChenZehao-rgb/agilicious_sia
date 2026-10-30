@@ -321,18 +321,20 @@ class NodePipelineTest(unittest.TestCase):
     def start_quadratic_output(self, shadow=False):
         h = self.h
         h.thrust_calibrated = False
-        h.total_thrust = .734 * 9.80665
+        h.total_thrust = 7.7472535
+        h.battery_voltage = 24.0
         h.subscribe('output_status', OutputStatus)
         h.start('command_output_node', hardware=True, parameters={
-            'thrust_model': 'quadratic', 'thrust_quadratic.thrust_factor': 898. / 2231.,
-            'thrust_quadratic.max_total_thrust_n': 87.5145446,
+            'thrust_model': 'quadratic', 'thrust_quadratic.a1_n': 3.0411331993565565,
+            'thrust_quadratic.a2_n': 138.51944503645788, 'thrust_quadratic.a3_n': -65.93137222790723,
+            'thrust_quadratic.reference_voltage_v': 24.0, 'thrust_quadratic.voltage_exponent_p': 1.253471255346232,
             'thrust_table': '/unused/nonexistent.csv', 'shadow_only': shadow})
         h.run(.8, commands=True)
         status = h.received['output_status'][-1]
         self.assertTrue(status.thrust_mapping_ready)
         self.assertFalse(status.thrust_calibrated)
         self.assertEqual(status.thrust_model, 'quadratic')
-        self.assertEqual(status.thrust_model_source, 'manufacturer_estimate')
+        self.assertEqual(status.thrust_model_source, 'measured_cubic')
         return h
 
     def rc_frames(self):
@@ -391,19 +393,21 @@ class NodePipelineTest(unittest.TestCase):
                 h.run(.1, commands=True)
                 self.assertTrue(h.received['output_status'][-1].override_active)
 
-    def test_quadratic_mapping_voltage_independence_and_battery_interlock(self):
+    def test_quadratic_mapping_voltage_compensation_and_battery_interlock(self):
         h = self.start_quadratic_output()
         h.auto = True
         h.run(.15, commands=True)
         self.assertTrue(h.received['output_status'][-1].override_active)
-        for voltage in (12., 16., 24.):
+        for voltage, expected_rc in ((24., 1277), (20., 1308), (25.2, 1270)):
             with self.subTest(voltage=voltage):
                 h.battery_voltage = voltage
+                # Deliver the new Health sample before checking steady-voltage output frames.
+                h.run(.1, commands=True)
                 h.clear()
                 h.run(.1, commands=True)
                 frames = self.rc_frames()
                 self.assertTrue(frames)
-                self.assertTrue(all(frame[2] == 1170 for frame in frames), frames)
+                self.assertTrue(all(frame[2] == expected_rc for frame in frames), frames)
         for invalid in (float('nan'), float('inf'), 0., -1.):
             with self.subTest(invalid_voltage=invalid):
                 h.battery_voltage = invalid
@@ -424,7 +428,7 @@ class NodePipelineTest(unittest.TestCase):
         h.run(.25, commands=True)
         self.assertFalse(h.received['output_status'][-1].override_active)
 
-    def test_quadratic_requires_mapping_evidence_and_rejects_out_of_range(self):
+    def test_quadratic_requires_mapping_evidence_and_saturates(self):
         h = self.start_quadratic_output()
         h.thrust_calibrated = True
         h.thrust_mapping_ready = False
@@ -441,11 +445,13 @@ class NodePipelineTest(unittest.TestCase):
         self.assertTrue(h.received['output_status'][-1].override_active)
         h.total_thrust = 88.
         h.run(.08, commands=True)
-        self.assertFalse(h.received['output_status'][-1].override_active)
-        self.assertGreater(h.received['output_status'][-1].fault_count, 0)
+        self.assertTrue(h.received['output_status'][-1].override_active)
+        self.assertEqual(h.received['output_status'][-1].fault_count, 0)
         h.clear()
         h.run(.05, commands=True)
-        self.assertFalse(self.rc_frames())
+        frames = self.rc_frames()
+        self.assertTrue(frames)
+        self.assertTrue(all(frame[2] == 2000 for frame in frames), frames)
 
     def test_quadratic_shadow_never_sends_override(self):
         h = self.start_quadratic_output(shadow=True)
@@ -461,7 +467,8 @@ class NodePipelineTest(unittest.TestCase):
         self.assertTrue(client.wait_for_service(timeout_sec=2.))
         parameters = [Parameter(name='thrust_model', value=ParameterValue(
             type=ParameterType.PARAMETER_STRING, string_value='table'))]
-        for name, value in (('thrust_factor', .8), ('max_total_thrust_n', 100.)):
+        for name, value in (('a1_n', 4.), ('a2_n', 140.), ('a3_n', -60.),
+                            ('reference_voltage_v', 23.), ('voltage_exponent_p', 1.)):
             parameters.append(Parameter(name='thrust_quadratic.' + name, value=ParameterValue(
                 type=ParameterType.PARAMETER_DOUBLE, double_value=value)))
         future = client.call_async(SetParameters.Request(parameters=parameters))
@@ -470,18 +477,18 @@ class NodePipelineTest(unittest.TestCase):
         self.assertTrue(all(not result.successful for result in future.result().results))
         h.auto = True
         h.run(.1, commands=True)
-        self.assertEqual(self.rc_frames()[-1][2], 1170)
+        self.assertEqual(self.rc_frames()[-1][2], 1277)
 
     def test_direct_output_rejects_invalid_thrust_model(self):
         base = [str(BIN / 'command_output_node'), '--ros-args', '-p', 'params_dir:=' + str(PARAMS),
                 '-p', 'mode:=hardware', '-p', 'bridge_config:=' + str(self.h.bridge),
                 '-p', 'device:=' + str(self.h.path / 'no-physical-device')]
         cases = [({'thrust_model': 'unknown'}, 'thrust_model must'),
-                 ({'thrust_model': 'quadratic'}, 'quadratic'),
-                 ({'thrust_model': 'quadratic', 'thrust_quadratic.thrust_factor': 1.1,
-                   'thrust_quadratic.max_total_thrust_n': 87.5145446}, 'quadratic'),
-                 ({'thrust_model': 'quadratic', 'thrust_quadratic.thrust_factor': .4,
-                   'thrust_quadratic.max_total_thrust_n': 0.}, 'quadratic'),
+                 ({'thrust_model': 'quadratic'}, 'measured cubic'),
+                 ({'thrust_model': 'quadratic', 'thrust_quadratic.a1_n': 3.0411331993565565,
+                   'thrust_quadratic.a2_n': 138.51944503645788, 'thrust_quadratic.a3_n': -65.93137222790723,
+                   'thrust_quadratic.reference_voltage_v': 0.,
+                   'thrust_quadratic.voltage_exponent_p': 1.253471255346232}, 'measured cubic'),
                  ({'thrust_model': 'quadratic', 'mode': 'sitl'}, 'requires hardware')]
         for params, reason in cases:
             with self.subTest(params=params):

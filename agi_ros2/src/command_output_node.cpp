@@ -128,13 +128,17 @@ CommandOutputNode::CommandOutputNode()
 			}
 			return declare_parameter<double>("thrust_quadratic." + name, value, shadow_descriptor);
 		};
-		const double factor = model_parameter("thrust_factor");
-		const double maximum = model_parameter("max_total_thrust_n");
-		_quadratic_thrust = std::make_unique<agi::hardware::QuadraticThrustModel>(factor, maximum, _bridge_params.min_check);
+		const double a1_n = model_parameter("a1_n");
+		const double a2_n = model_parameter("a2_n");
+		const double a3_n = model_parameter("a3_n");
+		const double reference_voltage_v = model_parameter("reference_voltage_v");
+		const double voltage_exponent_p = model_parameter("voltage_exponent_p");
+		_quadratic_thrust = std::make_unique<agi::hardware::QuadraticThrustModel>(a1_n, a2_n, a3_n, reference_voltage_v,
+		                                                                          voltage_exponent_p, _bridge_params.min_check);
 		RCLCPP_WARN(get_logger(),
-		            "Thrust model: quadratic (manufacturer_estimate), factor=%.12g, max_total_thrust_n=%.12g; "
-		            "linear RC approximation, no voltage compensation, not measured calibration",
-		            factor, maximum);
+		            "Thrust model: quadratic (measured_cubic), a1_n=%.12g, a2_n=%.12g, a3_n=%.12g, "
+		            "reference_voltage_v=%.12g, voltage_exponent_p=%.12g; full-range cubic with voltage compensation",
+		            a1_n, a2_n, a3_n, reference_voltage_v, voltage_exponent_p);
 	} else if (!thrust_file.empty()) {
 		loadThrustTable(thrust_file);
 	}
@@ -299,7 +303,7 @@ std::array<uint16_t, 4> CommandOutputNode::mapCommand() const {
 		if (!std::isfinite(_health.battery_voltage) || _health.battery_voltage <= 0) {
 			throw std::out_of_range("Battery voltage unavailable/stale/nonpositive");
 		}
-		channels[2] = _quadratic_thrust ? _quadratic_thrust->totalThrustToRc(_command.total_thrust)
+		channels[2] = _quadratic_thrust ? _quadratic_thrust->totalThrustToRc(_command.total_thrust, _health.battery_voltage)
 		                                : _thrust->collectiveThrustToRc(acceleration, _mass, _health.battery_voltage);
 	} else {
 		const double motor = (_bridge_params.motor_idle + (1 - _bridge_params.motor_idle) * _bridge_params.hover_throttle) *
@@ -368,8 +372,7 @@ void CommandOutputNode::processOutput(bool new_command) {
 	evidence.kill = evidence.kill || _authority.kill;
 	evidence.armed = evidence.armed && _authority.armed;
 	evidence.auto_switch = _authority.auto_switch;
-	// Battery freshness is encoded as NaN by the MSP evidence producer. The
-	// quadratic model ignores voltage for mapping, but retains this interlock.
+	// Battery freshness is encoded as NaN by the MSP evidence producer.
 	const bool battery_valid = _mode != "hardware" || (std::isfinite(_health.battery_voltage) && _health.battery_voltage > 0);
 	evidence.command_valid = evidence.command_valid && command_fresh && authority_matches && battery_valid &&
 	                         (!_authority.auto_switch || _command.permit_override);
@@ -523,7 +526,7 @@ void CommandOutputNode::publishStatus() {
 	status.thrust_mapping_ready = _mode == "sitl" || _thrust || _quadratic_thrust;
 	status.thrust_model = _mode == "sitl" ? "sitl" : _thrust_model;
 	status.thrust_model_source = _mode == "sitl"     ? "simulation"
-	                             : _quadratic_thrust ? "manufacturer_estimate"
+	                             : _quadratic_thrust ? "measured_cubic"
 	                             : _thrust           ? "measured_table"
 	                                                 : "unavailable";
 	status.fault_count = _fault_count;

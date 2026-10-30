@@ -12,11 +12,15 @@ flight:
   thrust_model: quadratic
   thrust_table: ''
   thrust_quadratic:
-    # Manufacturer points reported by the operator: single motor 50% = 891 gf, 100% = 2231 gf.
-    # Assumes four identical motors, zero thrust at zero input, and ESC input ~= normalized RC throttle.
-    # No voltage compensation; these estimates are not measured calibration or controller thrust limits.
-    thrust_factor: 0.40251008516360376
-    max_total_thrust_n: 87.5145446
+    # 这条三次曲线来自已有实测参考点；完整油门范围统一采用该模型，超出原实测支持区间的部分属于模型外推。
+    a1_n: 3.0411331993565565
+    a2_n: 138.51944503645788
+    a3_n: -65.93137222790723
+    reference_voltage_v: 24.0
+    # 关闭电压补偿
+    # voltage_exponent_p: 0.0
+    # 开启电压补偿：改回以下值
+    voltage_exponent_p: 1.253471255346232
   sitl_delay_test: false
   shadow_only: true
   diagnostic_only: false

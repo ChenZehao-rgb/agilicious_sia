@@ -284,7 +284,7 @@ class HardwarePipelineTests(unittest.TestCase):
     def test_geo_gnss_hover_authorization_and_recovery(self):
         self.check_real_gnss_hover('GEO')
 
-    def test_quadratic_estimate_propagates_readiness_and_allows_override(self):
+    def test_quadratic_cubic_propagates_readiness_and_allows_override(self):
         h = self.harness(controller='GEO', thrust_model='quadratic')
         h.wait_ready()
         health = h.received['health'][-1]
@@ -293,7 +293,7 @@ class HardwarePipelineTests(unittest.TestCase):
         self.assertTrue(output.thrust_mapping_ready)
         self.assertFalse(health.thrust_calibrated)
         self.assertFalse(output.thrust_calibrated)
-        self.assertEqual(output.thrust_model_source, 'manufacturer_estimate')
+        self.assertEqual(output.thrust_model_source, 'measured_cubic')
         h.response_armed = True
         h.run(.8)
         h.response_auto = True
