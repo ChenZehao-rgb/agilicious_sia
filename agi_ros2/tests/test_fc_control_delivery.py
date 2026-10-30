@@ -9,6 +9,7 @@ import json
 import math
 import os
 from pathlib import Path
+import signal
 import sys
 import time
 import unittest
@@ -18,6 +19,8 @@ import rclpy
 from agi_ros2.msg import ComputationStatus, ControlCommand, FusedState, Health, OutputStatus, OutputTiming
 from test_node_pipeline import CLOCK_ID, Harness
 from test_shadow_pipeline import ShadowHarness
+from geometry_msgs.msg import PointStamped
+from nav_msgs.msg import Odometry
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -32,7 +35,7 @@ def distribution(values):
 
 
 class DeliveryHarness(ShadowHarness):
-    def __init__(self, output=False):
+    def __init__(self, output=False, shadow=False):
         super().__init__()
         self.output = output
         self.age = .00374
@@ -44,10 +47,12 @@ class DeliveryHarness(ShadowHarness):
         self.next_state = 0.
         self.last_state = None
         self.input_states = []
+        self.position = (0., 0., 1.)
+        self.velocity = (0., 0., 0.)
         for topic, cls in [('control_command', ControlCommand), ('computation_status', ComputationStatus),
                            ('output_status', OutputStatus), ('output_timing', OutputTiming)]:
             self.subscribe(topic, cls)
-        common = dict(runtime_config=str(ROOT/'agi_ros2/config/hardware.yaml'), shadow_only=False)
+        common = dict(runtime_config=str(ROOT/'agi_ros2/config/hardware.yaml'), shadow_only=shadow)
         if output:
             self.start_node('command_output_node', device=os.ttyname(self.slave), **common,
                             **{f'msp.{name}.enabled':False for name in ('attitude','rc','status','analog','battery','gps')})
@@ -83,7 +88,8 @@ class DeliveryHarness(ShadowHarness):
             state.navigation_session = self.fc_session
             state.fc_time_usec = int((now-self.age)*1e6)
             state.reset_counter = self.generation
-            state.position.z = 1.
+            state.position.x, state.position.y, state.position.z = self.position
+            state.velocity.x, state.velocity.y, state.velocity.z = self.velocity
             state.orientation.w = 1.
             state.fc_state_valid = not self.invalid
             state.clock_aligned = state.heading_valid = True
@@ -143,6 +149,108 @@ class DeliveryTests(unittest.TestCase):
     def setUpClass(cls): rclpy.init()
     @classmethod
     def tearDownClass(cls): rclpy.shutdown()
+
+    def online_goal_scenario(self, shadow):
+        h = DeliveryHarness(shadow=shadow)
+        self.addCleanup(h.close)
+        h.subscribe('reference', Odometry)
+        publisher = h.publisher('go_to_position', PointStamped)
+
+        def send(position, frame='odom'):
+            goal = PointStamped()  # Zero stamp is intentionally valid.
+            goal.header.frame_id = frame
+            goal.point.x, goal.point.y, goal.point.z = position
+            publisher.publish(goal)
+            h.run(.08)
+
+        def log_text():
+            for stream in h.logs:
+                stream.flush()
+            return '\n'.join(path.read_text() for path in h.path.glob('control_node*.log'))
+
+        def reference():
+            p = h.received['reference'][-1].pose.pose.position
+            return (p.x, p.y, p.z)
+
+        h.run(1.5)
+        send((.5, 0., 1.))
+        self.assertIn('go_to_position rejected: AUTO', log_text())
+        h.auto = True
+        h.run(.12)
+        self.assertTrue(h.received['computation_status'][-1].trajectory_active)
+        start = reference()
+        for point, frame, reason in [((.5, 0., 1.), 'map', 'frame_id must be odom'),
+                                      ((math.nan, 0., 1.), 'odom', 'nonfinite position'),
+                                      ((51., 0., 1.), 'odom', 'outside configured geofence')]:
+            send(point, frame)
+            self.assertIn(reason, log_text())
+            self.assertEqual(reference(), start)
+        h.velocity = (.3, 0., 0.)
+        h.run(.05)
+        send((.5, 0., 1.))
+        self.assertIn('not stable: speed', log_text())
+        h.velocity = (0., 0., 0.)
+        h.run(.05)
+        send((.5, 0., 1.))
+        self.assertEqual(log_text().count('go_to_position accepted:'), 1)
+        h.run(.65)
+        send((0., .5, 1.))
+        self.assertIn('rejected: trajectory moving', log_text())
+        h.run(.9)
+        self.assertEqual(reference(), (.5, 0., 1.))
+        self.assertIn('segment ended; holding target', log_text())
+        send((0., .5, 1.))
+        self.assertIn('not stable: position error', log_text())
+        self.assertEqual(log_text().count('go_to_position accepted:'), 1)
+        h.position = (.5, 0., 1.)
+        h.run(.05)
+        self.assertIn('stable hover', h.received['computation_status'][-1].reason)
+        send((.5, .5, 1.))
+        self.assertEqual(log_text().count('go_to_position accepted:'), 2)
+        h.run(1.6)
+        self.assertEqual(reference(), (.5, .5, 1.))
+        self.assertEqual(h.received['computation_status'][-1].warm_cycles, 50)
+        self.assertTrue(h.received['computation_status'][-1].trajectory_active)
+        # Deliver a queued goal alongside a new coordinate generation. Callback order
+        # must not let it survive the reset and replay on the next AUTO edge.
+        h.position = (.5, .5, 1.)
+        h.run(.05)
+        h.processes[0].send_signal(signal.SIGSTOP)
+        try:
+            goal = PointStamped()
+            goal.header.frame_id = 'odom'
+            goal.point.x, goal.point.y, goal.point.z = (.5, 1., 1.)
+            publisher.publish(goal)
+            h.generation += 1
+            h.run(.04)
+        finally:
+            h.processes[0].send_signal(signal.SIGCONT)
+        h.run(.1)
+        self.assertFalse(h.received['computation_status'][-1].trajectory_active)
+        send((10., 0., 1.))
+        h.run(.7)
+        self.assertFalse(h.received['computation_status'][-1].trajectory_active)
+        h.auto = False
+        h.run(.1)
+        h.auto = True
+        h.run(.1)
+        self.assertTrue(h.received['computation_status'][-1].trajectory_active)
+        self.assertEqual(reference(), h.position)
+        self.assertEqual(log_text().count('go_to_position accepted:'), 2)
+        if shadow:
+            self.assertFalse(any(c.permit_override for c in h.received['control_command']))
+        else:
+            self.assertTrue(h.received['control_command'][-1].permit_override)
+        accepted = [c for c in h.computations() if 'go_to_position accepted:' in c.reason]
+        self.assertEqual(len(accepted), 2)
+        print('online goal planning+MPC timing:', [c.solve_seconds for c in accepted], flush=True)
+        self.assertFalse(any(code == 200 for _, code, _ in h.codes))
+
+    def test_online_goals_on_fc_control_thread(self):
+        self.online_goal_scenario(False)
+
+    def test_online_goals_in_shadow(self):
+        self.online_goal_scenario(True)
 
     def test_new_sample_delivery_and_faults(self):
         h = DeliveryHarness()

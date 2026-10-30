@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -15,6 +16,7 @@
 #include "agi_ros2/msg/health.hpp"
 #include "agi_ros2/msg/output_status.hpp"
 #include "agilib/pilot/hardware_pilot.hpp"
+#include "geometry_msgs/msg/point_stamped.hpp"
 #include "nav_msgs/msg/odometry.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/float64_multi_array.hpp"
@@ -30,6 +32,8 @@ public:
 private:
 	void onState(msg::FusedState::ConstSharedPtr message);
 	void onOutputStatus(msg::OutputStatus::ConstSharedPtr message);
+	void onGoToPosition(geometry_msgs::msg::PointStamped::ConstSharedPtr message);
+	void clearPendingGoal(const char* reason);
 	void tick();
 	void dispatchFcState();
 	void runCycle(bool computation_requested);
@@ -69,6 +73,9 @@ private:
 	msg::Authority _authority;
 	msg::Health _health;
 	msg::OutputStatus _output;
+	std::optional<agi::Vector<3>> _pending_goal;
+	std::string _goal_rejection{"AUTO reference inactive"};
+	rclcpp::Subscription<geometry_msgs::msg::PointStamped>::SharedPtr _goal_sub;
 	rclcpp::Subscription<msg::FusedState>::SharedPtr _state_sub;
 	rclcpp::Subscription<msg::Authority>::SharedPtr _authority_sub;
 	rclcpp::Subscription<msg::Health>::SharedPtr _health_sub;

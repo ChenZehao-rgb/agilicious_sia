@@ -51,6 +51,7 @@ foreach(target state_fusion_node fc_state_adapter_node control_node command_outp
   install(TARGETS ${target} DESTINATION lib/${PROJECT_NAME})
 endforeach()
 ament_target_dependencies(state_fusion_node diagnostic_msgs)
+ament_target_dependencies(control_node geometry_msgs)
 set_target_properties(agilib acados_mpc PROPERTIES INSTALL_RPATH "$ORIGIN;${ACADOS_ROOT}/lib" LINK_FLAGS "-Wl,--disable-new-dtags")
 install(TARGETS agilib acados_mpc LIBRARY DESTINATION lib ARCHIVE DESTINATION lib)
 add_executable(betaflight_msp_node src/msp_node.cpp src/msp_telemetry.cpp

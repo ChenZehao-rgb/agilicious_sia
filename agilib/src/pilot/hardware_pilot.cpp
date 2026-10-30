@@ -24,10 +24,13 @@ HardwarePilot::HardwarePilot(const PilotParams& params, TimeFunction clock, Time
           _navigation_policy(policy),
           _observation_delay(observation_delay),
           _receiver_policy(receiver_policy),
+          _go_to_pose_mean_vel(params.go_to_pose_mean_vel_),
           _owner(std::this_thread::get_id()),
           _reference(std::make_shared<CapturedReference>()),
           _gate(policy, observation_delay, receiver_policy) {
 	const auto& cfg = params.pipeline_cfg_;
+	if (!std::isfinite(_go_to_pose_mean_vel) || _go_to_pose_mean_vel <= 0)
+		throw ParameterException("go_to_pose_mean_vel must be finite and positive");
 	// Check before constructing Pilot, whose general-purpose constructor may open devices.
 	if (!_clock || !params.valid() || cfg.bridge_cfg.type != "External" || cfg.estimator_cfg.type != "External" ||
 	    (cfg.outer_controller_cfg.type != "MPC" && cfg.outer_controller_cfg.type != "GEO") || cfg.sampler_cfg.type != "Time" ||
@@ -65,6 +68,16 @@ void HardwarePilot::checkOwner() const {
 	if (_owner != std::this_thread::get_id()) throw std::logic_error("HardwarePilot must have one control-thread owner");
 }
 
+std::string HardwarePilot::goalRejection(const QuadState& state, double now) {
+	if (!_reference_active) return "AUTO reference inactive";
+	if (_reference->movingAt(now)) return "trajectory moving";
+	const auto hover = _reference->getSetpoint(state, now).state;
+	if (!state.valid() || !hover.valid()) return "state/reference invalid";
+	if (state.v.norm() > kHoverSpeed) return "not stable: speed > 0.2 m/s";
+	if ((state.p - hover.p).norm() > kHoverPositionError) return "not stable: position error > 0.2 m";
+	return {};
+}
+
 void HardwarePilot::reportOutputFault() {
 	checkOwner();
 	Evidence failed;
@@ -73,12 +86,14 @@ void HardwarePilot::reportOutputFault() {
 	_previous_auto = true;
 	_warm_cycles = 0;
 	_reference_active = false;
+	_reference->clearOnlineTarget();
+	_online_moving = false;
 	_reference_start = NAN;
 	_shadow_low_seen = false;
 }
 
 ControlDecision HardwarePilot::tick(const QuadState& state, Evidence evidence, bool shadow_only, bool navigation_valid,
-                                    bool computation_requested) {
+                                    bool computation_requested, const Vector<3>* go_to_position) {
 	checkOwner();
 	if (_navigation_policy == NavigationPolicy::FcFused &&
 	    (evidence.fc_session != _fc_session || evidence.fc_generation != _fc_generation ||
@@ -121,6 +136,8 @@ ControlDecision HardwarePilot::tick(const QuadState& state, Evidence evidence, b
 	                   (_receiver_policy != ReceiverPolicy::LatchedSwitches || (receiver_ok && evidence.armed));
 	if (!ready || !receiver_ok || !evidence.armed || !evidence.auto_switch) {
 		_reference_active = false;
+		_reference->clearOnlineTarget();
+		_online_moving = false;
 		_reference_start = NAN;
 	}
 	if (!ready || !receiver_ok) _shadow_low_seen = false;
@@ -129,6 +146,9 @@ ControlDecision HardwarePilot::tick(const QuadState& state, Evidence evidence, b
 	                       (shadow_only ? (_shadow_low_seen && evidence.controller_warm) : _gate.canEnterAuto(evidence));
 	if (evidence.auto_switch) _shadow_low_seen = false;
 	std::string compute_failure;
+	bool goal_installed = false;
+	bool segment_ended = false;
+	if (go_to_position) result.goal_event = "go_to_position rejected: AUTO/state/authorization unavailable";
 	if (!ready) {
 		_warm_cycles = 0;
 	} else {
@@ -138,6 +158,24 @@ ControlDecision HardwarePilot::tick(const QuadState& state, Evidence evidence, b
 			// Manual warmup follows the vehicle. Only a candidate AUTO edge freezes
 			// position/yaw and starts relative time; no automatic takeoff API is used.
 			if (!_reference_active) _reference->capture(state, now, candidate);
+			if (_online_moving && !_reference->movingAt(now)) {
+				_online_moving = false;
+				segment_ended = true;
+				result.goal_event = "go_to_position segment ended; holding target (arrival requires stable state)";
+			}
+			if (go_to_position) {
+				const std::string rejection = goalRejection(state, now);
+				if (!go_to_position->allFinite()) {
+					result.goal_event = "go_to_position rejected: nonfinite position";
+				} else if (!rejection.empty()) {
+					result.goal_event = "go_to_position rejected: " + rejection;
+				} else if (_reference->goToPosition(*go_to_position, now, _go_to_pose_mean_vel)) {
+					goal_installed = true;
+					_online_moving = true;
+				} else {
+					result.goal_event = "go_to_position rejected: trajectory generation failed";
+				}
+			}
 			if (!_reference_registered) _reference_registered = _pilot->addReference(_reference);
 			if (_reference_registered && _pilot->runPipelineChecked(now)) {
 				const auto& references = _pilot->getReferenceSetpoints();
@@ -184,6 +222,8 @@ ControlDecision HardwarePilot::tick(const QuadState& state, Evidence evidence, b
 	}
 	if (!evidence.command_valid || !fc_fresh_after || (!shadow_only && !result.permit_override)) {
 		_reference_active = false;
+		_reference->clearOnlineTarget();
+		_online_moving = false;
 		_reference_start = NAN;
 		if (!evidence.command_valid) _shadow_low_seen = false;
 	}
@@ -194,6 +234,19 @@ ControlDecision HardwarePilot::tick(const QuadState& state, Evidence evidence, b
 	result.evidence = evidence;
 	result.mode = _gate.mode();
 	result.reason = _gate.reason();
+	result.goal_rejection = goalRejection(state, now);
+	if (segment_ended && !_reference_active && !go_to_position)
+		result.goal_event = "go_to_position cleared: control/safety check failed";
+	if (goal_installed) {
+		result.goal_event = _reference_active ? "go_to_position accepted: absolute odom target installed"
+		                                      : "go_to_position rejected: control/safety check failed after planning";
+	}
+	if (_reference->hasOnlineTarget()) {
+		result.reason += _online_moving ? "; online target moving"
+		                                : (result.goal_rejection.empty() ? "; online target stable hover"
+		                                                                 : "; online target holding; settling");
+	}
+	if (!result.goal_event.empty()) result.reason += "; " + result.goal_event;
 	if (!compute_failure.empty()) result.reason += "; " + compute_failure;
 	if (!cadence_ok) result.reason += "; cadence";
 	if (!state_ok) result.reason += "; state age/validity";

@@ -16,6 +16,9 @@ struct ControlDecision {
 	bool state_valid{false};
 	bool trajectory_active{false};
 	double reference_elapsed{0};
+	// Empty only while the current state is ready for another online target.
+	std::string goal_rejection{"AUTO reference inactive"};
+	std::string goal_event;
 };
 
 // Single-owner 100 Hz coordination, without device I/O or automatic takeoff.
@@ -26,18 +29,23 @@ public:
 	                       ReceiverPolicy receiver_policy = ReceiverPolicy::FreshSamples);
 	bool setTrajectory(const SetpointVector& relative_setpoints);
 	ControlDecision tick(const QuadState& fused_state, Evidence evidence, bool shadow_only = false, bool navigation_valid = false,
-	                     bool computation_requested = true);
+	                     bool computation_requested = true, const Vector<3>* go_to_position = nullptr);
 	void reportOutputFault();
 	Mode mode() const { return _gate.mode(); }
 	unsigned warmCycles() const { return _warm_cycles; }
 
 private:
 	void checkOwner() const;
+	std::string goalRejection(const QuadState& state, double now);
+	// Actual speed and tracking error; no dwell time or additional navigation gate.
+	static constexpr double kHoverSpeed = 0.2;          // m/s, Euclidean norm
+	static constexpr double kHoverPositionError = 0.2;  // m, Euclidean norm
 	const TimeFunction _clock;
 	const TimeFunction _steady_clock;
 	const NavigationPolicy _navigation_policy;
 	const double _observation_delay;
 	const ReceiverPolicy _receiver_policy;
+	const double _go_to_pose_mean_vel;
 	const std::thread::id _owner;
 	std::unique_ptr<Pilot> _pilot;
 	std::shared_ptr<BridgeBase> _sink;
@@ -46,6 +54,7 @@ private:
 	unsigned _warm_cycles{0};
 	bool _reference_registered{false};
 	bool _reference_active{false};
+	bool _online_moving{false};
 	bool _previous_auto{true};
 	bool _shadow_low_seen{false};
 	double _previous_tick{NAN};

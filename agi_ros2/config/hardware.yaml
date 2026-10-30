@@ -85,6 +85,7 @@ pilot:
   takeoff_threshold: 1.0
   start_land_speed: 0.5
   brake_deceleration: 3.0
+  # Online absolute ENU targets: T=max(distance/mean_vel, 1.5 s); positive m/s, not a peak-speed limit.
   go_to_pose_mean_vel: 1.0
   stop_after_feedthrough: true
   feedthrough_timeout: 0.1
