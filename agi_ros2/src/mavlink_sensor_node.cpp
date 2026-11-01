@@ -37,6 +37,7 @@
 #include "agi_ros2/msg/heading.hpp"
 #include "agi_ros2/msg/imu_timing.hpp"
 #include "agi_ros2/msg/navigation.hpp"
+#include "agi_ros2/msg/navigation_origin.hpp"
 
 namespace {
 double steady() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
@@ -133,6 +134,9 @@ public:
 				throw std::invalid_argument("Variance must have three finite nonnegative entries (all zero means unknown)");
 		}
 		_fc_state_pub = create_publisher<agi_ros2::msg::FcEstimatedState>("sensors/fc/estimated_state", 1);
+		if (_fc_fused)
+			_origin_pub =
+			        create_publisher<agi_ros2::msg::NavigationOrigin>("navigation/origin", rclcpp::QoS(1).transient_local());
 		_fc_status_pub = create_publisher<agi_ros2::msg::FcEstimatorStatus>("sensors/fc/estimator_status", 1);
 		auto qos = rclcpp::SensorDataQoS();
 		_imu_pub = create_publisher<sensor_msgs::msg::Imu>("sensors/imu", qos);
@@ -211,9 +215,18 @@ private:
 		out.published_steady_time = steady();
 		_fc_state_pub->publish(out);
 	}
+	void invalidateOrigin() {
+		_origin.header.frame_id = "odom";
+		_origin.altitude_reference = "msl";
+		_origin.xy_valid = _origin.z_valid = false;
+		_origin.session_id = _source_session;
+		if (_origin_pub) _origin_pub->publish(_origin);
+	}
 	void resetEpoch(const std::string& reason) {
 		_source_session = (_bench_fixed_gps ? "bench_fixed_gps:" : "") + std::to_string(steady());
 		_last_fc_time = _last_health_time = 0;
+		_origin = agi_ros2::msg::NavigationOrigin();
+		invalidateOrigin();
 		_last_health_sequence = 0;
 		invalidateFc(reason);
 		_next_bench_gps = 0;
@@ -606,6 +619,35 @@ private:
 			_fc_state_good = true;
 			++_fc_count;
 		} else if (m.msgid == MAVLINK_MSG_ID_V2_EXTENSION) {
+			const auto type = mavlink_msg_v2_extension_get_message_type(&m);
+			if (type == 0xBF02) {
+				agi_ros2::fc::Origin origin;
+				if (!agi_ros2::fc::decodeOrigin(m, origin)) {
+					invalidateOrigin();
+					RCLCPP_WARN(get_logger(), "Invalid FC geographic origin; local FC state unaffected");
+					return;
+				}
+				// Metadata never updates health, time alignment, or state leases.
+				// Ignore delayed older mappings, including after a reset reported by health.
+				if (origin.time <= _origin.fc_time_usec ||
+				    (_last_health_time && origin.time <= _last_health_time && origin.reset != _last_health_reset))
+					return;
+				_origin.header.stamp = now();  // Receipt stamp only; FC snapshot time is explicit below.
+				_origin.header.frame_id = "odom";
+				_origin.session_id = _source_session;
+				_origin.latitude = origin.latitude * 1e-7;
+				_origin.longitude = origin.longitude * 1e-7;
+				_origin.altitude = origin.altitude_offset_cm * .01;
+				_origin.altitude_reference = "msl";
+				_origin.xy_valid = origin.flags & 1;
+				_origin.z_valid = origin.flags & 2;
+				_origin.longitude_scale = origin.longitude_scale;
+				_origin.fc_reset_counter = origin.reset;
+				_origin.fc_time_usec = origin.time;
+				_origin_pub->publish(_origin);
+				return;
+			}
+			if (type != 0xBF01) return;
 			agi_ros2::fc::Health h;
 			if (!agi_ros2::fc::decodeHealth(m, h)) {
 				++_fc_invalid;
@@ -619,6 +661,8 @@ private:
 				resetEpoch("FC health timestamp/sequence regressed");
 				return;
 			}
+			if (_origin.fc_time_usec && _origin.fc_reset_counter != h.reset && h.time >= _origin.fc_time_usec)
+				invalidateOrigin();
 			_last_health_time = h.time;
 			_last_health_sequence = h.sequence;
 			_last_health_reset = h.reset;
@@ -1034,6 +1078,8 @@ private:
 		out.status.push_back(s);
 		_status_pub->publish(out);
 	}
+	agi_ros2::msg::NavigationOrigin _origin;
+	rclcpp::Publisher<agi_ros2::msg::NavigationOrigin>::SharedPtr _origin_pub;
 	uint64_t _fc_validity_epoch{0}, _fc_future{0}, _fc_expired{0};
 	std::string _fc_stamp_reason;
 	bool _fc_fused{false}, _fc_state_good{false};

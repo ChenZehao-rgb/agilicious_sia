@@ -15,14 +15,16 @@ import os
 from pathlib import Path
 import re
 import signal
+import shlex
 import subprocess
 import time
 
 import rclpy
 from rclpy.parameter import Parameter
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import qos_profile_sensor_data, QoSProfile, DurabilityPolicy
 from rcl_interfaces.srv import SetParameters
-from agi_ros2.msg import Authority, ComputationStatus, ControlCommand, FusedState, OutputStatus
+from agi_ros2.msg import (NavigationOrigin, FcEstimatedState, FcEstimatorStatus, Authority,
+                          ComputationStatus, ControlCommand, FusedState, OutputStatus)
 from nav_msgs.msg import Odometry
 
 
@@ -51,8 +53,11 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--state-source', choices=['ros_ekf', 'fc_fused'], default='ros_ekf')
     parser.add_argument('--yaw-chain', action='store_true')
+    parser.add_argument('--geographic', action='store_true', help='Two WGS84/MSL goals from the actual FC origin')
     args = parser.parse_args()
     fc_state = args.state_source == 'fc_fused'
+    if args.geographic and not fc_state:
+        parser.error('--geographic requires --state-source fc_fused')
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
     config = (ROOT / 'agi_ros2/config/simulation.yaml').read_text()
@@ -66,7 +71,7 @@ def main():
     node = rclpy.create_node('online_goal_validation', parameter_overrides=[Parameter('use_sim_time', value=not fc_state)])
     latest, rows, events, processes, streams, subscriptions = {}, {}, [], [], [], []
     result = {'passed': False, 'state_source': args.state_source, 'yaw_chain': args.yaw_chain,
-              'runtime_config': str(runtime), 'goals': [], 'yaw_pulses': []}
+              'geographic': args.geographic, 'runtime_config': str(runtime), 'goals': [], 'yaw_pulses': []}
     truth_offset = [0., 0., 0.]
 
     def sim_time():
@@ -80,7 +85,13 @@ def main():
     def receive(topic, msg):
         latest[topic] = msg
         row = dict(stamp=msg.header.stamp.sec + msg.header.stamp.nanosec*1e-9, wall=time.monotonic())
-        if topic in ('reference', 'ground_truth'):
+        if topic == 'navigation/origin':
+            for key in ('session_id', 'latitude', 'longitude', 'altitude', 'altitude_reference',
+                        'xy_valid', 'z_valid', 'longitude_scale', 'fc_reset_counter', 'fc_time_usec'):
+                row[key] = getattr(msg, key)
+        elif topic.startswith('sensors/fc/'):
+            row.update(fc_time_usec=msg.fc_time_usec, valid=msg.valid)
+        elif topic in ('reference', 'ground_truth'):
             row.update(position=xyz(msg.pose.pose.position), velocity=xyz(msg.twist.twist.linear),
                        yaw=yaw(msg.pose.pose.orientation), rates=xyz(msg.twist.twist.angular))
         elif topic == 'fused_state':
@@ -108,6 +119,11 @@ def main():
                        ('output_status', OutputStatus), ('authority', Authority)]:
         rows[topic] = []
         subscriptions.append(node.create_subscription(cls, topic, lambda m, t=topic: receive(t, m), qos_profile_sensor_data))
+    for topic, cls in [('navigation/origin', NavigationOrigin), ('sensors/fc/estimated_state', FcEstimatedState),
+                       ('sensors/fc/estimator_status', FcEstimatorStatus)]:
+        rows[topic] = []
+        qos = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL) if topic == 'navigation/origin' else qos_profile_sensor_data
+        subscriptions.append(node.create_subscription(cls, topic, lambda m, t=topic: receive(t, m), qos))
 
     client = node.create_client(SetParameters, '/sim_rc/set_parameters')
 
@@ -235,6 +251,22 @@ def main():
                                               xyz(latest['fused_state'].position))]
         result['truth_odom_offset'] = truth_offset
         targets = [TARGET, (5., 5., 2.), (0., 0., 1.)] if args.yaw_chain else [TARGET]
+        geographic_goals = []
+        if args.geographic:
+            def origin_ready():
+                o, f = latest.get('navigation/origin'), latest['fused_state']
+                return o and o.xy_valid and o.z_valid and o.session_id == f.navigation_session and \
+                    o.fc_reset_counter == f.fc_reset_counter and o.fc_time_usec <= f.fc_time_usec
+            wait_for(origin_ready, 5, 'current FC geographic origin')
+            origin = latest['navigation/origin']
+            result['origin'] = rows['navigation/origin'][-1]
+            # Independent native-projection anchors (degE7 deltas), not an inverse
+            # call to the new converter and not Gazebo's world origin.
+            for lat_units, lon_units in [(100, 500), (500, -200)]:
+                geographic_goals.append(dict(latitude=origin.latitude+lat_units*1e-7,
+                    longitude=origin.longitude+lon_units*1e-7, altitude_msl=origin.altitude+2.))
+            targets = [(500*1.1131949424743652*.01*origin.longitude_scale, 100*1.1131949424743652*.01, 2.),
+                       (-200*1.1131949424743652*.01*origin.longitude_scale, 500*1.1131949424743652*.01, 2.)]
         for index, target in enumerate(targets):
             start_ref = xyz(latest['reference'].pose.pose.position)
             start_heading = yaw(latest['reference'].pose.pose.orientation)
@@ -247,7 +279,12 @@ def main():
             # Both recorder and controller must be discovered before --once.
             goal_command = ['ros2', 'topic', 'pub', '--once', '-w', '2', '/go_to_position',
                             'geometry_msgs/msg/PointStamped', goal]
-            event('goal_cli', command=goal_command)
+            if args.geographic:
+                goal = json.dumps(geographic_goals[index])
+                goal_command = ['ros2', 'topic', 'pub', '--once', '-w', '2', '/go_to_geographic_position',
+                                'agi_ros2/msg/GeographicGoal', goal]
+            event('goal_cli', command=goal_command, expected_enu=target)
+            result.setdefault('publish_commands', []).append(shlex.join(goal_command))
             cli_env = os.environ.copy()
             # Avoid NumPy worker startup disturbing FC state freshness.
             cli_env.update(OPENBLAS_NUM_THREADS='1', OMP_NUM_THREADS='1')
@@ -266,11 +303,14 @@ def main():
             wait_for(lambda: bool(accepted_rows()), 5, 'goal acceptance')
             accepted = accepted_rows()[0]
             event('goal_accepted', target=target, stamp=accepted['stamp'])
-            stable_window(target, 15 if args.yaw_chain else 3, 90, require_active=True)
+            stable_window(target, 15 if args.yaw_chain or args.geographic else 3, 90, require_active=True)
             event('target_stable', target=target, position=xyz(latest['fused_state'].position),
                   truth=xyz(latest['ground_truth'].pose.pose.position))
             end_wall = events[-1]['wall']
-            assert xyz(latest['reference'].pose.pose.position) == list(target)
+            if args.geographic:
+                assert norm(a-b for a,b in zip(xyz(latest['reference'].pose.pose.position), target)) < 1e-6
+            else:
+                assert xyz(latest['reference'].pose.pose.position) == list(target)
             goal_result = dict(target=target, accepted=accepted)
             reference_rows = [r for r in rows['reference'] if accepted['stamp']+.02 <= r['stamp']
                               and goal_start <= r['wall'] <= end_wall]
@@ -327,6 +367,13 @@ def main():
                          if auto_start+.1 <= state['wall'] <= end_wall]
                 result['fc_flags'] = sorted(set(flags))
                 assert flags and all(flag & 12 == 12 for flag in flags), 'FC magnetic heading not valid/fresh'
+        if fc_state:
+            result['fc_stream_rates_hz'] = {}
+            for topic in ('sensors/fc/estimated_state', 'sensors/fc/estimator_status'):
+                samples = [r for r in rows[topic] if auto_start+.1 <= r['wall'] <= end_wall and r['valid']]
+                assert len(samples) > 2
+                result['fc_stream_rates_hz'][topic] = (len(samples)-1)*1e6/(samples[-1]['fc_time_usec']-samples[0]['fc_time_usec'])
+            result['fc_state_age_max'] = max(x['state_age'] for x in active_rows)
         param('kill', True)
         wait_for(lambda: not latest['output_status'].override_active, 5, 'KILL output revoked')
         event('kill_verified')
@@ -353,7 +400,7 @@ def main():
             stream.close()
         for topic, data in rows.items():
             if data:
-                with (out / (topic + '.csv')).open('w') as stream:
+                with (out / (topic.replace('/', '_') + '.csv')).open('w') as stream:
                     writer = csv.DictWriter(stream, fieldnames=list(data[0]))
                     writer.writeheader()
                     writer.writerows({k: json.dumps(v) if isinstance(v, list) else v for k,v in row.items()} for row in data)

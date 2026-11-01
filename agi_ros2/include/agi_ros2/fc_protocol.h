@@ -57,6 +57,35 @@ inline bool decodeHealth(const mavlink_message_t& message, Health& h) {
 		if (std::isinf(x) || x < 0 || x > 1 || ((h.flags & 128) && !std::isfinite(x))) return false;
 	return true;
 }
+struct Origin {
+	uint16_t flags{};
+	uint32_t reset{};
+	uint64_t time{};
+	int32_t latitude{}, longitude{};
+	float longitude_scale{}, altitude_offset_cm{};
+};
+inline bool decodeOrigin(const mavlink_message_t& message, Origin& out) {
+	if (message.magic != MAVLINK_STX || message.msgid != MAVLINK_MSG_ID_V2_EXTENSION) return false;
+	mavlink_v2_extension_t v{};
+	mavlink_msg_v2_extension_decode(&message, &v);  // Restores MAVLink2 truncated tail zeros.
+	const auto* p = v.payload;
+	if (v.message_type != 0xBF02 || v.target_network || v.target_system || v.target_component || p[0] != 1 || p[1] != 32) return false;
+	out.flags = littleEndian(p + 2, 2);
+	out.reset = littleEndian(p + 4, 4);
+	out.time = littleEndian(p + 8, 8);
+	const uint32_t lat = littleEndian(p + 16, 4), lon = littleEndian(p + 20, 4);
+	std::memcpy(&out.latitude, &lat, sizeof(lat));
+	std::memcpy(&out.longitude, &lon, sizeof(lon));
+	out.longitude_scale = readFloat(p + 24);
+	out.altitude_offset_cm = readFloat(p + 28);
+	if ((out.flags & ~3u) || !out.time || !std::isfinite(out.longitude_scale) || !std::isfinite(out.altitude_offset_cm)) return false;
+	if (out.latitude < -900000000 || out.latitude > 900000000 || out.longitude < -1800000000 || out.longitude > 1800000000 ||
+	    out.longitude_scale < 0 || out.longitude_scale > 1)
+		return false;
+	for (unsigned i = 32; i < sizeof(v.payload); ++i)
+		if (p[i]) return false;
+	return true;
+}
 struct State {
 	std::array<double, 3> position{}, velocity{}, rates{};
 	std::array<double, 4> orientation{};  // w,x,y,z; FLU -> ENU

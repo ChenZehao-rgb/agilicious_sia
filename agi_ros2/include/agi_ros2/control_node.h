@@ -13,7 +13,9 @@
 #include "agi_ros2/msg/computation_status.hpp"
 #include "agi_ros2/msg/control_command.hpp"
 #include "agi_ros2/msg/fused_state.hpp"
+#include "agi_ros2/msg/geographic_goal.hpp"
 #include "agi_ros2/msg/health.hpp"
+#include "agi_ros2/msg/navigation_origin.hpp"
 #include "agi_ros2/msg/output_status.hpp"
 #include "agilib/pilot/hardware_pilot.hpp"
 #include "geometry_msgs/msg/point_stamped.hpp"
@@ -33,6 +35,9 @@ private:
 	void onState(msg::FusedState::ConstSharedPtr message);
 	void onOutputStatus(msg::OutputStatus::ConstSharedPtr message);
 	void onGoToPosition(geometry_msgs::msg::PointStamped::ConstSharedPtr message);
+	void onGeographicGoal(msg::GeographicGoal::ConstSharedPtr message);
+	void onOrigin(msg::NavigationOrigin::ConstSharedPtr message);
+	bool enqueueGoal(const agi::Vector<3>& target, const std::string& frame);
 	void clearPendingGoal(const char* reason);
 	void tick();
 	void dispatchFcState();
@@ -73,6 +78,9 @@ private:
 	msg::Authority _authority;
 	msg::Health _health;
 	msg::OutputStatus _output;
+	msg::NavigationOrigin _origin;
+	rclcpp::Subscription<msg::NavigationOrigin>::SharedPtr _origin_sub;
+	rclcpp::Subscription<msg::GeographicGoal>::SharedPtr _geographic_goal_sub;
 	std::optional<agi::Vector<3>> _pending_goal;
 	std::string _goal_rejection{"AUTO reference inactive"};
 	rclcpp::Subscription<geometry_msgs::msg::PointStamped>::SharedPtr _goal_sub;

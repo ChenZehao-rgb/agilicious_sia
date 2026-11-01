@@ -9,6 +9,7 @@
 #include <memory>
 #include <stdexcept>
 
+#include "agi_ros2/fc_geographic.h"
 #include "agi_ros2/fc_state_evidence.h"
 #include "agi_ros2/node_common.h"
 #include "agi_ros2/runtime_config.h"
@@ -98,6 +99,10 @@ ControlNode::ControlNode()
 	_state_sub = create_subscription<msg::FusedState>("fused_state", 1, std::bind(&ControlNode::onState, this, std::placeholders::_1));
 	_goal_sub = create_subscription<geometry_msgs::msg::PointStamped>(
 	        "go_to_position", 1, std::bind(&ControlNode::onGoToPosition, this, std::placeholders::_1));
+	_origin_sub = create_subscription<msg::NavigationOrigin>("navigation/origin", rclcpp::QoS(1).transient_local(),
+	                                                         std::bind(&ControlNode::onOrigin, this, std::placeholders::_1));
+	_geographic_goal_sub = create_subscription<msg::GeographicGoal>(
+	        "go_to_geographic_position", 1, std::bind(&ControlNode::onGeographicGoal, this, std::placeholders::_1));
 	_authority_sub = create_subscription<msg::Authority>("authority", 1, [this](msg::Authority::ConstSharedPtr message) {
 		if ((_mode == "hardware" || _fc_event_control) && _authority.session_id != message->session_id) _output_fault = true;
 		if (_output_fault || !message->auto_switch || !message->armed || message->kill || !message->rc_link)
@@ -134,6 +139,7 @@ void ControlNode::onState(msg::FusedState::ConstSharedPtr message) {
 		if (_fc_event_control) {
 			_output_fault = true;
 			_state.fc_state_valid = false;
+			_origin = msg::NavigationOrigin();
 			runCycle(false);
 		}
 		return;
@@ -148,14 +154,18 @@ void ControlNode::onState(msg::FusedState::ConstSharedPtr message) {
 	if ((!_state.clock_id.empty() && message->reset_counter != _state.reset_counter) ||
 	    (!_state.navigation_session.empty() && message->navigation_session != _state.navigation_session) ||
 	    (_navigation_policy == agi::hardware::NavigationPolicy::FcFused &&
-	     (message->navigation_session != _state.navigation_session || !message->fc_state_valid))) {
+	     (message->navigation_session != _state.navigation_session || message->fc_reset_counter != _state.fc_reset_counter ||
+	      !message->fc_state_valid))) {
 		_output_fault = true;
+		clearPendingGoal("FC state/session/reset changed");
+		_origin = msg::NavigationOrigin();
 	}
 	_state = *message;
 	_state_receive_time = received;
 	if (_fc_event_control) {
 		if (update == FcControlSchedule::Update::Fault) {
 			_state.fc_state_valid = false;
+			_origin = msg::NavigationOrigin();
 			_output_fault = true;
 			runCycle(false);
 		} else {
@@ -182,9 +192,43 @@ void ControlNode::clearPendingGoal(const char* reason) {
 }
 
 void ControlNode::onGoToPosition(geometry_msgs::msg::PointStamped::ConstSharedPtr message) {
-	const agi::Vector<3> target(message->point.x, message->point.y, message->point.z);
+	enqueueGoal(agi::Vector<3>(message->point.x, message->point.y, message->point.z), message->header.frame_id);
+}
+
+void ControlNode::onOrigin(msg::NavigationOrigin::ConstSharedPtr message) {
+	// A retained or delayed previous-session sample must not replace this mapping.
+	if (!_state.navigation_session.empty() && message->session_id != _state.navigation_session) return;
+	if (!_state.navigation_session.empty() && message->fc_reset_counter != _state.fc_reset_counter) return;
+	if (message->session_id == _origin.session_id && message->fc_time_usec < _origin.fc_time_usec) return;
+	// Equal-time invalidation is allowed; equal-time replay cannot restore validity.
+	if (message->session_id == _origin.session_id && message->fc_time_usec == _origin.fc_time_usec && message->xy_valid &&
+	    message->z_valid)
+		return;
+	_origin = *message;
+}
+
+void ControlNode::onGeographicGoal(msg::GeographicGoal::ConstSharedPtr message) {
+	std::array<double, 3> target;
+	const char* reason = fc::geographicTarget(_origin, _state, *message, target);
+	RCLCPP_INFO(get_logger(),
+	            "geographic input: lat=%.10f lon=%.10f MSL=%.4f; origin=(%.10f,%.10f,%.4f) scale=%.9g "
+	            "session=%s reset=%u fc_us=%llu",
+	            message->latitude, message->longitude, message->altitude_msl, _origin.latitude, _origin.longitude, _origin.altitude,
+	            _origin.longitude_scale, _origin.session_id.c_str(), _origin.fc_reset_counter,
+	            static_cast<unsigned long long>(_origin.fc_time_usec));
+	if (reason) {
+		RCLCPP_WARN(get_logger(), "go_to_geographic_position rejected: %s", reason);
+		return;
+	}
+	// Conversion and admission share this node's single executor and pending slot.
+	const bool pending = enqueueGoal(agi::Vector<3>(target[0], target[1], target[2]), "odom");
+	RCLCPP_INFO(get_logger(), "geographic converted ENU=(%.6f,%.6f,%.6f), pending=%s; tick acceptance is separate", target[0],
+	            target[1], target[2], pending ? "true" : "false");
+}
+
+bool ControlNode::enqueueGoal(const agi::Vector<3>& target, const std::string& frame) {
 	std::string rejection;
-	if (message->header.frame_id != "odom")
+	if (frame != "odom")
 		rejection = "frame_id must be odom";
 	else if (!target.allFinite())
 		rejection = "nonfinite position";
@@ -203,11 +247,12 @@ void ControlNode::onGoToPosition(geometry_msgs::msg::PointStamped::ConstSharedPt
 	}
 	if (!rejection.empty()) {
 		RCLCPP_WARN(get_logger(), "go_to_position rejected: %s", rejection.c_str());
-		return;
+		return false;
 	}
 	// The sole executor hands this slot to the next control cycle. The stamp is ignored.
 	// This is not acceptance: current state/authority and the solve are checked in tick().
 	_pending_goal = target;
+	return true;
 }
 
 void ControlNode::tick() { runCycle(true); }

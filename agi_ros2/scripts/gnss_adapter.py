@@ -122,6 +122,7 @@ class GnssAdapter(Node):
             origin.header.frame_id = 'odom'
             origin.session_id = self.session
             origin.latitude, origin.longitude, origin.altitude = self.builder.origin
+            origin.xy_valid = origin.z_valid = True
             origin.altitude_reference = self.builder.basis
             origin.heading_source = ('fc_attitude_yaw_bench' if msg.source_session.startswith('bench_fixed_gps:') else
                                      'fc_magnetometer_assisted_yaw')

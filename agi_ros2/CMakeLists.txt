@@ -8,7 +8,7 @@ foreach(dep diagnostic_msgs rclcpp sensor_msgs geometry_msgs nav_msgs std_msgs r
 endforeach()
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Rtk.msg" "msg/Authority.msg" "msg/Health.msg"
-  "msg/Navigation.msg" "msg/LocalNavigation.msg" "msg/NavigationOrigin.msg" "msg/Barometer.msg"
+  "msg/Navigation.msg" "msg/LocalNavigation.msg" "msg/NavigationOrigin.msg" "msg/GeographicGoal.msg" "msg/Barometer.msg"
   "msg/ComputationStatus.msg" "msg/MspState.msg"
   "msg/Heading.msg" "msg/FusedState.msg" "msg/SafetyEvidence.msg" "msg/NavigationUpdate.msg"
   "msg/ControlCommand.msg" "msg/OutputStatus.msg" "msg/MspEvent.msg"
@@ -121,7 +121,8 @@ option(AGI_ROS2_TIMING_TESTS "Build FC delivery and control scheduling regressio
 if(AGI_ROS2_TIMING_TESTS)
   enable_testing()
   find_package(GTest REQUIRED)
-  add_executable(fc_control_timing_test tests/fc_control_timing_test.cpp)
+  add_executable(fc_control_timing_test tests/fc_control_timing_test.cpp tests/fc_geographic_test.cpp)
+  target_include_directories(fc_control_timing_test SYSTEM PRIVATE third_party/mavlink)
   target_link_libraries(fc_control_timing_test ros2_node_common GTest::gtest_main)
   if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64)$")
     target_compile_options(fc_control_timing_test PRIVATE -march=native)

@@ -16,11 +16,14 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'test'))
 import rclpy
-from agi_ros2.msg import ComputationStatus, ControlCommand, FusedState, Health, OutputStatus, OutputTiming
+from agi_ros2.msg import GeographicGoal, NavigationOrigin, ComputationStatus, ControlCommand, FusedState, Health, OutputStatus, OutputTiming
 from test_node_pipeline import CLOCK_ID, Harness
 from test_shadow_pipeline import ShadowHarness
 from geometry_msgs.msg import PointStamped
 from nav_msgs.msg import Odometry
+from rclpy.qos import QoSProfile, DurabilityPolicy
+from test_fc_fused_pipeline import FcHarness
+import struct
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -42,6 +45,7 @@ class DeliveryHarness(ShadowHarness):
         self.duplicate = self.stopped = self.invalid = False
         self.generation = 1
         self.fc_session = 'synthetic-source'
+        self.fc_reset = 0
         self.sample_shift = self.ros_shift = 0.
         self.sequence = 0
         self.next_state = 0.
@@ -88,6 +92,7 @@ class DeliveryHarness(ShadowHarness):
             state.navigation_session = self.fc_session
             state.fc_time_usec = int((now-self.age)*1e6)
             state.reset_counter = self.generation
+            state.fc_reset_counter = self.fc_reset
             state.position.x, state.position.y, state.position.z = self.position
             state.velocity.x, state.velocity.y, state.velocity.z = self.velocity
             state.orientation.w = 1.
@@ -150,17 +155,35 @@ class DeliveryTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls): rclpy.shutdown()
 
-    def online_goal_scenario(self, shadow):
+    def online_goal_scenario(self, shadow, geographic=False):
         h = DeliveryHarness(shadow=shadow)
         self.addCleanup(h.close)
         h.subscribe('reference', Odometry)
         publisher = h.publisher('go_to_position', PointStamped)
+        geo_publisher = h.publisher('go_to_geographic_position', GeographicGoal)
+        origin_publisher = h.node.create_publisher(NavigationOrigin, 'navigation/origin',
+            QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
+        origin = NavigationOrigin()
+        origin.header.frame_id = 'odom'
+        origin.session_id = h.fc_session
+        origin.altitude_reference = 'msl'
+        origin.xy_valid = origin.z_valid = True
+        origin.longitude_scale = .75
+        origin.altitude = 123.
+        origin.fc_time_usec = 1
 
         def send(position, frame='odom'):
             goal = PointStamped()  # Zero stamp is intentionally valid.
             goal.header.frame_id = frame
             goal.point.x, goal.point.y, goal.point.z = position
-            publisher.publish(goal)
+            if geographic and frame == 'odom':
+                geo = GeographicGoal()
+                geo.latitude = position[1] / 111319.49424743652
+                geo.longitude = position[0] / (111319.49424743652 * .75)
+                geo.altitude_msl = 123. + position[2]
+                geo_publisher.publish(geo)
+            else:
+                publisher.publish(goal)
             h.run(.08)
 
         def log_text():
@@ -173,6 +196,17 @@ class DeliveryTests(unittest.TestCase):
             return (p.x, p.y, p.z)
 
         h.run(1.5)
+        if geographic:
+            send((.5, 0., 1.))
+            self.assertIn('FC origin session/reset/time mismatch', log_text())
+            origin_publisher.publish(origin)
+            h.run(.08)
+            # A late old session and old time must not overwrite the valid origin.
+            old = copy.deepcopy(origin)
+            old.session_id = 'retired-session'
+            old.altitude = -1000.
+            origin_publisher.publish(old)
+            h.run(.04)
         send((.5, 0., 1.))
         self.assertIn('go_to_position rejected: AUTO', log_text())
         h.auto = True
@@ -183,7 +217,7 @@ class DeliveryTests(unittest.TestCase):
                                       ((math.nan, 0., 1.), 'odom', 'nonfinite position'),
                                       ((51., 0., 1.), 'odom', 'outside configured geofence')]:
             send(point, frame)
-            self.assertIn(reason, log_text())
+            self.assertIn('invalid WGS84/MSL target' if geographic and math.isnan(point[0]) else reason, log_text())
             self.assertEqual(reference(), start)
         h.velocity = (.3, 0., 0.)
         h.run(.05)
@@ -207,8 +241,11 @@ class DeliveryTests(unittest.TestCase):
         self.assertIn('stable hover', h.received['computation_status'][-1].reason)
         send((.5, .5, 1.))
         self.assertEqual(log_text().count('go_to_position accepted:'), 2)
-        h.run(1.6)
-        self.assertEqual(reference(), (.5, .5, 1.))
+        # Existing yaw-first behavior: pi/2 turn takes 1.875*(pi/2)/.5 s,
+        # followed by the 1.5 s translation. Do not mistake the turn for a stall.
+        h.run(7.6)
+        for actual, expected in zip(reference(), (.5, .5, 1.)):
+            self.assertAlmostEqual(actual, expected, places=12)
         self.assertEqual(h.received['computation_status'][-1].warm_cycles, 50)
         self.assertTrue(h.received['computation_status'][-1].trajectory_active)
         # Deliver a queued goal alongside a new coordinate generation. Callback order
@@ -220,8 +257,14 @@ class DeliveryTests(unittest.TestCase):
             goal = PointStamped()
             goal.header.frame_id = 'odom'
             goal.point.x, goal.point.y, goal.point.z = (.5, 1., 1.)
-            publisher.publish(goal)
+            if geographic:
+                geo = GeographicGoal(latitude=1. / 111319.49424743652,
+                                     longitude=.5 / (111319.49424743652 * .75), altitude_msl=124.)
+                geo_publisher.publish(geo)
+            else:
+                publisher.publish(goal)
             h.generation += 1
+            h.fc_reset += 256
             h.run(.04)
         finally:
             h.processes[0].send_signal(signal.SIGCONT)
@@ -248,6 +291,66 @@ class DeliveryTests(unittest.TestCase):
 
     def test_online_goals_on_fc_control_thread(self):
         self.online_goal_scenario(False)
+
+    def test_geographic_goals_share_local_chain_and_reset_cleanup(self):
+        self.online_goal_scenario(True, geographic=True)
+
+    def test_origin_receiver_does_not_touch_health(self):
+        h = FcHarness()
+        self.addCleanup(h.close)
+        h.wait_warm()
+        received = []
+        sub = h.node.create_subscription(NavigationOrigin, 'navigation/origin', received.append,
+            QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
+        self.addCleanup(h.node.destroy_subscription, sub)
+
+        def send(stamp=None, reset=None, scale=.75, kind=0xBF02):
+            payload = struct.pack('<BBHIQiiff', 1, 32, 3, h.reset_count if reset is None else reset,
+                                  h.last_state if stamp is None else stamp, 0, 0, scale, 12300.)
+            h.peer.v2_extension_send(0, 0, 0, kind, list(payload + bytes(249-32)))
+            h.run(.08)
+
+        send()
+        self.assertTrue(received[-1].xy_valid and received[-1].z_valid)
+        self.assertEqual(received[-1].altitude, 123.)
+        self.assertEqual(received[-1].longitude_scale, .75)
+        original = copy.deepcopy(received[-1])
+        send(stamp=original.fc_time_usec-1, scale=.5)
+        self.assertEqual(received[-1].longitude_scale, .75)
+        generation = h.latest('fused_state').reset_counter
+        send(kind=0xBF03)
+        send(scale=math.nan)
+        self.assertFalse(received[-1].xy_valid)
+        self.assertEqual(h.latest('fused_state').reset_counter, generation)
+        self.assertEqual(h.latest('computation_status').warm_cycles, 50)
+        send()
+        # A late subscriber gets the retained origin without waiting for another packet.
+        late = []
+        late_sub = h.node.create_subscription(NavigationOrigin, 'navigation/origin', late.append,
+            QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
+        self.addCleanup(h.node.destroy_subscription, late_sub)
+        h.run(.15)
+        self.assertTrue(late and late[-1].xy_valid)
+        old = copy.deepcopy(received[-1])
+        h.reset_count += 256
+        h.run(.1)
+        self.assertFalse(received[-1].xy_valid)
+        send(stamp=old.fc_time_usec, reset=old.fc_reset_counter)
+        self.assertFalse(received[-1].xy_valid)
+        send()
+        self.assertEqual(received[-1].fc_reset_counter, 256)
+        health_time = h.latest('sensors/fc/estimator_status').fc_time_usec
+        h.health_enabled = False
+        h.run(.1)
+        send()
+        self.assertEqual(h.latest('sensors/fc/estimator_status').fc_time_usec, health_time)
+        self.assertFalse(h.latest('fused_state').fc_state_valid)  # Origin cannot renew a health lease.
+        h.reconnect()
+        h.run(.8)
+        self.assertFalse(received[-1].xy_valid)
+        self.assertNotEqual(received[-1].session_id, old.session_id)
+        self.assertEqual(received[-1].header.frame_id, 'odom')
+        self.assertEqual(received[-1].altitude_reference, 'msl')
 
     def test_online_goals_in_shadow(self):
         self.online_goal_scenario(True)

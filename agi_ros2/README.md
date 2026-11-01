@@ -338,6 +338,37 @@ SITL 必须配套重编译修正后的 Betaflight ELF，详见 [yaw 坐标约定
 取消多项年龄/耗时/停流检查并重发旧命令，不能用该运行结果作为严格保护验收。
 hardware 模式拒绝启用此开关。旧独立控制器仍可用 `run.py --no-ros2`。
 
+### WGS84 + MSL 在线目标（FC 状态源）
+
+新增相对 topic `go_to_geographic_position`（根命名空间为 `/go_to_geographic_position`），
+类型 `agi_ros2/msg/GeographicGoal`，字段 `latitude`、`longitude`（WGS84 degree，北/东正）及
+`altitude_msl`（绝对 MSL m）。不是椭球高、离地高度或相对当前位置增量。
+
+必须使用配套新固件导出的 `/navigation/origin`，并匹配当前 FusedState 的 receiver session、
+完整 FC reset 和快照时间。原点是 FC 的 armLocationGps、实际 GPS_cosLat 与独立 gpsAltOffsetCm，
+不是 AUTO 捕获位置或旧 ROS EKF 的平均原点。转换后的绝对 ENU 目标共用上述全部受理和执行行为。
+缺少有效原点只拒绝地理目标，本地 `/go_to_position` 和 CSV 继续按原条件工作。
+协议、数值和生命周期见 [FC 地理原点说明](MAVLINK_FC_FUSED.md#fc-地理原点与在线目标2026-11-01)。
+
+在隔离 SITL 中从真实 FC 原点生成两次地理目标并验证转向、平移和持续悬停：
+
+```bash
+source /opt/ros/humble/setup.bash
+source install/agi_ros2/local_setup.bash
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 \
+ROS_DOMAIN_ID=94 ROS_LOCALHOST_ONLY=1 GZ_PARTITION=agi_geographic_check \
+  python3 agi_ros2/tests/test_sitl_go_to_position.py --state-source fc_fused --geographic \
+  --output /tmp/agi_geographic_check
+```
+
+输出目录必须不存在；脚本会记录真实 origin、地理发布命令、预期 ENU、状态/health 频率、
+转向参考、悬停误差及 rosbag。发布经纬度从本次仿真原点产生，不把任意地理地点作为实机目标。
+`pending=true` 只表示已转换入槽，tick 最终接受仍记录 `go_to_position accepted`。
+正常硬件启动命令保持不变：
+`python3 agi_ros2/scripts/launch_realtime.py mode:=hardware shadow_only:=false bench_fixed_gps:=false`。
+需要同步更新 Betaflight 固件、ROS 消息生成产物及节点；本次不执行实机启动或刷写。
+MSL 对齐是 FC 坐标定义的一致性，不是对 GNSS 海拔/融合绝对精度的承诺。
+
 ## CM5 实机：诊断、影子、悬停
 
 最新的 16:30 校准后飞行包见

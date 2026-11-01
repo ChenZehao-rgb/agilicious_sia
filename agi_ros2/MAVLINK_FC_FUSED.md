@@ -1,5 +1,7 @@
 # Betaflight FC fused state → Agilicious ROS 2
 
+以下基线记录对应 2026-10-26；2026-11-01 的两仓库扩展见“FC 地理原点与在线目标”节。
+
 2026-10-26，本地软件验证；没有连接物理 UART、解锁、飞行、刷写、commit 或 push。
 
 ## 范围与来源
@@ -93,6 +95,102 @@ fix_type 只接受 V1 的 0/1/3；不推断 RTK。未知观测年龄 UINT32_MAX 
 NaN 方差可作为未知解码，但不能通过控制安全检查；Inf/负方差和超范围 trust 被拒绝。
 无 snapshot 的 NaN trust 是协议允许的未知；有 snapshot 时要求有限的 [0,1] trust，
 但不使用 trust 推导任何协方差、accuracy 或权重。
+
+## FC 地理原点与在线目标（2026-11-01）
+
+新增 `BF_GEOGRAPHIC_ORIGIN_V1`，V2_EXTENSION 私有类型 `0xBF02`，目标地址均为 0。
+0xBF01 health 的 68 字节格式不变。接收器先按 message_type 分派，未知类型忽略；
+原点解析失败只清除原点有效性，不调用 invalidateFc，不刷新状态、health 或 TIMESYNC。
+独立原点载荷全部小端，249 字节数组的前 32 字节如下，余下全零；MAVLink2 尾零由解码器补齐。
+
+| 偏移 | 类型 | 含义 |
+|---|---|---|
+| 0 / 1 | uint8 / uint8 | version=1 / payload_length=32 |
+| 2 | uint16 | bit0 XY 基准有效，bit1 GPS Z 基准有效，其余零 |
+| 4 | uint32 | 完整 FC resetCounter |
+| 8 | uint64 | 已完成估计快照 timeUs，FC boot 微秒 |
+| 16 / 20 | int32 / int32 | armLocationGps 纬度/经度，degE7 |
+| 24 | float32 | 该次更新实际 getGpsCosLat() |
+| 28 | float32 | 独立 gpsAltOffsetCm，MSL cm |
+
+固件快照一次捕获上述字段，发送时不拼接实时 GPS/home。固定 1 Hz 重发，变化后在空闲调度槽尽快发送。
+ID 248 调频仍只改变 health 周期；禁用 248 同时禁用 health 和原点。没有第二条同 ID stream entry。
+ODOMETRY 100 Hz 优先级和 health 50 Hz/5 ms 错峰保留。
+
+接收后发布 transient_local/depth 1 的 `/navigation/origin`：frame=odom，session_id=receiver source_session，
+latitude/longitude 为 degree，altitude 为真正 GPS Z offset 的 MSL m，altitude_reference=msl；
+另带 xy_valid、z_valid、longitude_scale、fc_reset_counter、fc_time_usec。
+header.stamp 只记录接收时刻，不充当状态时间证据。旧 OriginBuilder 发布端补齐 XY/Z 有效标志，
+其 FC 时间/身份保持默认，不可用于本接口。
+
+ControlNode 仅在 `state_source=fc_fused`、当前状态有效、session/完整 FC reset 相等，且
+origin.fc_time_usec <= state.fc_time_usec 时转换。`FusedState.reset_counter` 是 adapter generation，
+不能代替 `fc_reset_counter`。迟到旧原点不覆盖新映射；重连、状态失效和 reset 沿用现有撤权/清理路径，
+清掉 pending。低频元数据不套用 15 ms 门限，缺失或坏原点不增加全局授权门槛，本地目标继续工作。
+AUTO low/high 不更换地理基准。
+
+`/go_to_geographic_position` 使用 `agi_ros2/msg/GeographicGoal` 的三个 float64 字段：
+latitude、longitude（WGS84 degree），altitude_msl（绝对 MSL m）。不接受椭球高、AGL 或相对高度。
+原生投影 K 来自 FC 的 float `EARTH_ANGLE_TO_CM` 与 `GPS_DEGREES_DIVIDER`，当前精确值为
+111319.49424743652 m/degree；E=wrap(lon-lon0)*K*longitude_scale，N=(lat-lat0)*K，
+U=altitude_msl-origin.altitude。经度先在 double 中相减再跨日界线处理，无额外地理库、距离限制或旋转。
+
+转换与共同目标受理都在 ControlNode 单一 owner 线程完成，使用同一个 pending slot、围栏、稳定悬停、
+AUTO/输出故障检查和 HardwarePilot/CapturedReference 轨迹链，不经过裸 PointStamped 异步转发。
+日志 `geographic input` 给出输入与原点/session/reset，`geographic converted ... pending=true` 表示入槽，
+最终仍以 tick 的 `go_to_position accepted` 为准。转向后直线平移、竖直/零位移保持航向、到点悬停、
+同一 AUTO 接收下一点、不抢占/不排队、CSV 和 shadow_only 行为保持。
+
+本地固件硬件默认 GPS provider=UBLOX，解析 hMSL；SITL provider=GPS_VIRTUAL，来自 Gazebo 地理位置。
+FC 默认 altitude_source=DEFAULT（允许 GPS Z），不是由 ROS altitude_source 参数决定。
+未连接硬件读取持久化 CLI；如果实际仅用气压/测距、没有 GPS Z offset，地理目标解释性拒绝，
+不改融合配置。高度对齐只保证当前 FC 坐标定义一致，不承诺 GNSS 海拔或融合绝对精度。
+
+### 地理目标的本次仿真证据
+
+2026-11-01，本地隔离 SITL 的完整记录保存在
+`agi_ros2/analysis/fc_geographic_20261101/geographic_sitl/`（本地 analysis 按既有规则不入 Git）。
+`result.json` 包含原点、发布命令、参考转向、每点持续 15 s 悬停、真值/融合误差及频率；
+`flight.log` 区分转换入槽与 tick 接受，`bag/` 保存实际 ROS 流。
+
+该次 FC 原点：latitude=40.4635，longitude=-79.51825，MSL offset=0.19 m，
+longitude_scale=0.7608195543289185，receiver session=`14213.348684`，完整 reset=3。
+这是仿真收到的原点，不从 Gazebo 世界零点推断。隔离 EEPROM CLI 回读确认
+GPS provider=VIRTUAL、altitude_source=DEFAULT、altitude_prefer_baro=100，见 `sitl_config_readback/readback.txt`。
+
+仅对上述仿真原点，对应发布命令如下；新运行先核对 `/navigation/origin`，或运行 README 的
+`--geographic` 测试由新原点重新生成。不能将这些坐标作为实机目标。
+
+```bash
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 ROS_DOMAIN_ID=94 ROS_LOCALHOST_ONLY=1 \
+ros2 topic pub --once -w 2 /go_to_geographic_position agi_ros2/msg/GeographicGoal \
+  '{latitude: 40.46351, longitude: -79.5182, altitude_msl: 2.19}'
+# 预期绝对 ENU = (4.234702400073, 1.113194942474, 2) m
+
+# 第一目标稳定后，同一 AUTO 内发送第二目标：
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 ROS_DOMAIN_ID=94 ROS_LOCALHOST_ONLY=1 \
+ros2 topic pub --once -w 2 /go_to_geographic_position agi_ros2/msg/GeographicGoal \
+  '{latitude: 40.46355, longitude: -79.51827, altitude_msl: 2.19}'
+# 预期绝对 ENU = (-1.693880960029, 5.565974712372, 2) m
+```
+
+`-w 2` 与已有本地测试相同，等待控制器和录包订阅者；只发现录包节点时的单次发布不能证明控制端收到。
+首次测试因此未进入受理，修正测试命令后重跑通过。未放宽控制阈值。
+两点各稳定 15 s，全程 AUTO 70.43 s；末尾 3 s 的真值最大位置误差分别为 0.0594/0.0688 m，
+最大航向误差 0.268/0.187 degree。参考在转向结束前保持起点，yaw 速率不超过 0.5 rad/s。
+state 接收频率 96.7467 Hz、health 50.0304 Hz，最大状态年龄 7.581 ms，最大求解时间 1.850 ms。
+原有 FC 本地 `--yaw-chain` 回归也通过：正负 yaw 脉冲与三个本地目标 `(5,0,2)`、`(5,5,2)`、`(0,0,1)`，
+同一 AUTO 133.65 s，三个目标均稳定 15 s，真值最大位置误差分别为 0.0416/0.0282/0.0308 m。
+FC/真值最大航向差 0.932 degree；state/health 接收频率 97.1107/50.0159 Hz，最大状态年龄 8.026 ms。
+记录在同级 `local_sitl/`。这两次 SITL 均保持原时效、位置、速度、航向和求解阈值。
+固件确定性调度测试仍精确验证 100 Hz ODOMETRY 与 50 Hz health 的原计数和错峰；
+SITL 接收频率是本机运行结果，不能当成物理 UART 频率或飞行验证。
+
+测试覆盖原生常量、独立 GPS Z offset、非重算 scale、完整 reset、首次建立/ResetXY/ResetZ/home scale，
+尾零/CRC/坏值/未知子类型、迟到原点、transient_local 后启动订阅、重连及转换到消费间 reset。
+真实固件 pack → MAVLink 字节流/CRC parser → ROS decode 的跨仓库测试通过（45-byte 帧）。
+旧本地与新增地理 ROS 受理测试共用相同设施；原测试第二段等待同步到已有“先转向再平移”的实际时长，
+没有改变稳定门限。ROS 构建、FC SITL 构建及针对性测试通过；未连接真实飞控、刷写或验证目标板飞行。
 
 ## 坐标系与消息语义
 
