@@ -53,13 +53,13 @@ ControlNode::ControlNode()
 	_shadow_only = declare_parameter<bool>("shadow_only", profile ? profile->section("flight")["shadow_only"].as<bool>() : false,
 	                                       shadow_descriptor);
 	_navigation_policy = declareNavigationPolicy(*this, profile, _mode);
-	_fc_event_control = _mode == "hardware" && _navigation_policy == agi::hardware::NavigationPolicy::FcFused;
+	_fc_event_control = _navigation_policy == agi::hardware::NavigationPolicy::FcFused;
 	if (_shadow_only && _mode != "hardware") throw std::invalid_argument("shadow_only requires hardware mode");
 	if (_mode != "sitl" && _mode != "hardware") {
 		throw std::invalid_argument("mode must be sitl or hardware");
 	}
-	if (_mode == "hardware" && get_parameter("use_sim_time").as_bool()) {
-		throw std::invalid_argument("Hardware requires use_sim_time=false");
+	if ((_mode == "hardware" || _fc_event_control) && get_parameter("use_sim_time").as_bool()) {
+		throw std::invalid_argument("Hardware/FC state requires use_sim_time=false");
 	}
 	_simulation_time = _mode == "sitl" && get_parameter("use_sim_time").as_bool();
 	const bool delay_test = declare_parameter<bool>(
@@ -82,7 +82,8 @@ ControlNode::ControlNode()
 	_pilot = std::make_unique<agi::hardware::HardwarePilot>(
 	        *_params, [this] { return _control_time; }, [this] { return _simulation_time ? _control_time : monotonicSeconds(); },
 	        _navigation_policy, _observation_delay,
-	        _mode == "hardware" ? agi::hardware::ReceiverPolicy::LatchedSwitches : agi::hardware::ReceiverPolicy::FreshSamples);
+	        (_mode == "hardware" || _fc_event_control) ? agi::hardware::ReceiverPolicy::LatchedSwitches
+		                                           : agi::hardware::ReceiverPolicy::FreshSamples);
 	if (!trajectory.empty()) {
 		const auto rows = agi::trajectory_csv::readTrajectoryRows(trajectory);
 		const auto points = agi::trajectory_csv::loadTrajectory(rows, 0, agi::Vector<3>::Zero(), 0,
@@ -98,7 +99,7 @@ ControlNode::ControlNode()
 	_goal_sub = create_subscription<geometry_msgs::msg::PointStamped>(
 	        "go_to_position", 1, std::bind(&ControlNode::onGoToPosition, this, std::placeholders::_1));
 	_authority_sub = create_subscription<msg::Authority>("authority", 1, [this](msg::Authority::ConstSharedPtr message) {
-		if (_mode == "hardware" && _authority.session_id != message->session_id) _output_fault = true;
+		if ((_mode == "hardware" || _fc_event_control) && _authority.session_id != message->session_id) _output_fault = true;
 		if (_output_fault || !message->auto_switch || !message->armed || message->kill || !message->rc_link)
 			clearPendingGoal("AUTO authorization unavailable");
 		_authority = *message;
@@ -194,7 +195,7 @@ void ControlNode::onGoToPosition(geometry_msgs::msg::PointStamped::ConstSharedPt
 	else
 		rejection = _goal_rejection;
 	// Reuse the hardware profile's existing odom fence, including in shadow mode.
-	if (rejection.empty() && _mode == "hardware") {
+	if (rejection.empty() && (_mode == "hardware" || _fc_event_control)) {
 		for (int i = 0; i < 3; ++i) {
 			if (!(_geofence_min[i] < _geofence_max[i] && target(i) >= _geofence_min[i] && target(i) <= _geofence_max[i]))
 				rejection = "target outside configured geofence";
@@ -266,7 +267,7 @@ void ControlNode::runCycle(bool computation_requested) {
 	evidence.navigation_sample_time =
 	        _state.initialized ? safety_now - (_control_time - stampSeconds(_state.navigation_sample_stamp)) : kUnknownTime;
 	evidence.navigation_receive_time = _simulation_time ? evidence.navigation_sample_time : _state.rtk_receive_time;
-	if (_mode == "hardware") {
+	if (_mode == "hardware" || _fc_event_control) {
 		evidence.rc_time = _authority.clock_id == _clock_id ? _authority.rc_request_steady_time : kUnknownTime;
 		evidence.status_time = _authority.clock_id == _clock_id ? _authority.status_request_steady_time : kUnknownTime;
 	} else {
@@ -274,8 +275,8 @@ void ControlNode::runCycle(bool computation_requested) {
 		evidence.rc_time = rc_stamp > 0 ? safety_now - (_control_time - rc_stamp) : kUnknownTime;
 		evidence.status_time = evidence.rc_time;
 	}
-	evidence.receiver_valid =
-	        _authority.receiver_valid && !_authority.session_id.empty() && (_mode != "hardware" || _authority.clock_id == _clock_id);
+	evidence.receiver_valid = _authority.receiver_valid && !_authority.session_id.empty() &&
+	                          ((_mode != "hardware" && !_fc_event_control) || _authority.clock_id == _clock_id);
 	evidence.rc_link = _authority.rc_link &&
 	                   timely(wall, _authority_receive_time, _simulation_time ? kSitlWallTimeout : SafetyGate::kReceiverEvidenceMaxAge);
 	evidence.armed = _authority.armed;
@@ -303,7 +304,7 @@ void ControlNode::runCycle(bool computation_requested) {
 	evidence.thrust_calibrated = health_fresh && _health.thrust_calibrated && output_fresh && _output.thrust_calibrated;
 	evidence.thrust_mapping_ready = health_fresh && _health.thrust_mapping_ready && output_fresh && _output.thrust_mapping_ready;
 	evidence.geofence_ok = health_fresh && _health.geofence_ok;
-	if (_mode == "hardware") {
+	if (_mode == "hardware" || _fc_event_control) {
 		evidence.geofence_ok = health_fresh && state.valid();
 		for (int i = 0; i < 3; ++i)
 			evidence.geofence_ok = evidence.geofence_ok && _geofence_min[i] < _geofence_max[i] &&

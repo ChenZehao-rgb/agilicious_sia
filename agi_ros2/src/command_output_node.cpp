@@ -52,15 +52,16 @@ CommandOutputNode::CommandOutputNode()
 	                                       shadow_descriptor);
 	_navigation_policy = declareNavigationPolicy(*this, profile, _mode);
 	const auto policy = _navigation_policy;
+	_latched_receiver = _mode == "hardware" || policy == agi::hardware::NavigationPolicy::FcFused;
 	const auto receiver_policy =
-	        _mode == "hardware" ? agi::hardware::ReceiverPolicy::LatchedSwitches : agi::hardware::ReceiverPolicy::FreshSamples;
+	        _latched_receiver ? agi::hardware::ReceiverPolicy::LatchedSwitches : agi::hardware::ReceiverPolicy::FreshSamples;
 	_gate = std::make_unique<SafetyGate>(policy, _observation_delay, receiver_policy);
 	if (_shadow_only && _mode != "hardware") throw std::invalid_argument("shadow_only requires hardware mode");
 	if (_mode != "sitl" && _mode != "hardware") {
 		throw std::invalid_argument("mode must be sitl or hardware");
 	}
-	if (_mode == "hardware" && get_parameter("use_sim_time").as_bool()) {
-		throw std::invalid_argument("Hardware requires use_sim_time=false");
+	if (_latched_receiver && get_parameter("use_sim_time").as_bool()) {
+		throw std::invalid_argument("Hardware/FC state requires use_sim_time=false");
 	}
 	_simulation_time = _mode == "sitl" && get_parameter("use_sim_time").as_bool();
 	const bool delay_test = declare_parameter<bool>(
@@ -163,8 +164,8 @@ CommandOutputNode::CommandOutputNode()
 	_command_sub = create_subscription<msg::ControlCommand>("control_command", 1,
 	                                                        std::bind(&CommandOutputNode::onCommand, this, std::placeholders::_1));
 	_authority_sub = create_subscription<msg::Authority>("authority", 1, [this](msg::Authority::ConstSharedPtr message) {
-		_authority_session_changed = _mode == "hardware" && _authority.session_id != message->session_id;
-		const bool revoke = _authority_session_changed || (_mode == "hardware" && !message->receiver_valid) || message->kill ||
+		_authority_session_changed = _latched_receiver && _authority.session_id != message->session_id;
+		const bool revoke = _authority_session_changed || (_latched_receiver && !message->receiver_valid) || message->kill ||
 		                    !message->armed || message->auto_switch != _authority.auto_switch || !message->rc_link;
 		_authority = *message;
 		_authority_receive_time = monotonicSeconds();
@@ -345,14 +346,14 @@ void CommandOutputNode::processOutput(bool new_command) {
 	        timely(wall, _command_receive_time, _simulation_time ? kSitlWallTimeout : 0.025) &&
 	        timely(evidence.now, _command.evidence.now, 0.025) && timely(ros_time, stampSeconds(_command.header.stamp), 0.025);
 	const bool receiver_valid = _authority.receiver_valid && !_authority.session_id.empty() && !_authority_session_changed &&
-	                            (_mode != "hardware" || _authority.clock_id == _clock_id);
+	                            (!_latched_receiver || _authority.clock_id == _clock_id);
 	const bool rc_fresh =
 	        _authority.rc_link &&
-	        (_mode == "hardware" ? receiver_valid && timely(wall, _authority_receive_time, SafetyGate::kReceiverEvidenceMaxAge) &&
-		                               timely(wall, _authority.rc_request_steady_time, SafetyGate::kReceiverEvidenceMaxAge) &&
-		                               timely(wall, _authority.status_request_steady_time, SafetyGate::kReceiverEvidenceMaxAge)
-		                     : timely(wall, _authority_receive_time, _simulation_time ? kSitlWallTimeout : 0.1) &&
-		                               timely(ros_time, stampSeconds(_authority.header.stamp), 0.1));
+	        (_latched_receiver ? receiver_valid && timely(wall, _authority_receive_time, SafetyGate::kReceiverEvidenceMaxAge) &&
+		                             timely(wall, _authority.rc_request_steady_time, SafetyGate::kReceiverEvidenceMaxAge) &&
+		                             timely(wall, _authority.status_request_steady_time, SafetyGate::kReceiverEvidenceMaxAge)
+		                   : timely(wall, _authority_receive_time, _simulation_time ? kSitlWallTimeout : 0.1) &&
+		                             timely(ros_time, stampSeconds(_authority.header.stamp), 0.1));
 	const bool health_fresh = timely(wall, _health_receive_time, _simulation_time ? kSitlWallTimeout : 0.2) &&
 	                          timely(ros_time, stampSeconds(_health.header.stamp), 0.2);
 	// New authority can revoke old commands immediately, but never authorize a

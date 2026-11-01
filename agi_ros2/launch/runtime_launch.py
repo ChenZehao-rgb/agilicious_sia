@@ -190,17 +190,22 @@ def assemble(context, forced_shadow=False, sensor_only=False, msp_only=False):
     delay_test = boolean(flight.get('sitl_delay_test', False))
     if mode != 'sitl' and delay_test:
         raise ValueError('sitl_delay_test requires mode=sitl')
-    if mode != 'hardware' and (shadow or diagnostic or (arg('mavlink_enabled') and boolean(arg('mavlink_enabled')))):
-        raise ValueError('MAVLink, shadow and diagnostic modes require hardware mode')
+    if mode != 'hardware' and (shadow or diagnostic):
+        raise ValueError('shadow and diagnostic modes require hardware mode')
     if mode == 'hardware' and arg('mavlink_enabled') and not boolean(arg('mavlink_enabled')):
         raise ValueError('The hardware profile requires MAVLink sensors')
     trajectory = resolve_data_path(path, flight.get('trajectory', ''))
     state_source = arg('state_source') or profile.get('state', {}).get('source', 'ros_ekf')
-    if state_source not in ('ros_ekf', 'fc_fused') or (mode != 'hardware' and state_source == 'fc_fused'):
-        raise ValueError('state.source must be ros_ekf or hardware fc_fused')
+    if state_source not in ('ros_ekf', 'fc_fused'):
+        raise ValueError('state.source must be ros_ekf or fc_fused')
     fc_fused = state_source == 'fc_fused'
+    if fc_fused and delay_test:
+        raise ValueError('fc_fused uses host time and normal freshness checks, not sitl_delay_test')
+    if mode == 'sitl' and arg('mavlink_enabled'):
+        if boolean(arg('mavlink_enabled')) != fc_fused:
+            raise ValueError('SITL MAVLink is enabled exactly when state.source=fc_fused')
     navigation_source = 'fc_fused' if fc_fused else ('rtk' if mode == 'sitl' else 'gnss')
-    common = dict(mode=mode, use_sim_time=mode == 'sitl', runtime_config=str(path),
+    common = dict(mode=mode, use_sim_time=mode == 'sitl' and not fc_fused, runtime_config=str(path),
                   controller=controller, navigation_source=navigation_source, sitl_delay_test=delay_test)
     output = dict(profile['output'])
     mavlink = dict(profile.get('mavlink', {}))
@@ -249,6 +254,8 @@ def assemble(context, forced_shadow=False, sensor_only=False, msp_only=False):
             raise ValueError('The diagnostic serial device must be specified in hardware.yaml or launch arguments')
         if not sensor_only and not fc_fused and mavlink.get('gps_mode') != 'gnss':
             raise ValueError('The hardware profile requires gps_mode=gnss')
+    elif fc_fused and not str(mavlink.get('device', '')).startswith('tcp://'):
+        raise ValueError('SITL fc_fused requires mavlink.device=tcp://IPv4:port')
     if not (diagnostic or sensor_only or msp_only):
         checked_model(profile, controller)
         thrust_mapping = checked_thrust_mapping(flight, mode, path, shadow)
@@ -280,6 +287,8 @@ def assemble(context, forced_shadow=False, sensor_only=False, msp_only=False):
             processes.append(node('betaflight_msp_node', {**output, 'mode': 'monitor', 'use_sim_time': False}))
         if not sensor_only:
             processes.append(node('msp_evidence.py', {**evidence, 'runtime_config': str(path), 'use_sim_time': False}))
+    elif fc_fused:
+        processes.append(node('mavlink_sensor_node', {**mavlink, 'use_sim_time': False}))
     controller_model = 'ideal_rate_thrust' if controller == 'MPC' else 'geometric_rate_thrust'
     actions = [LogInfo(msg=f'Runtime configuration: {path}; mode={mode}; navigation={navigation_source}; '
                            f'controller={controller}; controller_parameters={controller_parameters}; '
@@ -293,7 +302,7 @@ def assemble(context, forced_shadow=False, sensor_only=False, msp_only=False):
             bag_output = str(Path.home() / 'agi_bags' / datetime.now().strftime(mode + '_%Y%m%d_%H%M%S_%f'))
         Path(bag_output).parent.mkdir(parents=True, exist_ok=True)
         command = ['ros2', 'bag', 'record', '--all', '--include-hidden-topics', '--output', bag_output]
-        if mode == 'sitl':
+        if mode == 'sitl' and not fc_fused:
             command.append('--use-sim-time')
         recorder = ExecuteProcess(cmd=command, output='screen')
         actions.append(recorder)

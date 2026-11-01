@@ -1,5 +1,8 @@
+#include <arpa/inet.h>
 #include <common/mavlink.h>
 #include <fcntl.h>
+#include <netinet/tcp.h>
+#include <poll.h>
 #include <sys/file.h>
 #include <sys/ioctl.h>
 #include <termios.h>
@@ -49,7 +52,20 @@ public:
 		rcl_interfaces::msg::ParameterDescriptor desc;
 		desc.read_only = true;
 		_device = declare_parameter<std::string>("device", "", desc);
-		if (_device.empty()) throw std::invalid_argument("device must name a dedicated MAVLink serial port");
+		if (_device.empty()) throw std::invalid_argument("device must name a MAVLink serial port or tcp://IPv4:port");
+		_tcp = _device.rfind("tcp://", 0) == 0;
+		if (_tcp) {
+			const auto separator = _device.find(':', 6);
+			const auto host = _device.substr(6, separator - 6);
+			const auto service = separator == std::string::npos ? "" : _device.substr(separator + 1);
+			size_t consumed = 0;
+			const int port = std::stoi(service, &consumed);
+			if (consumed != service.size() || port <= 0 || port > 65535 ||
+			    inet_pton(AF_INET, host.c_str(), &_tcp_address.sin_addr) != 1)
+				throw std::invalid_argument("MAVLink TCP endpoint must be tcp://IPv4:port");
+			_tcp_address.sin_family = AF_INET;
+			_tcp_address.sin_port = htons(port);
+		}
 		_baud = declare_parameter<int>("baud", 921600, desc);
 		if (_baud != 115200 && _baud != 230400 && _baud != 460800 && _baud != 921600)
 			throw std::invalid_argument("Unsupported baud");
@@ -230,15 +246,35 @@ private:
 	}
 	void disconnect() {
 		if (_fd >= 0) {
-			ioctl(_fd, TIOCNXCL);
+			if (!_tcp) ioctl(_fd, TIOCNXCL);
 			close(_fd);
 		}
 		_fd = -1;
+		_tcp_connecting = false;
 		_tx.clear();
 		resetEpoch(_reason);
 	}
 	void connectPort(double t) {
 		_next_connect = t + 1;
+		if (_tcp) {
+			const int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+			if (fd < 0) return;
+			const int no_delay = 1;
+			setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &no_delay, sizeof(no_delay));
+			const int connected = connect(fd, reinterpret_cast<const sockaddr*>(&_tcp_address), sizeof(_tcp_address));
+			if (connected < 0 && errno != EINPROGRESS) {
+				close(fd);
+				_reason = "Cannot connect MAVLink TCP";
+				return;
+			}
+			_fd = fd;
+			_tcp_connecting = connected < 0;
+			_parser = {};
+			_parser_status = {};
+			resetEpoch("Waiting for TCP clock synchronization");
+			_last_receive = t;
+			return;
+		}
 		int fd = open(_device.c_str(), O_RDWR | O_NOCTTY | O_NONBLOCK | O_CLOEXEC);
 		if (fd < 0) {
 			_reason = "Cannot open serial port";
@@ -289,10 +325,12 @@ private:
 		size_t budget = 2048;
 		while (!_tx.empty() && budget) {
 			auto &tx = _tx.front();
-			ssize_t n = write(_fd, tx.bytes.data() + tx.offset, std::min(budget, tx.bytes.size() - tx.offset));
+			const size_t count = std::min(budget, tx.bytes.size() - tx.offset);
+			ssize_t n = _tcp ? send(_fd, tx.bytes.data() + tx.offset, count, MSG_NOSIGNAL)
+			                 : write(_fd, tx.bytes.data() + tx.offset, count);
 			if (n < 0 && (errno == EAGAIN || errno == EINTR)) return;
 			if (n <= 0) {
-				_reason = "Serial write failed";
+				_reason = "MAVLink transport write failed";
 				++_tx_errors;
 				disconnect();
 				return;
@@ -315,17 +353,39 @@ private:
 			if (t >= _next_connect) connectPort(t);
 			return;
 		}
+		if (_tcp_connecting) {
+			pollfd socket_state{_fd, POLLOUT, 0};
+			if (poll(&socket_state, 1, 0) <= 0) {
+				if (t >= _next_connect) disconnect();
+				return;
+			}
+			int error = 0;
+			socklen_t length = sizeof(error);
+			if (getsockopt(_fd, SOL_SOCKET, SO_ERROR, &error, &length) || error) {
+				_reason = "MAVLink TCP connection failed";
+				disconnect();
+				return;
+			}
+			_tcp_connecting = false;
+		}
 		std::array<uint8_t, 4096> buffer{};
 		size_t budget = 16384;
 		while (budget) {
 			ssize_t n = read(_fd, buffer.data(), std::min(buffer.size(), budget));
 			if (n < 0 && (errno == EAGAIN || errno == EINTR)) break;
 			if (n < 0) {
-				_reason = "Serial read failed";
+				_reason = "MAVLink transport read failed";
 				disconnect();
 				return;
 			}
-			if (n == 0) break;
+			if (n == 0) {
+				if (_tcp) {
+					_reason = "MAVLink TCP peer disconnected";
+					disconnect();
+					return;
+				}
+				break;
+			}
 			budget -= n;
 			for (ssize_t i = 0; i < n; ++i) {
 				mavlink_message_t msg{};
@@ -996,6 +1056,8 @@ private:
 	std::string _source_session;
 	std::string _clock_id;
 	int _fd{-1}, _baud, _sys, _comp, _imu_hz, _gps_hz, _attitude_hz, _baro_hz;
+	bool _tcp{false}, _tcp_connecting{false};
+	sockaddr_in _tcp_address{};
 	std::vector<std::pair<uint32_t, int>> _rate_requests{};
 	double _baro_max_age_s, _baro_pressure_variance_pa2, _baro_temperature_variance_c2;
 	double _last_baro_receive{0}, _baro_arrival_age_s{nan};

@@ -281,7 +281,7 @@ def read_cli_response(
 
 def enter_betaflight_cli(connection: socket.socket) -> None:
     """向 Betaflight 发送 '#' 进入 CLI 模式，并确认握手成功。"""
-    connection.sendall(b"#\n")
+    connection.sendall(b"#")
     response = read_cli_response(connection, "enter CLI")
     if "Entering CLI Mode" not in response:
         raise RuntimeError(f"Betaflight did not enter CLI mode: {response}")
@@ -578,13 +578,14 @@ def prepare_runtime_betaflight(
     # never opened for writing.  AUX1 high now selects ARM, while Acro remains
     # the default flight mode.
     # 以 runtime_dir 为工作目录启动，Betaflight 就只会读写这份 EEPROM 副本。
-    config_process = subprocess.Popen(
-        [str(runtime_elf)],
-        cwd=runtime_dir,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-    )
+    with (runtime_dir / "configure.log").open("w") as config_log:
+        config_process = subprocess.Popen(
+            [str(runtime_elf)],
+            cwd=runtime_dir,
+            stdout=config_log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
     try:
         with wait_for_tcp(5761, config_process) as connection:
             enter_betaflight_cli(connection)
@@ -596,6 +597,17 @@ def prepare_runtime_betaflight(
                 # 先写入，再立即回读校验：两者用的是同一份期望值。
                 apply_bridge_settings(connection, arm_bridge_config)
                 validate_prearm_configuration(connection, arm_bridge_config)
+                import yaml
+                with arm_bridge_config.open() as stream:
+                    profile = yaml.safe_load(stream)
+                if profile.get('state', {}).get('source') == 'fc_fused':
+                    # UART2 is TCP 5762 in SITL. Only this isolated EEPROM is written.
+                    run_cli_command(connection, 'feature GPS')
+                    run_cli_command(connection, 'feature TELEMETRY')
+                    run_cli_command(connection, 'serial 1 512 115200 115200 921600 115200')
+                    serial = run_cli_command(connection, 'serial')
+                    if not re.search(r'(?m)^serial UART2 512 115200 115200 921600 115200\s*$', serial):
+                        raise RuntimeError('SITL MAVLink UART2 configuration readback failed: ' + repr(serial))
             # save 会写盘并让飞控自行退出，这里不能用 read_cli_response
             # （它等待的命令提示符不会再出现）。
             connection.sendall(b"save\n")
@@ -614,6 +626,8 @@ def prepare_runtime_betaflight(
             raise RuntimeError(
                 f"Betaflight exited with code {returncode} while preparing isolated EEPROM"
             )
+    except Exception as exc:
+        raise RuntimeError(f"{exc}; Betaflight startup log: {runtime_dir / 'configure.log'}") from exc
     finally:
         # 任何异常路径下都不能把这个临时配置进程留在后台占用 TCP 5761。
         stop_process(config_process)
@@ -749,6 +763,9 @@ def main() -> int:
     if args.ros2:
         expected_betaflight_settings(bridge_config)  # Validate before generating runtime assets.
         selected_controller, flight_arguments = ros2_flight_selection(bridge_config, args.controller)
+        import yaml
+        with bridge_config.open() as stream:
+            state_source = yaml.safe_load(stream).get('state', {}).get('source', 'ros_ekf')
         log(f"ROS 2 runtime configuration: {bridge_config}")
     # 生成模型 / 世界文件的叠加副本，同样不改动 Aeroloop 原始资源。
     # 把aeroloop中的世界和模型复制到runtime/assets中，并返回叠加后的世界文件路径
@@ -896,7 +913,7 @@ def main() -> int:
         # Configuration was written and read back before starting the simulator.
         controller_cmd = [
             str(REPO_ROOT / "agi_ros2/scripts/sensors.sh"),
-            "--ros-args", "-p", "config_verified:=true",
+            "--ros-args", "-p", "config_verified:=true", "-p", "state_source:=" + state_source,
         ]
         log("start flight in another terminal: " + shlex.join(["./agi_ros2/scripts/launch.sh", *flight_arguments]))
 

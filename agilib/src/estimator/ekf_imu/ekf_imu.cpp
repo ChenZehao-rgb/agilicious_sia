@@ -1022,7 +1022,12 @@ bool EkfImu::propagatePriorAndCovariance(const Scalar t) {
 			prior_.segment<IDX::NPOS>(IDX::POS) += 0.5 * dt * prior_.segment<IDX::NVEL>(IDX::VEL);
 			prior_.segment<IDX::NATT>(IDX::ATT) += 0.5 * dt * Qleftq * Vector<4>(0, omega.x(), omega.y(), omega.z());
 
-			StateMatrix covariance = transition * P_ * transition.transpose();
+			// Bias rows of the transition are identity. Keep both cross-covariance blocks
+			// while avoiding dense products for these unchanged rows and columns.
+			StateMatrix transported = P_;
+			transported.topRows<IDX::BOME>().noalias() = transition.topRows<IDX::BOME>() * P_;
+			StateMatrix covariance = transported;
+			covariance.leftCols<IDX::BOME>().noalias() = transported * transition.topRows<IDX::BOME>().transpose();
 			if (continuous) {
 				// W is continuous covariance per second, independent of IMU or numerical integration frequency.
 				// Integrate (I+sF) W (I+sF)' exactly on [0,dt] in a sum-of-PSD form.
@@ -1032,9 +1037,12 @@ bool EkfImu::propagatePriorAndCovariance(const Scalar t) {
 				covariance.noalias() += dt * midpoint * spectral_density * midpoint.transpose();
 				covariance.noalias() += (dt * dt * dt / 12) * F * spectral_density * F.transpose();
 			} else {
-				const Matrix<IDX::SIZE, SRIMU> dt_g = dt * G;
-				covariance.noalias() += dt_g * R_imu_ * dt_g.transpose();
-				covariance.noalias() += (dt * dt) * Q_;
+				// IMU noise drives only attitude/velocity; both configured noise matrices are diagonal.
+				constexpr int kDrivenStates = IDX::NATT + IDX::NVEL;
+				const Matrix<kDrivenStates, SRIMU> dt_g = dt * G.middleRows<kDrivenStates>(IDX::ATT);
+				covariance.block<kDrivenStates, kDrivenStates>(IDX::ATT, IDX::ATT).noalias() +=
+				        dt_g * R_imu_.diagonal().asDiagonal() * dt_g.transpose();
+				covariance.diagonal() += (dt * dt) * Q_.diagonal();
 			}
 			if (!_relative_reference_active) covariance(BARO_BIAS, BARO_BIAS) += params_->baro_bias_random_walk * dt;
 			if (continuous) {

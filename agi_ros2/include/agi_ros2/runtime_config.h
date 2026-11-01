@@ -159,10 +159,10 @@ inline agi::hardware::NavigationPolicy declareNavigationPolicy(rclcpp::Node& nod
 	rcl_interfaces::msg::ParameterDescriptor descriptor;
 	descriptor.read_only = true;
 	source = node.declare_parameter<std::string>("navigation_source", source, descriptor);
-	if (source == "fc_fused" && mode == "hardware") return agi::hardware::NavigationPolicy::FcFused;
+	if (source == "fc_fused") return agi::hardware::NavigationPolicy::FcFused;
 	if (source == "gnss") return agi::hardware::NavigationPolicy::Gnss;
 	if (source == "rtk") return agi::hardware::NavigationPolicy::Rtk;
-	throw std::invalid_argument("navigation_source must be rtk, gnss or hardware fc_fused");
+	throw std::invalid_argument("navigation_source must be rtk, gnss or fc_fused");
 }
 
 inline double declareObservationDelay(rclcpp::Node& node, const std::optional<RuntimeConfig>& profile, bool baro_enabled = false) {

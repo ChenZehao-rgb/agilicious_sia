@@ -1,9 +1,10 @@
 --- BetaflightPlugin.cc
 +++ BetaflightPlugin.cc
-@@ -62,11 +62,15 @@
+@@ -62,11 +62,16 @@
  #include <gz/sim/components/Pose.hh>
  #include <gz/sim/components/Sensor.hh>
  #include <gz/sim/components/SphericalCoordinates.hh>
++#include <gz/sim/components/Gravity.hh>
 +#include <gz/sim/components/AngularVelocity.hh>
 +#include <gz/sim/components/LinearVelocity.hh>
 +#include <gz/msgs/odometry.pb.h>
@@ -17,7 +18,7 @@
  #define RADSEC2RPM 9.549296585513721
  
  using namespace gz;
-@@ -132,13 +136,16 @@
+@@ -132,13 +137,16 @@
    ///        spherical coordinates are configured (virtual GPS mode)
    double positionXYZ[3];
  
@@ -39,7 +40,7 @@
  /// \brief Rotor class
  class Rotor
  {
-@@ -310,6 +317,44 @@
+@@ -310,6 +318,44 @@
  
    /// \brief Send state to Betaflight
    public: void SendState(EntityComponentManager &_ecm) const;
@@ -84,7 +85,7 @@
  };
  
  ////////////////////////////////////////////////////////////////////////////////
-@@ -381,6 +426,40 @@
+@@ -381,6 +427,40 @@
    // Enable velocity component for the canonical link
    _ecm.CreateComponent(this->dataPtr->modelLinkEntity,
                         components::WorldLinearVelocity());
@@ -125,7 +126,7 @@
  
    // per rotor
    if (_sdf->HasElement("rotor"))
-@@ -445,6 +524,14 @@
+@@ -445,6 +525,14 @@
            << " direction multiplier ('cw' or 'ccw'). Default 'ccw'.\n";
        }
  
@@ -140,7 +141,7 @@
        getSdfParam<double>(rotorSDF, "rotorVelocitySlowdownSim",
            rotor.rotorVelocitySlowdownSim, 1);
  
-@@ -579,13 +666,44 @@
+@@ -579,13 +667,44 @@
    // Update the control surfaces and publish the new state.
    if (_simTime > this->lastControllerUpdateTime)
    {
@@ -186,7 +187,7 @@
    }
  
    this->lastControllerUpdateTime = _simTime;
-@@ -634,32 +752,16 @@
+@@ -634,32 +753,16 @@
  /////////////////////////////////////////////////
  void BetaflightPluginPrivate::ReceiveMotorCommand()
  {
@@ -225,7 +226,7 @@
    {
      // didn't receive a packet
      if (recvSize != -1)
-@@ -713,10 +815,55 @@
+@@ -713,10 +816,55 @@
  }
  
  /////////////////////////////////////////////////
@@ -282,7 +283,25 @@
  
    // Get current simulation time
    // Note: We're using the last update time since we don't have direct access to UpdateInfo here
-@@ -833,27 +980,7 @@
+@@ -729,7 +877,16 @@
+     gzerr << "Unable to get IMU linear acceleration\n";
+     return;
+   }
+-  gz::math::Vector3d linearAccel = accelComp->Data();
++	// Physics acceleration excludes gravity; a real accelerometer measures
++	// specific force. Convert the IMU mount frame into the FLU body first.
++	const auto gravity = _ecm.Component<components::Gravity>(worldEntity(_ecm));
++	if (!gravity) return;
++	const auto imu_rotation = worldPose(this->imuEntity, _ecm).Rot();
++	const auto body_rotation = worldPose(this->modelLinkEntity, _ecm).Rot();
++	const auto specific_force = body_rotation.RotateVectorReverse(imu_rotation.RotateVector(accelComp->Data()) - gravity->Data());
++	// Betaflight SITL negates all three FDM acceleration components before
++	// feeding its virtual accelerometer (FLU, +1 g on body Z at rest).
++	const gz::math::Vector3d linearAccel = -specific_force;
+
+   // copy to pkt
+   pkt.imuLinearAccelerationXYZ[0] = linearAccel.X();
+@@ -833,27 +990,7 @@
      pkt.velocityXYZ[2] = velGazeboWorldFrame.Z();  // Up    (m/s)
    }
  

@@ -17,13 +17,13 @@ from agi_ros2.msg import FcEstimatedState, FcEstimatorStatus
 
 
 class FcHarness(Harness):
-    def __init__(self):
+    def __init__(self, tcp=False):
         self.clock_origin = time.monotonic()
         self.remote_anchor = 100.
         self.clock_rate = 1.
         self.next_state = self.next_health = 0.
         self.state_sequence = 0
-        super().__init__(state_source='fc_fused')
+        super().__init__(state_source='fc_fused', tcp=tcp)
         self.streaming_gps = self.streaming_attitude = self.streaming_baro = False
         self.values['fc_state'] = []
         self.values['fc_health'] = []
@@ -141,6 +141,39 @@ class FcClockTests(unittest.TestCase):
         self.assertTrue(all(s.valid for s in states), {s.reason for s in states if not s.valid})
         self.assertTrue(all(a.sample_steady_time < b.sample_steady_time for a, b in zip(states, states[1:])))
         self.assertTrue(all(s.sample_steady_time <= s.receive_steady_time for s in states))
+
+
+class FcTcpTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls): rclpy.init()
+
+    @classmethod
+    def tearDownClass(cls): rclpy.shutdown()
+
+    def test_tcp_uses_same_decoder_clock_and_reconnect_invalidation(self):
+        h = FcHarness(tcp=True)
+        self.addCleanup(h.close)
+        h.drive(2.)
+        self.assertTrue(h.values['fc_state'][-1].valid)
+        self.assertTrue(h.values['fc_health'][-1].valid)
+        state = h.values['fc_state'][-1]
+        self.assertEqual((state.position.x, state.position.y, state.position.z), (2., 1., 1.))
+        self.assertTrue(0 <= state.receive_steady_time - state.sample_steady_time <= .015)
+        session = state.source_session
+        start = len(h.values['fc_state'])
+        h.connection.close()
+        h.connection = None
+        h.drive(2.)
+        self.assertIsNone(h.proc.poll())
+        self.assertTrue(any(not s.valid for s in h.values['fc_state'][start:]))
+        self.assertTrue(h.values['fc_state'][-1].valid)
+        self.assertNotEqual(h.values['fc_state'][-1].source_session, session)
+        h.streaming = False
+        h.drive(1.2)
+        self.assertEqual(h.status()['fc_state_fresh'], 'false')
+        # The adapter/output watchdog owns lease expiry; the receiver must not
+        # publish the cached sample with a newer epoch while TCP stays connected.
+        self.assertGreater(time.monotonic() - h.values['fc_state'][-1].sample_steady_time, 1.)
 
 
 if __name__ == '__main__':

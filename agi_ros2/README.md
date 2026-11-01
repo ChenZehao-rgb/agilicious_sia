@@ -25,7 +25,7 @@ Gazebo、Betaflight SITL 和传感器适配器，CM5、Jetson 或开发机运行
 ```
 
 本次软件适配的目标是**先人工起飞，再通过实体 AUTO 开关捕获当前位置和航向、执行 MPC 或 GEO 悬停**。
-入口不自动 ARM、不自动起飞或降落。默认空轨迹；`hardware.yaml` 默认 `shadow_only: true`，
+入口不自动 ARM、不自动起飞或降落。空轨迹时捕获悬停；`hardware.yaml` 默认 `shadow_only: true`，
 只计算与录包、不发送控制帧。实机机体、精度门限、围栏和推力数据需要填入实测值，
 仓库中的零值是未配置标记，不是飞行参数。历史 SITL/伪串口结果不代表当前固件已刷入飞控，
 也不代表已经完成 CM5 时延验收或真实飞行验证。
@@ -182,6 +182,9 @@ python3 betaflight_sitl/run.py
 ```
 
 只启动 Gazebo、Betaflight SITL、`gazebo_sensors`，不会启动 flight 或自动 ARM。
+开发机若曾使用 `-DAGI_ROS2_GAZEBO=OFF` 构建，先执行
+`./agi_ros2/scripts/build.sh -DAGI_ROS2_GAZEBO=ON`；CMake 会保留旧选项，
+普通增量构建可能留下与当前 ROS 消息库不匹配的旧 `gazebo_sensors`。
 ROS2 分支从 `config/simulation.yaml` 的 `bridge` 段写入并回读**隔离的 SITL EEPROM**。
 如使用自选配置，同时给模拟器和控制机指定同一份配置内容：
 
@@ -196,17 +199,48 @@ python3 betaflight_sitl/run.py --runtime-config /absolute/path/simulation.yaml
 ./agi_ros2/scripts/launch.sh
 ```
 
-默认 `mode:=sitl`、空轨迹、正常时效检查。不同主机共享 ROS_DOMAIN_ID 和 DDS 网络设置；
+默认 `mode:=sitl`、正常时效检查；实际轨迹由 `simulation.yaml` 的 `flight.trajectory` 决定，
+需要捕获悬停时将其设为 `''`。不同主机共享 ROS_DOMAIN_ID 和 DDS 网络设置；
 控制机 `simulation.yaml` 的 `bridge.host` 指向运行 Betaflight 的开发机 IP。
 不要把运行于 CM5/Jetson 的联合仿真改成 hardware 模式；真实传感器来源才决定切换。
-融合、控制、输出三节点必须共处同一 Linux 主机，因为它们交换 boot ID 和单调时钟证据；
-Gazebo 与传感器适配器可以在另一台主机，用 `/clock` 统一仿真时间。
+当前默认 `state.source: fc_fused`：Gazebo 虚拟传感器 → Betaflight SITL 内部估计器 →
+TCP UART2（5762）MAVLink → `mavlink_sensor_node` → `fc_state_adapter_node` → 控制/输出。
+ROS 不启动 `state_fusion_node`，也不把 Gazebo 真值作为控制状态。
+`run.py` 仅给隔离的 SITL EEPROM 配置 MAVLink UART2；所选 ELF 必须包含
+ODOMETRY 和 BF_ESTIMATOR_HEALTH_V1 支持，当前本地 `mavlink_odometry` 固件具备该支持。
+首次更新后需重新构建 Gazebo 插件（运行 `run.py` 时不要加 `--no-build`）：
+现有插件补丁已将物理加速度转换为加速度计比力，并按 SITL 虚拟加速度计的符号约定发送，
+避免悬停时漏掉重力项而让 FC 垂直速度持续偏离。此处只修正仿真传感器输入，不修改 FC 滤波器。
+
+MAVLink 接收器、FC adapter、控制和输出节点使用主机时间，并须共处同一 Linux 主机；
+FC boot time 通过与实机相同的 TIMESYNC 映射，状态年龄、协方差与撤权检查不放宽。
+Gazebo 可在另一台机器，此时把 `mavlink.device` 的 IP 和 `bridge.host` 指向仿真机。
+`/ground_truth` 和 `/clock` 保留仿真时间，仅用于独立对照，不能与主机时间的 `/fused_state` 直接按时间戳相减。
+FC 数据停流和会话重置仍按现有规则撤权。
+SITL 固件的状态、观测年龄和 TIMESYNC 已统一使用主机单调时间；物理仿真时钟仍用于原有仿真调度。
+虚拟 UART 按已配置波特率模拟 8N1 字节发送，避免 TCP 瞬发整帧时的延迟不对称触发未来样本拒绝。
+TCP stream 创建与事件处理也已互斥，修复端口已监听却无法进入 CLI 的启动竞争。
+这些修复在本地 Betaflight 源码中；`run.py` 只复制所选 ELF，不编译飞控固件。
+更新固件源码后需重新构建，再运行模拟器（当前配置指向下列产物）：
+
+```bash
+make -C /home/sia/betaflight TARGET=SITL EXTRA_FLAGS='-DUSE_TELEMETRY -DUSE_TELEMETRY_MAVLINK' -j4
+```
+
+CLI 失败时，错误会给出隔离目录 `build/betaflight_sitl/runtime/betaflight/configure.log`，保留实际启动日志。
+时效、协方差和撤权阈值未放宽；无需改为 ROS 仿真时间或添加固定延迟。
+本机验证：连续 10 次 CLI 配置启动通过；AUTO 连续授权约 67 s，未来样本计数为 0，停止 SITL 后正常撤权。
+FC 的本地位置原点由固件估计器建立，不保证与 Gazebo 世界原点重合；在线目标以 `/fused_state` 的 odom 为准。
+
+如需旧 ROS EKF 仿真，将同一配置副本的 `state.source` 改为 `ros_ekf`，同时传给
+`run.py --runtime-config` 和 `launch.sh runtime_config:=`；该模式仍使用 `/clock`。
+机体参数和推力映射仍应对应各自真实/仿真机体，不能用配置相同来代替物理模型一致。
 
 终端 3，启动唯一模拟接收机：
 
 ```bash
 source install/agi_ros2/local_setup.bash
-ros2 run agi_ros2 sim_rc.py --ros-args -p use_sim_time:=true
+ros2 run agi_ros2 sim_rc.py --ros-args -p use_sim_time:=false
 ```
 
 随后在已 source 的终端操作：
@@ -217,6 +251,7 @@ ros2 topic echo /status
 ros2 param set /sim_rc kill false
 # 等 Betaflight 启动校准完成，AUTO 保持 false，低油门 ARM。
 ros2 param set /sim_rc armed true
+# fc_fused 在 ARM 后才具备水平融合；检查 /fused_state.fc_state_valid 和控制预热。
 ros2 param set /sim_rc throttle 1420  # 仅当前仿真模型示例，不是实机油门
 # 到达合适高度，确认 AUTO_STANDBY 后：
 ros2 param set /sim_rc auto_switch true
@@ -224,9 +259,48 @@ ros2 param set /sim_rc auto_switch true
 ros2 param set /sim_rc kill true
 ```
 
+旧 `ros_ekf` 模式的 `sim_rc` 使用 `use_sim_time:=true`。默认 FC 模式的模拟接收机
+携带主机单调时钟和独立会话标识，沿用实机的开关有效性检查；RC 输入与输出传输仍是模拟接口。
+
 需要 CSV 时在 `simulation.yaml` 的 `flight.trajectory` 填路径，或传 `trajectory:=路径`。
 轨迹在**授权成功的 AUTO 边沿**对齐当前时刻、位置和航向；未 ARM、启动 AUTO high 或
 故障恢复时不会提前消耗轨迹时间。恢复须健康预热并重新观察 AUTO low→high。
+
+### AUTO 悬停后在线发点
+
+先将仿真配置中的 `flight.trajectory` 设为 `''`，按上述流程人工起飞并切入 AUTO。
+可以使用配置副本，通过 `--runtime-config` 和 `runtime_config:=` 传给模拟器与 flight；
+空的 `trajectory:=` 启动参数不会清空 YAML 中已有的 CSV。
+待当前位置距悬停参考不超过 0.2 m、速度不超过 0.2 m/s，再执行：
+
+```bash
+ros2 topic pub --once /go_to_position geometry_msgs/msg/PointStamped "{header: {frame_id: odom}, point: {x: 5.0, y: 0.0, z: 2.0}}"
+```
+
+目标是 **odom ENU 绝对位置**，不相对 AUTO 捕获点偏移；保持原参考航向，消息时间戳不参与规划。
+仿真与实机共用 `ControlNode → HardwarePilot → CapturedReference → MPC/GEO → command_output_node`，
+传感器来源、时钟及 UDP/UART 传输按模式适配；命令不会自动 ARM、起飞或获取 AUTO 授权。
+规划使用 `pilot.go_to_pose_mean_vel`，轨迹时长为 `max(距离/该速度, 1.5 s)`；运动中拒绝新目标。
+实机仍检查已配置的 odom 围栏，正常授权、时效和故障撤权检查继续生效。
+
+控制日志的 `go_to_position accepted` 表示本周期规划与控制检查通过；
+`segment ended; holding target` 仅表示参考段结束。应继续检查 `/reference` 为目标位置、
+`/computation_status` 为 `online target stable hover`，并确认 `/output_status.override_active`。
+SITL 可额外用 `/ground_truth` 验证真实仿真运动；撤权会清除在线目标，恢复 AUTO 后不会重放。
+
+已构建并 source ROS/安装环境后，可运行保留的 **ROS EKF** 到点回归（占用本机 SITL 端口，输出目录须不存在）。
+连续复测前确认没有其他模拟器占用 TCP 5761/5762：
+
+```bash
+ROS_DOMAIN_ID=94 ROS_LOCALHOST_ONLY=1 GZ_PARTITION=agi_online_goal \
+  python3 agi_ros2/tests/test_sitl_go_to_position.py --output /tmp/agi_online_goal_check
+```
+
+脚本使用真实 `sim_rc` 的参数服务执行上述开关顺序，实际调用本节发点命令；
+配置副本选择 `ros_ekf` 并清空 CSV，保留正常时效检查，记录 rosbag、状态 CSV 和 `result.json`。
+它检查目标参考、连续输出授权、末尾三秒的融合位置及 Gazebo 真值误差/速度，以及 KILL 撤权。
+状态停顿的 CPU 耗时定位、共用 EKF 优化和完整到点复测结果见
+[2026-10-30 验证记录](analysis/sitl_runtime_stall_20261030/README.md)。
 
 `flight.sitl_delay_test` 默认 false。显式 `sitl_delay_test:=true` 仅用于保留的仿真延迟实验：
 取消多项年龄/耗时/停流检查并重发旧命令，不能用该运行结果作为严格保护验收。

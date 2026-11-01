@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 """Explicit simulated receiver. Change parameters with ros2 param set /sim_rc ..."""
+import time
+import uuid
+from pathlib import Path
+
 import rclpy
 from rclpy.node import Node
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
@@ -13,6 +17,8 @@ class SimRc(Node):
         for name, value in dict(armed=False, auto_switch=False, kill=True, rc_link=True,
                                 roll=1500, pitch=1500, throttle=1000, yaw=1500).items():
             self.declare_parameter(name, value)
+        self.clock_id = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+        self.session = 'sim_rc:' + uuid.uuid4().hex
         self.pub = self.create_publisher(Authority, 'authority', 1)
         # Parameter services use the default callback group. Keep the receiver
         # heartbeat runnable while a parameter request is being handled.
@@ -22,8 +28,11 @@ class SimRc(Node):
     def tick(self):
         msg = Authority()
         msg.receiver_valid = True
-        msg.session_id = "sim_rc"
+        msg.session_id = self.session
+        msg.clock_id = self.clock_id
+        msg.rc_request_steady_time = msg.status_request_steady_time = time.monotonic()
         msg.header.stamp = self.get_clock().now().to_msg()
+        msg.rc_stamp = msg.status_stamp = msg.header.stamp
         for name in ('armed', 'auto_switch', 'kill', 'rc_link'):
             setattr(msg, name, self.get_parameter(name).value)
         msg.manual_aetr = [max(1000, min(2000, self.get_parameter(k).value))

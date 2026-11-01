@@ -2,6 +2,7 @@
 #include <gz/msgs/imu.pb.h>
 #include <gz/msgs/odometry.pb.h>
 
+#include <agi_ros2/msg/fc_estimator_status.hpp>
 #include <agi_ros2/msg/health.hpp>
 #include <agi_ros2/msg/rtk.hpp>
 #include <cmath>
@@ -17,6 +18,9 @@
 class GazeboSensors : public rclcpp::Node {
 public:
 	GazeboSensors() : Node("gazebo_sensors") {
+		const auto source = declare_parameter<std::string>("state_source", "ros_ekf");
+		if (source != "ros_ekf" && source != "fc_fused") throw std::invalid_argument("Invalid state_source");
+		_fc_fused = source == "fc_fused";
 		declare_parameter<double>("rtk_rate", 10.0);
 		declare_parameter<double>("rtk_delay", 0.08);
 		declare_parameter<double>("position_noise", 0.02);
@@ -27,8 +31,16 @@ public:
 		declare_parameter<bool>("drop_imu", false);
 		declare_parameter<bool>("drop_rtk", false);
 		declare_parameter<bool>("config_verified", false);
-		_imu = create_publisher<sensor_msgs::msg::Imu>("sensors/imu", rclcpp::SensorDataQoS());
-		_rtk = create_publisher<agi_ros2::msg::Rtk>("sensors/rtk", 10);
+		if (!_fc_fused) {
+			_imu = create_publisher<sensor_msgs::msg::Imu>("sensors/imu", rclcpp::SensorDataQoS());
+			_rtk = create_publisher<agi_ros2::msg::Rtk>("sensors/rtk", 10);
+		} else {
+			_fc_status = create_subscription<agi_ros2::msg::FcEstimatorStatus>(
+			        "sensors/fc/estimator_status", 1, [this](agi_ros2::msg::FcEstimatorStatus::ConstSharedPtr status) {
+				        std::lock_guard<std::mutex> lock(_mutex);
+				        _fc_health = *status;
+			        });
+		}
 		_health = create_publisher<agi_ros2::msg::Health>("health", 1);
 		_truth = create_publisher<nav_msgs::msg::Odometry>("ground_truth", 1);
 		_clock = create_publisher<rosgraph_msgs::msg::Clock>("/clock", 10);
@@ -57,7 +69,7 @@ private:
 		_clock->publish(c);
 	}
 	void onImu(const gz::msgs::IMU& m) {
-		if (get_parameter("drop_imu").as_bool()) return;
+		if (_fc_fused || get_parameter("drop_imu").as_bool()) return;
 		sensor_msgs::msg::Imu out;
 		out.header.stamp = time(m.header().stamp());
 		out.header.frame_id = "base_link";
@@ -96,6 +108,12 @@ private:
 		truth.twist.twist.linear.y = v.y();
 		truth.twist.twist.linear.z = v.z();
 		_truth->publish(truth);
+		if (_fc_fused) {
+			// Only simulator health/truth are published here. State comes from the
+			// real SITL estimator through MAVLink, with the same host-time checks.
+			publishHealth(now(), t);
+			return;
+		}
 		const double rate = get_parameter("rtk_rate").as_double(), delay = get_parameter("rtk_delay").as_double();
 		if (!std::isfinite(rate) || rate <= 0 || !std::isfinite(delay) || delay < 0 || delay > 1) return;
 		if (t - _last_fix >= 1 / rate) {
@@ -125,10 +143,20 @@ private:
 			if (!get_parameter("drop_rtk").as_bool()) _rtk->publish(_pending.front().second);
 			_pending.pop_front();
 		}
+		publishHealth(truth.header.stamp, t);
+	}
+	void publishHealth(const builtin_interfaces::msg::Time& stamp, double t) {
 		agi_ros2::msg::Health h;
-		h.header = truth.header;
-		h.imu_calibrated = true;
-		h.converged = t > 2;
+		h.header.stamp = stamp;
+		h.header.frame_id = "odom";
+		h.state_source = _fc_fused ? "fc_fused" : "ros_ekf";
+		h.state_session = _fc_health.source_session;
+		h.state_reset_counter = _fc_health.reset_counter;
+		const double health_age = now().seconds() - rclcpp::Time(_fc_health.header.stamp).seconds();
+		h.fc_estimator_healthy = _fc_health.valid && _fc_health.clock_aligned && (_fc_health.flags & 0xc3) == 0xc3 &&
+		                         health_age >= 0 && health_age <= .060;
+		h.imu_calibrated = !_fc_fused;
+		h.converged = !_fc_fused && t > 2;
 		h.config_verified = get_parameter("config_verified").as_bool();
 		h.thrust_calibrated = true;
 		h.thrust_mapping_ready = true;
@@ -138,6 +166,9 @@ private:
 		_health->publish(h);
 	}
 	rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr _imu;
+	bool _fc_fused{false};
+	agi_ros2::msg::FcEstimatorStatus _fc_health;
+	rclcpp::Subscription<agi_ros2::msg::FcEstimatorStatus>::SharedPtr _fc_status;
 	rclcpp::Publisher<agi_ros2::msg::Rtk>::SharedPtr _rtk;
 	rclcpp::Publisher<agi_ros2::msg::Health>::SharedPtr _health;
 	rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr _truth;

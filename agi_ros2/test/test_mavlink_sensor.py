@@ -7,6 +7,7 @@ import importlib.util
 import os
 from pathlib import Path
 import pty
+import socket
 import subprocess
 import tempfile
 import time
@@ -25,10 +26,20 @@ from agi_ros2.msg import Barometer, Heading, ImuTiming, Navigation
 
 
 class Harness:
-    def __init__(self, **params):
+    def __init__(self, tcp=False, **params):
         self.tmp = tempfile.TemporaryDirectory(prefix='agi_mavlink_')
+        self.tcp = tcp
+        self.connection = None
         self.device = Path(self.tmp.name) / 'uart'
-        self.new_port()
+        if tcp:
+            self.server = socket.socket()
+            self.server.bind(('127.0.0.1', 0))
+            self.server.listen(1)
+            self.server.setblocking(False)
+            endpoint = 'tcp://127.0.0.1:' + str(self.server.getsockname()[1])
+        else:
+            self.new_port()
+            endpoint = str(self.device)
         self.epoch = time.monotonic() - 100
         self.peer = mav.MAVLink(self, srcSystem=1, srcComponent=1)
         self.peer.robust_parsing = True
@@ -70,7 +81,7 @@ class Harness:
         binary = os.environ.get('AGI_MAVLINK_SENSOR_BINARY',
                                 str(Path(get_package_prefix('agi_ros2')) / 'lib/agi_ros2/mavlink_sensor_node'))
         args = [str(binary), '--ros-args', '-r', '__ns:=' + self.namespace,
-                '-p', 'device:=' + str(self.device), '-p', 'attitude_rate_hz:=100']
+                '-p', 'device:=' + endpoint, '-p', 'attitude_rate_hz:=100']
         for key, value in params.items(): args.extend(['-p', key + ':=' + str(value)])
         self.log = open(Path(self.tmp.name) / 'node.log', 'w+')
         self.proc = subprocess.Popen(args, stdout=self.log, stderr=self.log)
@@ -83,6 +94,11 @@ class Harness:
 
     def write(self, data):
         # Deliberately split every frame: the receiver must retain parser state.
+        if self.tcp:
+            if self.connection:
+                self.connection.sendall(data[:3])
+                self.connection.sendall(data[3:])
+            return
         os.write(self.master, data[:3])
         os.write(self.master, data[3:])
 
@@ -113,7 +129,18 @@ class Harness:
             if self.proc.poll() is not None:
                 self.log.seek(0)
                 raise AssertionError('node exited: ' + self.log.read())
-            try: data = os.read(self.master, 8192)
+            try:
+                if self.tcp:
+                    if self.connection is None:
+                        self.connection, _ = self.server.accept()
+                        self.connection.setblocking(False)
+                        self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                    data = self.connection.recv(8192)
+                    if not data:
+                        self.connection.close()
+                        self.connection = None
+                else:
+                    data = os.read(self.master, 8192)
             except BlockingIOError: data = b''
             for m in self.peer.parse_buffer(data) or []:
                 if m.get_type() == 'TIMESYNC' and self.sync:
@@ -147,7 +174,11 @@ class Harness:
         self.proc.terminate()
         try: self.proc.wait(timeout=3)
         except subprocess.TimeoutExpired: self.proc.kill(); self.proc.wait()
-        os.close(self.master); os.close(self.slave)
+        if self.tcp:
+            if self.connection: self.connection.close()
+            self.server.close()
+        else:
+            os.close(self.master); os.close(self.slave)
         self.node.destroy_node(); self.log.close(); self.tmp.cleanup()
 
 

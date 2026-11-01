@@ -47,6 +47,7 @@ private:
 	std::string _thrust_model;
 	bool _shadow_only = false;
 	bool _simulation_time = false;
+	bool _latched_receiver = false;
 	bool _timing_checks = true;
 	agi::hardware::NavigationPolicy _navigation_policy = agi::hardware::NavigationPolicy::Rtk;
 	double _mass = 0.0;
