@@ -283,10 +283,20 @@ OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 \
 上述环境变量只影响本次命令，不改变控制器或时效门限。发布端打印 `publishing #1`
 不代表目标被接受；以控制日志的 `go_to_position accepted` 和持续有效的输出授权为准。
 
-目标是 **odom ENU 绝对位置**，不相对 AUTO 捕获点偏移；保持原参考航向，消息时间戳不参与规划。
+目标是 **odom ENU 绝对位置**（x 东、y 北、z 上，单位 m），不相对 AUTO 捕获点偏移；
+例如 `z=2` 是 odom 原点以上 2 m，不是相对当前高度增加 2 m。消息时间戳不参与规划，可省略。
+有水平位移时，先保持起点位置，沿最短角度平滑转向 `atan2(目标y-起点y, 目标x-起点x)`，
+再沿直线移动，到点后持续保持目标位置和末端航向。水平位移不超过 1e-6 m 视为数值上的竖直段，
+保持原航向；零位移同样保持。起点取当前悬停参考，用实际状态核对上述稳定条件。
 仿真与实机共用 `ControlNode → HardwarePilot → CapturedReference → MPC/GEO → command_output_node`，
 传感器来源、时钟及 UDP/UART 传输按模式适配；命令不会自动 ARM、起飞或获取 AUTO 授权。
-规划使用 `pilot.go_to_pose_mean_vel`，轨迹时长为 `max(距离/该速度, 1.5 s)`；运动中拒绝新目标。
+转向和平移均复用 `MinSnapTrajectory` 的完整 Setpoint。转向 yaw 为起终角速度、角加速度均为零的五次多项式；
+转向时长为 `max(1.875*abs(最短转角)/pilot.quadrotor.omega_max[2], 1.5 s)`，
+其中 1.875 是该多项式的峰值角速度系数，无需转向则省略转向段。
+平移使用 `pilot.go_to_pose_mean_vel`，时长为 `max(距离/该速度, 1.5 s)`，总时长为两段之和。
+当前 simulation/hardware 配置分别沿用 1.0 m/s 平均速度和 0.5 rad/s yaw 上限；平均速度不是严格峰值速度限制。
+转向或平移尚未结束时拒绝新目标，不排队；参考段结束后仍须实际速度和位置误差满足上述条件，
+才可在同一次 AUTO 中接收下一目标，不增加等待时间或新的授权门槛。
 实机仍检查已配置的 odom 围栏，正常授权、时效和故障撤权检查继续生效。
 
 控制日志的 `go_to_position accepted` 表示本周期规划与控制检查通过；
@@ -305,6 +315,7 @@ ROS_DOMAIN_ID=94 ROS_LOCALHOST_ONLY=1 GZ_PARTITION=agi_online_goal \
 脚本使用真实 `sim_rc` 的参数服务执行上述开关顺序，实际调用本节发点命令；
 配置副本选择 `ros_ekf` 并清空 CSV，保留正常时效检查，记录 rosbag、状态 CSV 和 `result.json`。
 它检查目标参考、连续输出授权、末尾三秒的融合位置及 Gazebo 真值误差/速度，以及 KILL 撤权。
+加 `--state-source fc_fused --yaw-chain` 可验证 FC 状态链、三个连续目标，以及先转向后移动和末端航向保持。
 状态停顿的 CPU 耗时定位、共用 EKF 优化和完整到点复测结果见
 [2026-10-30 验证记录](analysis/sitl_runtime_stall_20261030/README.md)。
 

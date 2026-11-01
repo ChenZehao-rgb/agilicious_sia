@@ -46,6 +46,7 @@ private:
 	const double _observation_delay;
 	const ReceiverPolicy _receiver_policy;
 	const double _go_to_pose_mean_vel;
+	const double _yaw_rate_max;
 	const std::thread::id _owner;
 	std::unique_ptr<Pilot> _pilot;
 	std::shared_ptr<BridgeBase> _sink;

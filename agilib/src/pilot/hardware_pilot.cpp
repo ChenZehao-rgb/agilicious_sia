@@ -25,6 +25,7 @@ HardwarePilot::HardwarePilot(const PilotParams& params, TimeFunction clock, Time
           _observation_delay(observation_delay),
           _receiver_policy(receiver_policy),
           _go_to_pose_mean_vel(params.go_to_pose_mean_vel_),
+          _yaw_rate_max(params.quad_.omega_max_.z()),
           _owner(std::this_thread::get_id()),
           _reference(std::make_shared<CapturedReference>()),
           _gate(policy, observation_delay, receiver_policy) {
@@ -169,7 +170,7 @@ ControlDecision HardwarePilot::tick(const QuadState& state, Evidence evidence, b
 					result.goal_event = "go_to_position rejected: nonfinite position";
 				} else if (!rejection.empty()) {
 					result.goal_event = "go_to_position rejected: " + rejection;
-				} else if (_reference->goToPosition(*go_to_position, now, _go_to_pose_mean_vel)) {
+				} else if (_reference->goToPosition(*go_to_position, now, _go_to_pose_mean_vel, _yaw_rate_max)) {
 					goal_installed = true;
 					_online_moving = true;
 				} else {

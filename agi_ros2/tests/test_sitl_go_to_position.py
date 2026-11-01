@@ -236,6 +236,10 @@ def main():
         result['truth_odom_offset'] = truth_offset
         targets = [TARGET, (5., 5., 2.), (0., 0., 1.)] if args.yaw_chain else [TARGET]
         for index, target in enumerate(targets):
+            start_ref = xyz(latest['reference'].pose.pose.position)
+            start_heading = yaw(latest['reference'].pose.pose.orientation)
+            horizontal = [target[i]-start_ref[i] for i in range(2)]
+            end_heading = math.atan2(horizontal[1], horizontal[0]) if norm(horizontal) > 1e-6 else start_heading
             goal_start = time.monotonic()
             goal_stream = (out / f'goal_{index}_cli.log').open('w')
             streams.append(goal_stream)
@@ -268,15 +272,28 @@ def main():
             end_wall = events[-1]['wall']
             assert xyz(latest['reference'].pose.pose.position) == list(target)
             goal_result = dict(target=target, accepted=accepted)
+            reference_rows = [r for r in rows['reference'] if accepted['stamp']+.02 <= r['stamp']
+                              and goal_start <= r['wall'] <= end_wall]
+            assert reference_rows
+            turn_rows = [r for r in reference_rows if abs(angle_error(r['yaw'], end_heading)) > 1e-4]
+            assert all(norm(a-b for a,b in zip(r['position'], start_ref)) < 1e-6 for r in turn_rows), \
+                'translation started before reference turn finished'
+            assert all(norm(r['velocity']) < 1e-6 for r in turn_rows), 'nonzero translation during turn'
+            assert max(abs(r['rates'][2]) for r in reference_rows) <= .500001, 'yaw reference exceeds configured rate'
+            goal_result['heading'] = dict(start_rad=start_heading, end_rad=end_heading, turn_samples=len(turn_rows),
+                                          reference_yaw_rate_max=max(abs(r['rates'][2]) for r in reference_rows))
             for topic in ('fused_state', 'ground_truth'):
                 # Truth has simulation stamps, FC has host stamps: use common receive time.
                 window = [x for x in rows[topic] if end_wall-3 <= x['wall'] <= end_wall]
                 expected = [a+b for a,b in zip(target, truth_offset)] if topic == 'ground_truth' else target
                 errors = [norm(a-b for a,b in zip(x['position'], expected)) for x in window]
                 speeds = [norm(x['velocity']) for x in window]
+                heading_errors = [abs(angle_error(x['yaw'], end_heading)) for x in window]
                 assert window
-                goal_result[topic] = dict(position_error_max=max(errors), speed_max=max(speeds))
+                goal_result[topic] = dict(position_error_max=max(errors), speed_max=max(speeds),
+                                         heading_error_max_deg=math.degrees(max(heading_errors)))
                 assert max(errors) <= .2 and max(speeds) <= .2, topic + ' not stably at target'
+                assert max(heading_errors) <= math.radians(3), topic + ' not holding terminal heading'
             result['goals'].append(goal_result)
         end_wall = time.monotonic()
         active_rows = [x for x in rows['computation_status'] if auto_start+.1 <= x['wall'] <= end_wall]
