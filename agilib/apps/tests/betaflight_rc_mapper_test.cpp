@@ -1,11 +1,52 @@
 #include "agilib/bridge/betaflight/betaflight_rc_mapper.hpp"
+
+#include <sys/socket.h>
+#include <unistd.h>
+
 #include <algorithm>
 #include <cmath>
 #include <iostream>
 #include <stdexcept>
 
+#include "agilib/bridge/betaflight_udp/betaflight_udp_bridge.hpp"
+
+namespace {
+class TestUdpBridge : public agi::BetaflightUdpBridge {
+public:
+	using BetaflightUdpBridge::BetaflightUdpBridge;
+	using BetaflightUdpBridge::sendCommand;
+};
+
+void checkUdpBodyRateSigns() {
+	const int receiver = socket(AF_INET, SOCK_DGRAM, 0);
+	sockaddr_in address{};
+	address.sin_family = AF_INET;
+	address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	if (receiver < 0 || bind(receiver, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0)
+		throw std::runtime_error("Cannot bind loopback test receiver");
+	socklen_t size = sizeof(address);
+	if (getsockname(receiver, reinterpret_cast<sockaddr*>(&address), &size) != 0)
+		throw std::runtime_error("Cannot get loopback test port");
+	agi::BetaflightUdpBridgeParams params;
+	params.port = ntohs(address.sin_port);
+	TestUdpBridge bridge(params, [] { return 1.0; });
+	for (double sign : {-1., 1.}) {
+		agi::Command command;
+		command.t = 1.;
+		command.collective_thrust = 9.81;
+		command.omega = agi::Vector<3>::Constant(sign * .3);
+		if (!bridge.sendCommand(command, true)) throw std::runtime_error("UDP send failed");
+		const auto channels = bridge.lastChannels();
+		if (sign * (int(channels[0]) - 1500) <= 0 || sign * (int(channels[1]) - 1500) <= 0 || sign * (int(channels[3]) - 1500) >= 0)
+			throw std::runtime_error("FLU rates must map to RC signs (+roll, +pitch, -yaw)");
+	}
+	close(receiver);
+}
+}  // namespace
+
 int main() {
   try {
+		checkUdpBodyRateSigns();
     agi::BetaflightUdpBridgeParams params;
     for (double expo : {0.0, 35.0, 100.0}) {
       params.expo_percent.setConstant(expo);
@@ -34,7 +75,7 @@ int main() {
       catch (const agi::ParameterException&) { caught = true; }
       if (!caught) throw std::runtime_error("NaN accepted");
     }
-    std::cout << "PASS: ACTUAL mapping, all axes, expo, deadband and NaN\n";
+		std::cout << "PASS: UDP signed body rates, ACTUAL mapping, all axes, expo, deadband and NaN\n";
     return 0;
   } catch (const std::exception& e) {
     std::cerr << e.what() << '\n'; return 1;

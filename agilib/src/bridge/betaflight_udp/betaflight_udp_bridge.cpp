@@ -104,17 +104,8 @@ BetaflightUdpBridge::Channels BetaflightUdpBridge::commandChannels(
   channels.fill(PWM_LOW);
 
   constexpr Scalar RAD_TO_DEG = 180.0 / M_PI;
-  // All three axes pass through with the same sign.  The Gazebo model mounts
-  // its IMU with a 180 degree roll, so Betaflight already receives its gyro in
-  // the frame its sticks are defined in; negating yaw here as well inverts the
-  // yaw rate loop into positive feedback.  That fault is easy to miss because
-  // `yaw_motors_reversed` can hide it: flipping the mixer restores the sign of
-  // the commanded direction while leaving the gyro feedback inverted, so the
-  // vehicle flies but its yaw rate winds up to a steady rotation opposite to
-  // whatever is commanded.
-  const Vector<3> rate_deg_s{command.omega.x() * RAD_TO_DEG,
-                             command.omega.y() * RAD_TO_DEG,
-                             command.omega.z() * RAD_TO_DEG};
+	// Body rates are FLU. Betaflight reverses the RC yaw channel internally.
+	const Vector<3> rate_deg_s{command.omega.x() * RAD_TO_DEG, command.omega.y() * RAD_TO_DEG, -command.omega.z() * RAD_TO_DEG};
   channels[CHANNEL_ROLL] = mapper_.rateToPwm(
     mapper_.inverseActualRate(rate_deg_s.x(), 0), params_.deadband);
   channels[CHANNEL_PITCH] = mapper_.rateToPwm(

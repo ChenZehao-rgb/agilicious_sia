@@ -107,6 +107,9 @@ private:
 		truth.twist.twist.linear.x = v.x();
 		truth.twist.twist.linear.y = v.y();
 		truth.twist.twist.linear.z = v.z();
+		truth.twist.twist.angular.x = m.twist().angular().x();
+		truth.twist.twist.angular.y = m.twist().angular().y();
+		truth.twist.twist.angular.z = m.twist().angular().z();
 		_truth->publish(truth);
 		if (_fc_fused) {
 			// Only simulator health/truth are published here. State comes from the

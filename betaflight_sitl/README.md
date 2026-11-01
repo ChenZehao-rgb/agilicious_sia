@@ -213,12 +213,34 @@ Aeroloop 的 Iris 把每个桨建成两片 gz-sim `LiftDrag` 叶素，升力系�
 更干净的做法是缩小桨关节阻尼，让反作用力矩回到物理量级并使 `kappa` 恒定；那会改变
 伺服的稳态折损系数，需要把整个动力学重新辨识一遍，当前没有做。
 
-**这组增益不能替代桥里的偏航符号。** 桥对三个轴一视同仁地直接传递角速度符号：
-Gazebo 模型的 IMU 带 180° 横滚安装，Betaflight 收到的陀螺已经在它自己的杆量坐标
-系里，桥再对偏航取反就会把速率环变成正反馈。这个故障很容易被
-`yaw_motors_reversed` 掩盖 —— 翻混控能恢复指令方向的符号，却翻不了陀螺反馈，于是
-飞机能飞，但偏航速率会缓慢卷绕到一个与指令反号的恒定转速。降低增益只会把卷绕时间
-从秒级拉长到几十秒，看起来像"慢慢偏航"。
+**偏航链路统一使用右手 FLU 机体系。** Gazebo IMU 安装旋转为 `Rx(pi)`，
+因此 FDM 陀螺经 `(x, -y, -z)` 转成 Betaflight 内部机体系，供速率环、Mahony
+姿态积分和遥测共同使用。ROS 与独立 UDP 桥都对 RC yaw 取反，以抵消 Betaflight
+`yaw_control_reversed=OFF` 时的内部 RC 反号；隔离 EEPROM 使用
+`yaw_motors_reversed=OFF`，让正 PID yaw 对应正机体 Z 力矩。
+不能只改 RC 或混控而保留错误陀螺符号，否则可能出现内环能跟随、外环航向却反向积分。
+
+Gazebo 四元数先撤销插件的 `Rx(pi)` 共轭，再左乘 `Rz(-pi/2)`，将 ENU 转为
+NWU，供虚拟磁场和可选直接姿态路径使用。默认仍运行真实姿态估计器。
+启动器启用已有虚拟磁罗盘的 `trust_mag=ON`，并用 `mag_declination=20` 匹配
+合成磁场的东偏 2°。否则默认 `trust_mag=OFF` 时，侧飞/倒飞制动可能被 GPS COG
+启发式误认为向前飞行，把航迹方向误当成机头方向，使姿态偏离真值；单纯修正陀螺和
+RC 符号不能消除此偏差。此设置只写仿真 EEPROM，实机需以真实磁场和标定为依据。
+`/ground_truth` 同时发布机体 FLU 角速度，用于与 FC 状态及指令逐段核对。
+Betaflight 的磁场有效性判断允许单个轴过零，仍拒绝全零和非有限向量；
+传感器启用、`trust_mag`、标定过程与样本时效检查保留，避免旋转时磁航向标志瞬间丢失。
+
+该修改需要同时更新 ROS/独立 UDP 桥和 Betaflight SITL，不能只更新其中一侧。
+本机 ELF 的构建命令为：
+
+```bash
+make -C /home/sia/betaflight TARGET=SITL \
+  EXTRA_FLAGS='-DUSE_TELEMETRY -DUSE_TELEMETRY_MAVLINK' -j4
+./agi_ros2/scripts/build.sh
+```
+
+`yaw_motors_reversed=OFF` 由启动器写入隔离的仿真 EEPROM；不是实机电机设置建议。
+实机 RC yaw 原本已有反号补偿，本次保持其行为。
 
 ## 隔离和兼容处理
 

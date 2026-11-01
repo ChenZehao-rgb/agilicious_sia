@@ -274,8 +274,14 @@ ros2 param set /sim_rc kill true
 待当前位置距悬停参考不超过 0.2 m、速度不超过 0.2 m/s，再执行：
 
 ```bash
-ros2 topic pub --once /go_to_position geometry_msgs/msg/PointStamped "{header: {frame_id: odom}, point: {x: 5.0, y: 0.0, z: 2.0}}"
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 \
+  ros2 topic pub --once /go_to_position geometry_msgs/msg/PointStamped "{header: {frame_id: odom}, point: {x: 5.0, y: 0.0, z: 2.0}}"
 ```
+
+同机运行 SITL 时，为这个 CLI 进程限制数值库线程数：`ros2 topic pub` 会导入 NumPy，
+其默认线程池启动负载可能扰动仿真与飞控调度，触发 FC 状态超时撤权。
+上述环境变量只影响本次命令，不改变控制器或时效门限。发布端打印 `publishing #1`
+不代表目标被接受；以控制日志的 `go_to_position accepted` 和持续有效的输出授权为准。
 
 目标是 **odom ENU 绝对位置**，不相对 AUTO 捕获点偏移；保持原参考航向，消息时间戳不参与规划。
 仿真与实机共用 `ControlNode → HardwarePilot → CapturedReference → MPC/GEO → command_output_node`，
@@ -301,6 +307,21 @@ ROS_DOMAIN_ID=94 ROS_LOCALHOST_ONLY=1 GZ_PARTITION=agi_online_goal \
 它检查目标参考、连续输出授权、末尾三秒的融合位置及 Gazebo 真值误差/速度，以及 KILL 撤权。
 状态停顿的 CPU 耗时定位、共用 EKF 优化和完整到点复测结果见
 [2026-10-30 验证记录](analysis/sitl_runtime_stall_20261030/README.md)。
+
+验证默认 FC 状态源的 yaw 整条链路时，使用以下扩展回归：
+
+```bash
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 \
+ROS_DOMAIN_ID=94 ROS_LOCALHOST_ONLY=1 GZ_PARTITION=agi_yaw_check \
+  python3 agi_ros2/tests/test_sitl_go_to_position.py --state-source fc_fused --yaw-chain \
+  --output /tmp/agi_yaw_chain_check
+```
+
+它检查正负 yaw 杆量对应的 Gazebo/FC 角速度和实际航向变化，再切 AUTO，依次到达
+`(5,0,2)`、`(5,5,2)`、`(0,0,1)`，每点持续稳定 15 秒，检查全程航向误差及授权。
+脚本发点使用 `--once -w 2` 等待控制节点和录包节点建立订阅；仍以控制端接受事件为准。
+FC 与真值时间戳属于不同时钟域，测试用共同接收时间配对，位置比较使用悬停时捕获的原点差。
+SITL 必须配套重编译修正后的 Betaflight ELF，详见 [yaw 坐标约定](../betaflight_sitl/README.md#betaflight-内环增益)。
 
 `flight.sitl_delay_test` 默认 false。显式 `sitl_delay_test:=true` 仅用于保留的仿真延迟实验：
 取消多项年龄/耗时/停流检查并重发旧命令，不能用该运行结果作为严格保护验收。

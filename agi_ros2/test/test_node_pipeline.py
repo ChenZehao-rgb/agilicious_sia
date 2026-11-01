@@ -591,6 +591,12 @@ class NodePipelineTest(unittest.TestCase):
         self.assertTrue(any(s.override_active for s in h.received['output_status']), [s.reason for s in h.received['output_status'][-10:]])
         self.assertEqual(h.packets[-1][5], 2000)
         self.assertGreater(h.packets[-1][2], 1500)  # Positive SITL pitch.
+        for rate in (.3, -.3):
+            h.body_rates = (.1, .2, rate)
+            h.run(.1, commands=True)
+            self.assertTrue(h.received['output_status'][-1].override_active)
+            # UDP packet: timestamp, roll, pitch, throttle, yaw, AUX1.
+            self.assertLess(rate * (h.packets[-1][4] - 1500), 0)
         h.run(0.06, commands=False)
         self.assertEqual(h.packets[-1][5], 1000)
         self.assertGreater(h.received['output_status'][-1].fault_count, 0)
@@ -678,6 +684,11 @@ class NodePipelineTest(unittest.TestCase):
         self.assertGreater(frames[-1][0], 1500)
         self.assertGreater(frames[-1][1], 1500)  # Pitch uses the same axis as the returned gyro.
         self.assertGreater(frames[-1][3], 1500)
+        for rate in (.3, -.3):
+            h.body_rates = (.1, .2, rate)
+            h.run(.1, commands=True)
+            self.assertTrue(h.received['output_status'][-1].override_active)
+            self.assertLess(rate * (self.rc_frames()[-1][3] - 1500), 0)
         h.kill = True
         h.run(0.08, commands=True)
         self.assertFalse(h.received['output_status'][-1].override_active)

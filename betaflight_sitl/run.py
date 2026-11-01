@@ -353,10 +353,14 @@ def expected_betaflight_settings(bridge_config: Path) -> Dict[str, str]:
         "deadband": str(scalar_int("deadband")),
         "yaw_deadband": str(scalar_int("yaw_deadband")),
         "yaw_control_reversed": "OFF",
-        # Aeroloop's Iris is a props-in airframe (M0/M3 CW, M1/M2 CCW).
-        # This is the motor-yaw mixer polarity, not the RC yaw direction above.
-        # 注意区分：这是混控器的电机偏航极性，不是上面的遥控偏航方向。
-        "yaw_motors_reversed": "ON",
+        # With the corrected FLU gyro, positive PID yaw must produce positive
+        # body-Z torque. The Iris joint-reaction plant requires this polarity;
+        # it is independent of the clockwise-positive RC yaw convention.
+        "yaw_motors_reversed": "OFF",
+        # sitl.c supplies a calibrated virtual field with 2 deg east declination.
+        # COG alone cannot anchor yaw during sideways/backwards point flight.
+        "trust_mag": "ON",
+        "mag_declination": "20",
         # The bridge's throttle equation assumes Betaflight's curve is linear.
         # 桥接侧的油门换算假设曲线为线性，因此必须把 mid/expo 固定成线性。
         "thr_mid": "50",
@@ -590,9 +594,11 @@ def prepare_runtime_betaflight(
         with wait_for_tcp(5761, config_process) as connection:
             enter_betaflight_cli(connection)
             run_cli_command(connection, "aux 0 0 0 1700 2100 0 0")
-            # The generic SITL target defaults this to OFF, while Betaflight's
-            # official SITL_GAZEBO target and the Aeroloop Iris require props-in.
-            run_cli_command(connection, "set yaw_motors_reversed = ON")
+            # Match the Iris torque sign to the FLU gyro/rate-loop convention,
+            # including launches without a separate bridge configuration.
+            run_cli_command(connection, "set yaw_motors_reversed = OFF")
+            run_cli_command(connection, "set trust_mag = ON")
+            run_cli_command(connection, "set mag_declination = 20")
             if arm_bridge_config is not None:
                 # 先写入，再立即回读校验：两者用的是同一份期望值。
                 apply_bridge_settings(connection, arm_bridge_config)

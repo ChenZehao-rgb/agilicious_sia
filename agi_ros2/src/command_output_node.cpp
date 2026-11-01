@@ -293,12 +293,11 @@ std::array<uint16_t, 4> CommandOutputNode::mapCommand() const {
 			throw std::out_of_range("Requested body rate exceeds the calibrated Betaflight ACTUAL rate envelope");
 	}
 	std::array<uint16_t, 4> channels = kIdleChannels;
-	const double sign = _mode == "hardware" ? -1.0 : 1.0;
 	channels[0] = _mapper->rateToPwm(_mapper->inverseActualRate(_command.body_rates.x * kRadiansToDegrees, 0), _bridge_params.deadband);
-	// Pitch follows the returned gyro axis. Betaflight reverses the hardware yaw RC channel internally.
+	// Betaflight reverses RC yaw internally in both hardware and SITL; body rates are FLU.
 	channels[1] = _mapper->rateToPwm(_mapper->inverseActualRate(_command.body_rates.y * kRadiansToDegrees, 1), _bridge_params.deadband);
-	channels[3] = _mapper->rateToPwm(_mapper->inverseActualRate(sign * _command.body_rates.z * kRadiansToDegrees, 2),
-	                                 _bridge_params.yaw_deadband);
+	channels[3] =
+	        _mapper->rateToPwm(_mapper->inverseActualRate(-_command.body_rates.z * kRadiansToDegrees, 2), _bridge_params.yaw_deadband);
 	const double acceleration = _command.total_thrust / _mass;
 	if (_msp) {
 		if (!std::isfinite(_health.battery_voltage) || _health.battery_voltage <= 0) {
