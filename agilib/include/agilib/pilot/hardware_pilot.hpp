@@ -6,6 +6,7 @@
 #include "agilib/reference/captured_reference.h"
 
 namespace agi::hardware {
+enum class OnlineGoalPhase : uint8_t { None, Moving, Settling, Stable };
 struct ControlDecision {
 	Command command;
 	QuadState reference;
@@ -19,6 +20,8 @@ struct ControlDecision {
 	// Empty only while the current state is ready for another online target.
 	std::string goal_rejection{"AUTO reference inactive"};
 	std::string goal_event;
+	bool goal_accepted{false};
+	OnlineGoalPhase online_goal_phase{OnlineGoalPhase::None};
 };
 
 // Single-owner 100 Hz coordination, without device I/O or automatic takeoff.

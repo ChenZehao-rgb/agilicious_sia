@@ -5,6 +5,9 @@ bool state_valid
 bool mpc_success
 uint32 warm_cycles
 bool trajectory_active
+# Current reference is stationary and the existing hover speed/error checks pass.
+# Includes AUTO capture before any online goal; does not authorize control.
+bool hover_stable
 float64 reference_elapsed
 float64 solve_seconds
 # Wall duration through decision construction, including time alignment.

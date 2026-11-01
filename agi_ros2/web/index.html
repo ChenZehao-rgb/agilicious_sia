@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Agilicious · 地面站</title>
+  <link rel="stylesheet" href="/leaflet/leaflet.css"><link rel="stylesheet" href="/maplibre/maplibre-gl.css"><link rel="stylesheet" href="/style.css">
+  <script defer src="/leaflet/leaflet.js"></script><script defer src="/maplibre/maplibre-gl.js"></script>
+  <script defer src="/maplibre/leaflet-maplibre-gl.js"></script><script defer src="/app.js"></script><script defer src="/maps.js"></script>
+</head>
+<body>
+<header><div class="brand">AGILICIOUS <span>地面站</span></div><div id="connection" class="badge">UI 连接中</div>
+  <div id="authority" class="badge">ARM / AUTO 未知</div><div id="output" class="badge">输出 未知</div>
+  <div id="navigation" class="badge">导航 未知</div><div id="battery" class="badge">电压 未知</div>
+  <details id="map-menu"><summary id="map-summary" class="badge" title="展开地图管理"><span id="map-status">地图 · 加载中</span></summary>
+    <section id="map-manager"><div class="map-manager-heading"><h2>地图 · 联网准备，离线使用</h2><button id="close-map-manager" aria-label="收起地图管理">收起</button></div>
+      <label for="map-source" class="hint">当前底图</label><select id="map-source"><option value="online">在线 · OpenFreeMap</option></select>
+      <div class="map-buttons"><button id="view-shenyang">查看沈阳</button><button id="view-package" hidden>查看下载范围</button></div>
+      <details id="download-panel" open><summary>下载一块区域</summary>
+        <p class="hint">移到试飞场地，框选区域或使用当前视野。下载完成后在上方选择离线地图。</p>
+        <div class="map-buttons"><button id="select-area">框选区域（点击两角）</button><button id="use-view">用当前视野</button></div>
+        <label for="map-name" class="hint">地图名称</label><input id="map-name" type="text" value="沈阳试飞场" maxlength="80">
+        <label for="map-detail" class="hint">下载细节</label><select id="map-detail"><option value="14">街道与建筑（推荐）</option><option value="12">城区概览</option><option value="10">区域概览</option></select>
+        <p id="map-estimate" class="detail">尚未选择区域</p><button id="download-map" class="primary" disabled>下载到本机</button>
+        <button id="cancel-download" hidden>暂停下载</button>
+      </details>
+      <progress id="map-progress" max="1" value="0" hidden></progress><div id="map-jobs" class="detail"></div>
+      <p id="map-action" class="detail" role="status"></p><div id="map-storage" class="hint"></div>
+    </section>
+  </details>
+</header>
+<main>
+  <section class="map-panel" aria-label="地图">
+    <div id="map"></div>
+    <div class="map-tools"><button id="locate">定位飞机</button><button id="fit">飞机与目标</button>
+      <label><input type="checkbox" id="follow" checked> 跟随</label></div>
+    <div id="map-warning" role="status">正在读取本机地图包…</div>
+    <div class="map-readout">
+      <div class="legend"><span class="aircraft-key">▲ 飞机</span><span class="origin-key">● 原点</span>
+        <span class="draft-key">● 待选</span><span class="active-key">● 活动目标</span><span>— 已飞行</span><span>┄ 目标方向</span></div>
+      <div id="position" class="position">位置未知</div>
+    </div>
+  </section>
+  <aside>
+    <section><div class="eyebrow">WGS84 · MSL</div><h1>地理目标</h1>
+      <p class="hint">点击地图选点，或输入经纬高。稳定 AUTO 悬停时可接受新目标。</p>
+      <form id="goal-form">
+        <label for="latitude">纬度 / °</label><input id="latitude" type="number" step="any" min="-90" max="90" placeholder="未知" required>
+        <label for="longitude">经度 / °</label><input id="longitude" type="number" step="any" min="-180" max="180" placeholder="未知" required>
+        <label for="altitude">目标海拔 MSL / m</label><div class="altitude-row"><input id="altitude" type="number" step="any" placeholder="绝对海拔" required><button type="button" id="current-altitude">使用当前海拔</button></div>
+        <div id="target-metrics" class="metrics">相对原点高度、水平距离与高度差：未知</div>
+        <button type="submit" class="primary" id="execute">执行目标</button><button type="button" id="clear">清除待选目标</button>
+      </form>
+      <p id="submission" role="status">尚未发送目标</p>
+    </section>
+    <section><div class="eyebrow">CONTROL</div><h2>控制端反馈</h2><div id="phase" class="phase">阶段未知</div>
+      <div id="active-detail" class="detail">活动目标未知</div><h3>最近请求 · 全局快照</h3>
+      <div id="request" class="detail">尚无反馈</div>
+      <h3>状态与警告详情</h3><ul id="reason" class="detail"></ul></section>
+    <section><h2>数据新鲜度</h2><div id="freshness" class="detail">等待遥测</div></section>
+  </aside>
+</main>
+</body>
+</html>

@@ -8,7 +8,7 @@ foreach(dep diagnostic_msgs rclcpp sensor_msgs geometry_msgs nav_msgs std_msgs r
 endforeach()
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Rtk.msg" "msg/Authority.msg" "msg/Health.msg"
-  "msg/Navigation.msg" "msg/LocalNavigation.msg" "msg/NavigationOrigin.msg" "msg/GeographicGoal.msg" "msg/Barometer.msg"
+  "msg/Navigation.msg" "msg/LocalNavigation.msg" "msg/NavigationOrigin.msg" "msg/GeographicGoal.msg" "msg/GoalStatus.msg" "msg/Barometer.msg"
   "msg/ComputationStatus.msg" "msg/MspState.msg"
   "msg/Heading.msg" "msg/FusedState.msg" "msg/SafetyEvidence.msg" "msg/NavigationUpdate.msg"
   "msg/ControlCommand.msg" "msg/OutputStatus.msg" "msg/MspEvent.msg"
@@ -81,17 +81,17 @@ target_link_libraries(mavlink_sensor_node "${typesupport}")
 ament_target_dependencies(mavlink_sensor_node rclcpp sensor_msgs geometry_msgs diagnostic_msgs)
 target_compile_options(mavlink_sensor_node PRIVATE -Wall -Wextra -Werror -fno-finite-math-only)
 install(TARGETS mavlink_sensor_node DESTINATION lib/${PROJECT_NAME})
-install(FILES MAVLINK_FC_FUSED.md README.md MAVLINK_SENSORS.md SHADOW_EVALUATION.md
+install(FILES MAP_UI.zh-CN.md MAVLINK_FC_FUSED.md README.md MAVLINK_SENSORS.md SHADOW_EVALUATION.md
   RUNTIME_WALKTHROUGH.zh-CN.md HARDWARE_ADAPTATION_VALIDATION.zh-CN.md RATE_MPC_VALIDATION.zh-CN.md
   PIPELINE_TIMING.zh-CN.md EKF_RECOVERY_VALIDATION.zh-CN.md
   DESTINATION share/${PROJECT_NAME})
-install(DIRECTORY test/results/rate_mpc_20260922 test/results/fc_fused_20261026
+install(DIRECTORY test/results/rate_mpc_20260922 test/results/fc_fused_20261026 test/results/map_ui_20261101
   DESTINATION share/${PROJECT_NAME}/test/results OPTIONAL)
-install(DIRECTORY launch config DESTINATION share/${PROJECT_NAME})
+install(DIRECTORY launch config web DESTINATION share/${PROJECT_NAME})
 install(DIRECTORY ${AGILIB_ROOT}/params/ DESTINATION share/${PROJECT_NAME}/params)
 install(PROGRAMS scripts/sim_rc.py scripts/gnss_adapter.py scripts/msp_evidence.py scripts/summarize_shadow_bag.py
-  scripts/analyze_pipeline_timing.py scripts/wait_for_clock.py DESTINATION lib/${PROJECT_NAME})
-install(FILES scripts/shadow_support.py DESTINATION lib/${PROJECT_NAME})
+  scripts/analyze_pipeline_timing.py scripts/wait_for_clock.py scripts/map_ui.py scripts/ground_station_telemetry.py DESTINATION lib/${PROJECT_NAME})
+install(FILES scripts/shadow_support.py scripts/map_store.py DESTINATION lib/${PROJECT_NAME})
 ament_export_dependencies(rosidl_default_runtime)
 ament_package()
 

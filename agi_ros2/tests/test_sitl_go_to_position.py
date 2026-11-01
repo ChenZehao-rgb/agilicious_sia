@@ -8,6 +8,8 @@ signed yaw pulses and three consecutive goals with the real FC estimator.
 All timing gates remain on; CSV, rosbag and result.json are retained.
 """
 import argparse
+import socket
+import urllib.request
 import csv
 import json
 import math
@@ -24,7 +26,7 @@ from rclpy.parameter import Parameter
 from rclpy.qos import qos_profile_sensor_data, QoSProfile, DurabilityPolicy
 from rcl_interfaces.srv import SetParameters
 from agi_ros2.msg import (NavigationOrigin, FcEstimatedState, FcEstimatorStatus, Authority,
-                          ComputationStatus, ControlCommand, FusedState, OutputStatus)
+                          ComputationStatus, ControlCommand, FusedState, OutputStatus, GoalStatus)
 from nav_msgs.msg import Odometry
 
 
@@ -54,7 +56,21 @@ def main():
     parser.add_argument('--state-source', choices=['ros_ekf', 'fc_fused'], default='ros_ekf')
     parser.add_argument('--yaw-chain', action='store_true')
     parser.add_argument('--geographic', action='store_true', help='Two WGS84/MSL goals from the actual FC origin')
+    parser.add_argument('--map-ui', action='store_true', help='Send geographic goals through the local UI HTTP server')
     args = parser.parse_args()
+    if args.map_ui and not args.geographic:
+        parser.error('--map-ui requires --geographic')
+    with socket.socket() as port_socket:
+        port_socket.bind(('127.0.0.1', 0))
+        ui_port = port_socket.getsockname()[1]
+    ui_url = f'http://127.0.0.1:{ui_port}'
+
+    def http(path, payload=None):
+        request = urllib.request.Request(ui_url + path, None if payload is None else json.dumps(payload).encode(),
+                                         {'Content-Type': 'application/json'})
+        with urllib.request.urlopen(request, timeout=2) as response:
+            return json.load(response)
+
     fc_state = args.state_source == 'fc_fused'
     if args.geographic and not fc_state:
         parser.error('--geographic requires --state-source fc_fused')
@@ -71,7 +87,7 @@ def main():
     node = rclpy.create_node('online_goal_validation', parameter_overrides=[Parameter('use_sim_time', value=not fc_state)])
     latest, rows, events, processes, streams, subscriptions = {}, {}, [], [], [], []
     result = {'passed': False, 'state_source': args.state_source, 'yaw_chain': args.yaw_chain,
-              'geographic': args.geographic, 'runtime_config': str(runtime), 'goals': [], 'yaw_pulses': []}
+              'geographic': args.geographic, 'map_ui': args.map_ui, 'runtime_config': str(runtime), 'goals': [], 'yaw_pulses': []}
     truth_offset = [0., 0., 0.]
 
     def sim_time():
@@ -89,6 +105,11 @@ def main():
             for key in ('session_id', 'latitude', 'longitude', 'altitude', 'altitude_reference',
                         'xy_valid', 'z_valid', 'longitude_scale', 'fc_reset_counter', 'fc_time_usec'):
                 row[key] = getattr(msg, key)
+        elif topic == 'goal_status':
+            for key in ('request_sequence', 'request_state', 'request_reason', 'active_valid',
+                        'active_request_sequence', 'active_phase', 'active_reason'):
+                row[key] = getattr(msg, key)
+            row['active_enu'] = xyz(msg.active_enu)
         elif topic.startswith('sensors/fc/'):
             row.update(fc_time_usec=msg.fc_time_usec, valid=msg.valid)
         elif topic in ('reference', 'ground_truth'):
@@ -99,7 +120,7 @@ def main():
                        reason=msg.readiness_reason, navigation_rejections=msg.navigation_rejections,
                        yaw=yaw(msg.orientation), rates=xyz(msg.body_rates), fc_flags=msg.fc_flags)
         elif topic == 'computation_status':
-            for key in ('warm_cycles', 'trajectory_active', 'reference_elapsed', 'solve_seconds', 'cycle_seconds',
+            for key in ('warm_cycles', 'trajectory_active', 'hover_stable', 'reference_elapsed', 'solve_seconds', 'cycle_seconds',
                         'state_age', 'navigation_age', 'imu_age', 'reason', 'controller_type', 'controller_success'):
                 row[key] = getattr(msg, key)
         elif topic == 'control_command':
@@ -119,10 +140,10 @@ def main():
                        ('output_status', OutputStatus), ('authority', Authority)]:
         rows[topic] = []
         subscriptions.append(node.create_subscription(cls, topic, lambda m, t=topic: receive(t, m), qos_profile_sensor_data))
-    for topic, cls in [('navigation/origin', NavigationOrigin), ('sensors/fc/estimated_state', FcEstimatedState),
+    for topic, cls in [('goal_status', GoalStatus), ('navigation/origin', NavigationOrigin), ('sensors/fc/estimated_state', FcEstimatedState),
                        ('sensors/fc/estimator_status', FcEstimatorStatus)]:
         rows[topic] = []
-        qos = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL) if topic == 'navigation/origin' else qos_profile_sensor_data
+        qos = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL) if topic in ('navigation/origin', 'goal_status') else qos_profile_sensor_data
         subscriptions.append(node.create_subscription(cls, topic, lambda m, t=topic: receive(t, m), qos))
 
     client = node.create_client(SetParameters, '/sim_rc/set_parameters')
@@ -199,6 +220,9 @@ def main():
             ('flight', ['./agi_ros2/scripts/launch.sh', 'runtime_config:=' + str(runtime),
                         'bag_output:=' + str(out / 'bag')]),
             ('sim_rc', ['ros2', 'run', 'agi_ros2', 'sim_rc.py', '--ros-args', '-p', 'use_sim_time:=' + str(not fc_state).lower()])]
+        if args.map_ui:
+            commands += [('relay', ['ros2', 'run', 'agi_ros2', 'ground_station_telemetry.py']),
+                         ('map_ui', ['ros2', 'run', 'agi_ros2', 'map_ui.py', '--port', str(ui_port)])]
         for name, command in commands:
             event('launch', name=name, command=command)
             stream = (out / (name + '.log')).open('w')
@@ -244,8 +268,17 @@ def main():
         event('auto_active', position=xyz(latest['fused_state'].position))
         auto_start = time.monotonic()
         stable_window(None, 30 if args.yaw_chain else 1, 75, require_active=True)
+        wait_for(lambda: latest['computation_status'].hover_stable, 5, 'initial AUTO hover feedback')
+        if args.map_ui:
+            def initial_hover_visible():
+                snapshot = http('/api/state')
+                computation = snapshot['topics'].get('computation_status', {}).get('data', {})
+                goal = snapshot['topics'].get('goal_status', {}).get('data', {})
+                return computation.get('hover_stable') and goal.get('active_valid') is False
+            wait_for(initial_hover_visible, 5, 'initial AUTO hover HTTP feedback without an online goal')
         event('pre_goal_stable', position=xyz(latest['fused_state'].position),
-              reference=xyz(latest['reference'].pose.pose.position))
+              reference=xyz(latest['reference'].pose.pose.position),
+              hover_stable=latest['computation_status'].hover_stable)
         if fc_state:
             truth_offset = [a-b for a,b in zip(xyz(latest['ground_truth'].pose.pose.position),
                                               xyz(latest['fused_state'].position))]
@@ -283,27 +316,57 @@ def main():
                 goal = json.dumps(geographic_goals[index])
                 goal_command = ['ros2', 'topic', 'pub', '--once', '-w', '2', '/go_to_geographic_position',
                                 'agi_ros2/msg/GeographicGoal', goal]
-            event('goal_cli', command=goal_command, expected_enu=target)
-            result.setdefault('publish_commands', []).append(shlex.join(goal_command))
-            cli_env = os.environ.copy()
-            # Avoid NumPy worker startup disturbing FC state freshness.
-            cli_env.update(OPENBLAS_NUM_THREADS='1', OMP_NUM_THREADS='1')
-            cli = subprocess.Popen(goal_command, stdout=goal_stream, stderr=subprocess.STDOUT,
-                                   start_new_session=True, env=cli_env)
-            try:
-                wait_for(lambda: cli.poll() is not None, 15, 'goal CLI')
-                assert cli.returncode == 0
-            finally:
-                if cli.poll() is None:
-                    os.killpg(cli.pid, signal.SIGINT)
-                    cli.wait(timeout=5)
+            if args.map_ui:
+                response = http('/api/goal', geographic_goals[index])
+                assert response['status'] == 'sent', response
+                event('goal_http', target=geographic_goals[index], expected_enu=target, response=response)
+            else:
+                event('goal_cli', command=goal_command, expected_enu=target)
+                result.setdefault('publish_commands', []).append(shlex.join(goal_command))
+                cli_env = os.environ.copy()
+                # Avoid NumPy worker startup disturbing FC state freshness.
+                cli_env.update(OPENBLAS_NUM_THREADS='1', OMP_NUM_THREADS='1')
+                cli = subprocess.Popen(goal_command, stdout=goal_stream, stderr=subprocess.STDOUT,
+                                       start_new_session=True, env=cli_env)
+                try:
+                    wait_for(lambda: cli.poll() is not None, 15, 'goal CLI')
+                    assert cli.returncode == 0
+                finally:
+                    if cli.poll() is None:
+                        os.killpg(cli.pid, signal.SIGINT)
+                        cli.wait(timeout=5)
             def accepted_rows():
                 return [x for x in rows['computation_status'] if x['wall'] >= goal_start
                         and 'go_to_position accepted:' in x['reason']]
             wait_for(lambda: bool(accepted_rows()), 5, 'goal acceptance')
             accepted = accepted_rows()[0]
             event('goal_accepted', target=target, stamp=accepted['stamp'])
+            wait_for(lambda: latest.get('goal_status') and latest['goal_status'].request_state == GoalStatus.ACCEPTED,
+                     3, 'retained goal acceptance')
+            accepted_sequence = latest['goal_status'].active_request_sequence
+            if args.map_ui:
+                # A valid geographic request outside the existing fence must not erase A.
+                rejected = dict(geographic_goals[index], altitude_msl=geographic_goals[index]['altitude_msl'] + 10000.)
+                http('/api/goal', rejected)
+                wait_for(lambda: latest['goal_status'].request_state == GoalStatus.REJECTED, 3, 'B rejection')
+                assert latest['goal_status'].active_request_sequence == accepted_sequence
+                assert latest['goal_status'].active_valid
+                event('rejected_B_preserved_A', active_sequence=accepted_sequence)
             stable_window(target, 15 if args.yaw_chain or args.geographic else 3, 90, require_active=True)
+            wait_for(lambda: latest['goal_status'].active_phase == GoalStatus.STABLE, 3, 'structured stable phase')
+            if args.map_ui:
+                delay(.2)
+                snapshot = http('/api/state')
+                sequence = snapshot['topics']['goal_status']['data']['request_sequence']
+                assert snapshot['active_position'] is not None, snapshot
+                for _ in range(3):
+                    assert http('/api/state')['topics']['goal_status']['data']['request_sequence'] == sequence
+                observed = {r['active_phase'] for r in rows['goal_status']
+                            if r['active_request_sequence'] == accepted_sequence}
+                # If tracking is already stable at the segment end, no settling tick is required.
+                assert {GoalStatus.MOVING, GoalStatus.STABLE} <= observed, observed
+                event('ui_snapshot_restored', snapshot=snapshot, phases=sorted(observed))
+
             event('target_stable', target=target, position=xyz(latest['fused_state'].position),
                   truth=xyz(latest['ground_truth'].pose.pose.position))
             end_wall = events[-1]['wall']
@@ -376,6 +439,7 @@ def main():
             result['fc_state_age_max'] = max(x['state_age'] for x in active_rows)
         param('kill', True)
         wait_for(lambda: not latest['output_status'].override_active, 5, 'KILL output revoked')
+        wait_for(lambda: not latest['goal_status'].active_valid, 3, 'goal cleared on KILL')
         event('kill_verified')
         result['passed'] = True
     except Exception as exc:

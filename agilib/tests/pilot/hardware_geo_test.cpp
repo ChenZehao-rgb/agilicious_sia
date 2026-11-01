@@ -262,6 +262,8 @@ TEST_F(HardwareGeo, OnlineTargetsRequireActualHoverAndCanRepeatWithoutAutoEdge) 
 	_state.p.x() -= .11;  // A small tracking error must not shift the starting reference.
 	auto decision = step(true, true, true, false, &target);
 	ASSERT_NE(decision.goal_event.find("accepted"), std::string::npos);
+	EXPECT_TRUE(decision.goal_accepted);
+	EXPECT_EQ(decision.online_goal_phase, OnlineGoalPhase::Moving);
 	EXPECT_LT((decision.reference.p - Vector<3>(2, 3, 4)).norm(), 1e-8);
 	EXPECT_EQ(_runtime->warmCycles(), 50u);
 	EXPECT_NE(step(true, true, true, false, &second).goal_event.find("trajectory moving"), std::string::npos);
@@ -273,14 +275,18 @@ TEST_F(HardwareGeo, OnlineTargetsRequireActualHoverAndCanRepeatWithoutAutoEdge) 
 	EXPECT_TRUE(decision.reference.p.isApprox(target));
 	EXPECT_TRUE(decision.reference.v.isZero());
 	EXPECT_NE(decision.reason.find("settling"), std::string::npos);
+	EXPECT_EQ(decision.online_goal_phase, OnlineGoalPhase::Settling);
 	EXPECT_NE(step(true, true, true, false, &second).goal_event.find("position error"), std::string::npos);
 	_state.p = target;
 	decision = step(true);
 	EXPECT_TRUE(decision.goal_rejection.empty());
 	EXPECT_NE(decision.reason.find("stable hover"), std::string::npos);
+	EXPECT_EQ(decision.online_goal_phase, OnlineGoalPhase::Stable);
 	const double auto_elapsed = decision.reference_elapsed;
 	decision = step(true, true, true, false, &second);
 	ASSERT_NE(decision.goal_event.find("accepted"), std::string::npos);
+	EXPECT_TRUE(decision.goal_accepted);
+	EXPECT_EQ(decision.online_goal_phase, OnlineGoalPhase::Moving);
 	EXPECT_GT(decision.reference_elapsed, auto_elapsed);
 	EXPECT_TRUE(decision.reference.p.isApprox(target));
 	// Still turning at the original position: another command must remain busy.
@@ -297,6 +303,7 @@ TEST_F(HardwareGeo, OnlineTargetsRequireActualHoverAndCanRepeatWithoutAutoEdge) 
 	EXPECT_TRUE(decision.permit_override);
 	EXPECT_TRUE(decision.reference.p.isApprox(_state.p));
 	EXPECT_EQ(decision.reason.find("online target"), std::string::npos);
+	EXPECT_EQ(decision.online_goal_phase, OnlineGoalPhase::None);
 }
 
 TEST_F(HardwareGeo, OnlineTargetShadowAndFaultResetPreserveConfiguredCsv) {
@@ -315,6 +322,8 @@ TEST_F(HardwareGeo, OnlineTargetShadowAndFaultResetPreserveConfiguredCsv) {
 	const Vector<3> target(3, 4, 4);
 	auto decision = step(true, true, true, true, &target);
 	ASSERT_NE(decision.goal_event.find("accepted"), std::string::npos);
+	EXPECT_TRUE(decision.goal_accepted);
+	EXPECT_EQ(decision.online_goal_phase, OnlineGoalPhase::Moving);
 	for (int i = 0; i < 770; ++i) {
 		decision = step(true, true, true, true);
 		ASSERT_FALSE(decision.permit_override);
@@ -330,6 +339,7 @@ TEST_F(HardwareGeo, OnlineTargetShadowAndFaultResetPreserveConfiguredCsv) {
 	for (int i = 0; i < 20; ++i) decision = step(true, true, true, true);
 	EXPECT_TRUE(decision.reference.p.isApprox(_state.p + Vector<3>(1, 0, 0)));
 	EXPECT_EQ(decision.reason.find("online target"), std::string::npos);
+	EXPECT_EQ(decision.online_goal_phase, OnlineGoalPhase::None);
 }
 
 }  // namespace

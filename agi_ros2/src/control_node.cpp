@@ -121,6 +121,8 @@ ControlNode::ControlNode()
 	_reference_pub = create_publisher<nav_msgs::msg::Odometry>("reference", 1);
 	_diagnostic_pub = create_publisher<std_msgs::msg::Float64MultiArray>("control_diagnostics", 10);
 	_status_pub = create_publisher<std_msgs::msg::String>("status", 1);
+	_goal_status_pub = create_publisher<msg::GoalStatus>("goal_status", rclcpp::QoS(1).transient_local());
+	publishGoalStatus();
 	if (_fc_event_control) {
 		// Subscription admission drives normal computation. This timer services
 		// coalesced samples and independently checks safety when input stops.
@@ -186,13 +188,72 @@ void ControlNode::onOutputStatus(msg::OutputStatus::ConstSharedPtr message) {
 }
 
 void ControlNode::clearPendingGoal(const char* reason) {
-	if (_pending_goal) RCLCPP_WARN(get_logger(), "go_to_position rejected: %s", reason);
+	if (_pending_goal) {
+		RCLCPP_WARN(get_logger(), "go_to_position rejected: %s", reason);
+		if (_pending_goal_sequence == _goal_status.request_sequence) {
+			_goal_status.request_state = msg::GoalStatus::REJECTED;
+			_goal_status.request_reason = reason;
+			publishGoalStatus();
+		}
+	}
 	_pending_goal.reset();
 	_goal_rejection = reason;
 }
 
 void ControlNode::onGoToPosition(geometry_msgs::msg::PointStamped::ConstSharedPtr message) {
+	beginGoalRequest("go_to_position", message->header.frame_id);
+	_goal_status.requested_enu = message->point;
 	enqueueGoal(agi::Vector<3>(message->point.x, message->point.y, message->point.z), message->header.frame_id);
+	publishGoalStatus();
+}
+
+void ControlNode::beginGoalRequest(const char* source, const std::string& frame) {
+	++_goal_status.request_sequence;
+	_goal_status.request_source = source;
+	_goal_status.request_frame = frame;
+	_goal_status.requested_geographic = msg::GeographicGoal();
+	_goal_status.requested_enu = geometry_msgs::msg::Point();
+	_goal_status.request_state = msg::GoalStatus::PENDING;
+	_goal_status.request_reason = "waiting for control tick";
+}
+
+void ControlNode::publishGoalStatus() {
+	_goal_status.header.stamp = now();
+	_goal_status.header.frame_id = "odom";
+	_goal_status.clock_id = _clock_id;
+	_goal_status.control_session_start = _session_start;
+	++_goal_status.revision;
+	_goal_status_pub->publish(_goal_status);
+}
+
+void ControlNode::updateGoalStatus(const agi::hardware::ControlDecision& decision, const std::optional<agi::Vector<3>>& goal) {
+	bool changed = false;
+	if (goal) {
+		if (_pending_goal_sequence == _goal_status.request_sequence) {
+			_goal_status.request_state = decision.goal_accepted ? msg::GoalStatus::ACCEPTED : msg::GoalStatus::REJECTED;
+			_goal_status.request_reason = decision.goal_event;
+			changed = true;
+		}
+		if (decision.goal_accepted) {
+			_goal_status.active_request_sequence = _pending_goal_sequence;
+			_goal_status.active_enu.x = goal->x();
+			_goal_status.active_enu.y = goal->y();
+			_goal_status.active_enu.z = goal->z();
+			_goal_status.active_fc_session = _state.navigation_session;
+			_goal_status.active_fc_reset_counter = _state.fc_reset_counter;
+			_goal_status.active_generation = _state.reset_counter;
+			changed = true;
+		}
+	}
+	const auto phase = static_cast<uint8_t>(decision.online_goal_phase);
+	const bool active = phase != msg::GoalStatus::NO_TARGET;
+	if (_goal_status.active_valid != active || _goal_status.active_phase != phase) {
+		_goal_status.active_reason = active ? decision.goal_rejection : decision.reason;
+		_goal_status.active_valid = active;
+		_goal_status.active_phase = phase;
+		changed = true;
+	}
+	if (changed) publishGoalStatus();
 }
 
 void ControlNode::onOrigin(msg::NavigationOrigin::ConstSharedPtr message) {
@@ -208,6 +269,8 @@ void ControlNode::onOrigin(msg::NavigationOrigin::ConstSharedPtr message) {
 }
 
 void ControlNode::onGeographicGoal(msg::GeographicGoal::ConstSharedPtr message) {
+	beginGoalRequest("go_to_geographic_position", "WGS84/MSL");
+	_goal_status.requested_geographic = *message;
 	std::array<double, 3> target;
 	const char* reason = fc::geographicTarget(_origin, _state, *message, target);
 	RCLCPP_INFO(get_logger(),
@@ -218,10 +281,17 @@ void ControlNode::onGeographicGoal(msg::GeographicGoal::ConstSharedPtr message) 
 	            static_cast<unsigned long long>(_origin.fc_time_usec));
 	if (reason) {
 		RCLCPP_WARN(get_logger(), "go_to_geographic_position rejected: %s", reason);
+		_goal_status.request_state = msg::GoalStatus::REJECTED;
+		_goal_status.request_reason = reason;
+		publishGoalStatus();
 		return;
 	}
 	// Conversion and admission share this node's single executor and pending slot.
 	const bool pending = enqueueGoal(agi::Vector<3>(target[0], target[1], target[2]), "odom");
+	_goal_status.requested_enu.x = target[0];
+	_goal_status.requested_enu.y = target[1];
+	_goal_status.requested_enu.z = target[2];
+	publishGoalStatus();
 	RCLCPP_INFO(get_logger(), "geographic converted ENU=(%.6f,%.6f,%.6f), pending=%s; tick acceptance is separate", target[0],
 	            target[1], target[2], pending ? "true" : "false");
 }
@@ -247,11 +317,14 @@ bool ControlNode::enqueueGoal(const agi::Vector<3>& target, const std::string& f
 	}
 	if (!rejection.empty()) {
 		RCLCPP_WARN(get_logger(), "go_to_position rejected: %s", rejection.c_str());
+		_goal_status.request_state = msg::GoalStatus::REJECTED;
+		_goal_status.request_reason = rejection;
 		return false;
 	}
 	// The sole executor hands this slot to the next control cycle. The stamp is ignored.
 	// This is not acceptance: current state/authority and the solve are checked in tick().
 	_pending_goal = target;
+	_pending_goal_sequence = _goal_status.request_sequence;
 	return true;
 }
 
@@ -393,13 +466,14 @@ void ControlNode::runCycle(bool computation_requested) {
 	_pending_goal.reset();
 	const auto decision = _pilot->tick(state, evidence, _shadow_only, navigation_valid, computation_requested, goal ? &*goal : nullptr);
 	_goal_rejection = decision.goal_rejection;
+	updateGoalStatus(decision, goal);
 	_cycle_end_time = monotonicSeconds();
 	if (warm_before > 0 && (fault || _pilot->warmCycles() < warm_before)) ++_warm_resets;
 	_cycle_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - cycle_start).count();
 	if (!decision.goal_event.empty()) {
 		RCLCPP_INFO(get_logger(), "%s; solve=%.6f s; cycle=%.6f s", decision.goal_event.c_str(), decision.evidence.solve_seconds,
 		            _cycle_seconds);
-		if (goal && decision.goal_event.find("go_to_position accepted:") == 0)
+		if (goal && decision.goal_accepted)
 			RCLCPP_INFO(get_logger(), "Online absolute odom target: [%.3f, %.3f, %.3f] m", (*goal).x(), (*goal).y(),
 			            (*goal).z());
 	}
@@ -441,6 +515,7 @@ void ControlNode::publishDecision(const agi::hardware::ControlDecision& decision
 	computation.controller_success = decision.evidence.command_valid;
 	computation.warm_cycles = _pilot->warmCycles();
 	computation.trajectory_active = decision.trajectory_active;
+	computation.hover_stable = decision.trajectory_active && decision.goal_rejection.empty();
 	computation.reference_elapsed = decision.reference_elapsed;
 	computation.solve_seconds = decision.evidence.solve_seconds;
 	computation.cycle_seconds = _cycle_seconds;

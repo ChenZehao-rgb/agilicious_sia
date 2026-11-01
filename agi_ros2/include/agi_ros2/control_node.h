@@ -14,6 +14,7 @@
 #include "agi_ros2/msg/control_command.hpp"
 #include "agi_ros2/msg/fused_state.hpp"
 #include "agi_ros2/msg/geographic_goal.hpp"
+#include "agi_ros2/msg/goal_status.hpp"
 #include "agi_ros2/msg/health.hpp"
 #include "agi_ros2/msg/navigation_origin.hpp"
 #include "agi_ros2/msg/output_status.hpp"
@@ -39,6 +40,9 @@ private:
 	void onOrigin(msg::NavigationOrigin::ConstSharedPtr message);
 	bool enqueueGoal(const agi::Vector<3>& target, const std::string& frame);
 	void clearPendingGoal(const char* reason);
+	void beginGoalRequest(const char* source, const std::string& frame);
+	void publishGoalStatus();
+	void updateGoalStatus(const agi::hardware::ControlDecision& decision, const std::optional<agi::Vector<3>>& goal);
 	void tick();
 	void dispatchFcState();
 	void runCycle(bool computation_requested);
@@ -82,6 +86,9 @@ private:
 	rclcpp::Subscription<msg::NavigationOrigin>::SharedPtr _origin_sub;
 	rclcpp::Subscription<msg::GeographicGoal>::SharedPtr _geographic_goal_sub;
 	std::optional<agi::Vector<3>> _pending_goal;
+	uint64_t _pending_goal_sequence = 0;
+	msg::GoalStatus _goal_status;
+	rclcpp::Publisher<msg::GoalStatus>::SharedPtr _goal_status_pub;
 	std::string _goal_rejection{"AUTO reference inactive"};
 	rclcpp::Subscription<geometry_msgs::msg::PointStamped>::SharedPtr _goal_sub;
 	rclcpp::Subscription<msg::FusedState>::SharedPtr _state_sub;

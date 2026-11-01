@@ -239,10 +239,14 @@ ControlDecision HardwarePilot::tick(const QuadState& state, Evidence evidence, b
 	if (segment_ended && !_reference_active && !go_to_position)
 		result.goal_event = "go_to_position cleared: control/safety check failed";
 	if (goal_installed) {
+		result.goal_accepted = _reference_active;
 		result.goal_event = _reference_active ? "go_to_position accepted: absolute odom target installed"
 		                                      : "go_to_position rejected: control/safety check failed after planning";
 	}
 	if (_reference->hasOnlineTarget()) {
+		result.online_goal_phase = _online_moving
+		                                   ? OnlineGoalPhase::Moving
+		                                   : (result.goal_rejection.empty() ? OnlineGoalPhase::Stable : OnlineGoalPhase::Settling);
 		result.reason += _online_moving ? "; online target moving"
 		                                : (result.goal_rejection.empty() ? "; online target stable hover"
 		                                                                 : "; online target holding; settling");

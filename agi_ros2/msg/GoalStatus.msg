@@ -1,0 +1,29 @@
+# Retained control-owned snapshot. Request numbers are local to this process,
+# not client IDs. A rejected latest request does not replace the active goal.
+std_msgs/Header header
+string clock_id
+float64 control_session_start
+uint64 revision
+uint8 NONE=0
+uint8 PENDING=1
+uint8 ACCEPTED=2
+uint8 REJECTED=3
+uint64 request_sequence
+string request_source
+string request_frame
+GeographicGoal requested_geographic
+geometry_msgs/Point requested_enu
+uint8 request_state
+string request_reason
+uint8 NO_TARGET=0
+uint8 MOVING=1
+uint8 SETTLING=2
+uint8 STABLE=3
+bool active_valid
+uint64 active_request_sequence
+geometry_msgs/Point active_enu
+string active_fc_session
+uint32 active_fc_reset_counter
+uint64 active_generation
+uint8 active_phase
+string active_reason

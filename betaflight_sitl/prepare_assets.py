@@ -257,8 +257,35 @@ def _write_xml(tree: ET.ElementTree, path: Path) -> None:
     tree.write(path, encoding="utf-8", xml_declaration=True)
 
 
+def set_world_origin(world_tree: ET.ElementTree, origin: dict) -> None:
+    """Set only the generated world's WGS84 origin, preserving local spawn pose."""
+    if not isinstance(origin, dict) or not {'latitude', 'longitude'} <= origin.keys():
+        raise ValueError('world_origin requires latitude and longitude in WGS84 degrees')
+    limits = {'latitude': 90, 'longitude': 180, 'altitude_msl': math.inf}
+    if origin.keys() - limits.keys():
+        raise ValueError('unknown world_origin field')
+    for name, value in origin.items():
+        if type(value) not in (int, float) or not math.isfinite(value) or abs(value) > limits[name]:
+            raise ValueError('invalid world_origin.' + name)
+    world = world_tree.getroot().find('world')
+    if world is None:
+        raise ValueError('world file has no world element')
+    spherical = world.find('spherical_coordinates')
+    if spherical is None:
+        spherical = ET.SubElement(world, 'spherical_coordinates')
+    values = {'surface_model': 'EARTH_WGS84', 'world_frame_orientation': 'ENU',
+              'latitude_deg': str(origin['latitude']), 'longitude_deg': str(origin['longitude'])}
+    if 'altitude_msl' in origin:
+        values['elevation'] = str(origin['altitude_msl'])
+    for name, value in values.items():
+        element = spherical.find(name)
+        if element is None:
+            element = ET.SubElement(spherical, name)
+        element.text = value
+
+
 def prepare_assets(
-    aeroloop_home: Path, source_world: Path, output: Path
+    aeroloop_home: Path, source_world: Path, output: Path, world_origin: dict | None = None
 ) -> Tuple[Path, Path]:
     source_model_dir = aeroloop_home / "models" / SOURCE_MODEL_NAME
     source_model = source_model_dir / "model.sdf"
@@ -266,6 +293,10 @@ def prepare_assets(
     for required in (source_model, source_model_config, source_world):
         if not required.is_file():
             raise FileNotFoundError(f"required Aeroloop asset not found: {required}")
+
+    world_tree = ET.parse(source_world)
+    if world_origin is not None:
+        set_world_origin(world_tree, world_origin)
 
     model_tree = ET.parse(source_model)
     model = model_tree.getroot().find("model")
@@ -366,7 +397,6 @@ def prepare_assets(
     overlay_model_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source_model_config, overlay_model_dir / "model.config")
 
-    world_tree = ET.parse(source_world)
     # Betaflight's Gazebo guide requires a physics step no larger than 2.5 ms.
     # Aeroloop's demo world currently uses 4 ms, which under-samples the fast
     # Betaflight rate loop and can make the motor / attitude loop oscillatory.

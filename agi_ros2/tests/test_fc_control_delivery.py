@@ -16,7 +16,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'test'))
 import rclpy
-from agi_ros2.msg import GeographicGoal, NavigationOrigin, ComputationStatus, ControlCommand, FusedState, Health, OutputStatus, OutputTiming
+from agi_ros2.msg import GoalStatus, GeographicGoal, NavigationOrigin, ComputationStatus, ControlCommand, FusedState, Health, OutputStatus, OutputTiming
 from test_node_pipeline import CLOCK_ID, Harness
 from test_shadow_pipeline import ShadowHarness
 from geometry_msgs.msg import PointStamped
@@ -159,6 +159,7 @@ class DeliveryTests(unittest.TestCase):
         h = DeliveryHarness(shadow=shadow)
         self.addCleanup(h.close)
         h.subscribe('reference', Odometry)
+        h.subscribe('goal_status', GoalStatus)
         publisher = h.publisher('go_to_position', PointStamped)
         geo_publisher = h.publisher('go_to_geographic_position', GeographicGoal)
         origin_publisher = h.node.create_publisher(NavigationOrigin, 'navigation/origin',
@@ -199,6 +200,8 @@ class DeliveryTests(unittest.TestCase):
         if geographic:
             send((.5, 0., 1.))
             self.assertIn('FC origin session/reset/time mismatch', log_text())
+            self.assertEqual(h.received['goal_status'][-1].request_state, GoalStatus.REJECTED)
+            self.assertIn('session/reset/time mismatch', h.received['goal_status'][-1].request_reason)
             origin_publisher.publish(origin)
             h.run(.08)
             # A late old session and old time must not overwrite the valid origin.
@@ -212,6 +215,8 @@ class DeliveryTests(unittest.TestCase):
         h.auto = True
         h.run(.12)
         self.assertTrue(h.received['computation_status'][-1].trajectory_active)
+        self.assertTrue(h.received['computation_status'][-1].hover_stable)
+        self.assertFalse(h.received['goal_status'][-1].active_valid)
         start = reference()
         for point, frame, reason in [((.5, 0., 1.), 'map', 'frame_id must be odom'),
                                       ((math.nan, 0., 1.), 'odom', 'nonfinite position'),
@@ -221,24 +226,41 @@ class DeliveryTests(unittest.TestCase):
             self.assertEqual(reference(), start)
         h.velocity = (.3, 0., 0.)
         h.run(.05)
+        self.assertFalse(h.received['computation_status'][-1].hover_stable)
         send((.5, 0., 1.))
         self.assertIn('not stable: speed', log_text())
         h.velocity = (0., 0., 0.)
         h.run(.05)
         send((.5, 0., 1.))
         self.assertEqual(log_text().count('go_to_position accepted:'), 1)
+        active_sequence = h.received['goal_status'][-1].active_request_sequence
+        self.assertEqual(h.received['goal_status'][-1].request_state, GoalStatus.ACCEPTED)
+        self.assertEqual(h.received['goal_status'][-1].active_phase, GoalStatus.MOVING)
         h.run(.65)
         send((0., .5, 1.))
         self.assertIn('rejected: trajectory moving', log_text())
+        self.assertEqual(h.received['goal_status'][-1].request_state, GoalStatus.REJECTED)
+        self.assertTrue(h.received['goal_status'][-1].active_valid)
+        self.assertEqual(h.received['goal_status'][-1].active_request_sequence, active_sequence)
         h.run(.9)
         self.assertEqual(reference(), (.5, 0., 1.))
         self.assertIn('segment ended; holding target', log_text())
+        self.assertEqual(h.received['goal_status'][-1].active_phase, GoalStatus.SETTLING)
         send((0., .5, 1.))
         self.assertIn('not stable: position error', log_text())
         self.assertEqual(log_text().count('go_to_position accepted:'), 1)
         h.position = (.5, 0., 1.)
         h.run(.05)
         self.assertIn('stable hover', h.received['computation_status'][-1].reason)
+        self.assertEqual(h.received['goal_status'][-1].active_phase, GoalStatus.STABLE)
+        self.assertTrue(h.received['computation_status'][-1].hover_stable)
+        late = []
+        late_sub = h.node.create_subscription(GoalStatus, 'goal_status', late.append,
+            QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
+        h.run(.05)
+        self.assertTrue(late)
+        self.assertEqual(late[-1].active_request_sequence, active_sequence)
+        h.node.destroy_subscription(late_sub)
         send((.5, .5, 1.))
         self.assertEqual(log_text().count('go_to_position accepted:'), 2)
         # Existing yaw-first behavior: pi/2 turn takes 1.875*(pi/2)/.5 s,
@@ -270,6 +292,8 @@ class DeliveryTests(unittest.TestCase):
             h.processes[0].send_signal(signal.SIGCONT)
         h.run(.1)
         self.assertFalse(h.received['computation_status'][-1].trajectory_active)
+        self.assertFalse(h.received['goal_status'][-1].active_valid)
+        self.assertEqual(h.received['goal_status'][-1].request_state, GoalStatus.REJECTED)
         send((10., 0., 1.))
         h.run(.7)
         self.assertFalse(h.received['computation_status'][-1].trajectory_active)

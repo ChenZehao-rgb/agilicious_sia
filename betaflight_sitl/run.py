@@ -766,16 +766,21 @@ def main() -> int:
                      if args.ros2 else params / "betaflight_udp.yaml")
     selected_controller = (args.controller or "mpc").upper()
     flight_arguments = []
+    world_origin = None
     if args.ros2:
         expected_betaflight_settings(bridge_config)  # Validate before generating runtime assets.
         selected_controller, flight_arguments = ros2_flight_selection(bridge_config, args.controller)
         import yaml
         with bridge_config.open() as stream:
-            state_source = yaml.safe_load(stream).get('state', {}).get('source', 'ros_ekf')
+            profile = yaml.safe_load(stream)
+            state_source = profile.get('state', {}).get('source', 'ros_ekf')
+            world_origin = profile.get('world_origin')
         log(f"ROS 2 runtime configuration: {bridge_config}")
     # 生成模型 / 世界文件的叠加副本，同样不改动 Aeroloop 原始资源。
     # 把aeroloop中的世界和模型复制到runtime/assets中，并返回叠加后的世界文件路径
-    overlay_world, _ = prepare_assets(aeroloop_home, source_world, runtime / "assets")
+    overlay_world, _ = prepare_assets(aeroloop_home, source_world, runtime / "assets", world_origin)
+    if world_origin is not None:
+        log(f"Gazebo WGS84 world origin: {world_origin}")
     # 把 Betaflight ELF 复制到隔离目录并配置好其 EEPROM，返回运行用的 ELF 路径。
     runtime_elf = prepare_runtime_betaflight(
         source_elf,
@@ -922,6 +927,8 @@ def main() -> int:
             "--ros-args", "-p", "config_verified:=true", "-p", "state_source:=" + state_source,
         ]
         log("start flight in another terminal: " + shlex.join(["./agi_ros2/scripts/launch.sh", *flight_arguments]))
+        log("start simulated receiver in another terminal: ros2 run agi_ros2 sim_rc.py "
+            "--ros-args -p use_sim_time:=" + ("false" if state_source == "fc_fused" else "true"))
 
     betaloop_process: Optional[subprocess.Popen] = None
     controller_process: Optional[subprocess.Popen] = None

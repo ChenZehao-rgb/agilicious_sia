@@ -2,6 +2,12 @@
 # bridge.host is the machine running Betaflight SITL; no generated parameter files are used.
 # An empty trajectory captures the current hover point on authorized AUTO entry.
 mode: sitl
+# Nanta Street 114, Shenyang: campus map reference point, not a measured PC/GNSS fix.
+# WGS84 from OSM/Nominatim way 813298975; leave source-world elevation unchanged.
+# https://www.openstreetmap.org/way/813298975
+world_origin:
+  latitude: 41.7615277
+  longitude: 123.4411319
 state:
   # Real Betaflight SITL estimator over its TCP UART; ROS performs no state estimation.
   source: fc_fused

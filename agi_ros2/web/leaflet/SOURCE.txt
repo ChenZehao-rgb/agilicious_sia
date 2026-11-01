@@ -1,0 +1,2 @@
+Leaflet 1.9.4; unmodified dist assets from https://unpkg.com/leaflet@1.9.4/dist/
+License: https://github.com/Leaflet/Leaflet/blob/v1.9.4/LICENSE
