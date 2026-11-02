@@ -57,6 +57,11 @@ class RuntimeLauncher:
         self.closing = threading.Event()
         self.stop_requested = threading.Event()
         self.worker = None
+        self.shutdown_worker = None
+        self.shutdown_state = 'idle'
+        self.shutdown_reason = ''
+        self.shutdown_log = ''
+        self.shutdown_exit_code = ''
         self.processes = {}
         self.cleaned = set()
         self.state, self.reason = 'idle', '等待显式启动请求'
@@ -79,10 +84,16 @@ class RuntimeLauncher:
             return dict(mode=self.mode, hostname=self.hostname, instance=self.instance, repo_root=str(self.root),
                         state=self.state, reason=self.reason,
                         can_start=self.available and not self.closing.is_set() and self.state not in ('starting', 'stopping')
+                        and self.shutdown_state not in ('requesting', 'accepted', 'unknown')
                         and not (self.worker and self.worker.is_alive())
                         and not any(e['state'] == 'running' for e in self.entries.values()),
                         can_stop=self.available and not self.closing.is_set() and self.state != 'stopping'
                         and (self.state == 'starting' or any(e['state'] == 'running' for e in self.entries.values())),
+                        can_shutdown=self.mode == 'hardware' and self.available and not self.closing.is_set()
+                        and self.shutdown_state in ('idle', 'failed')
+                        and not (self.shutdown_worker and self.shutdown_worker.is_alive()),
+                        shutdown_state=self.shutdown_state, shutdown_reason=self.shutdown_reason,
+                        shutdown_log=self.shutdown_log, shutdown_exit_code=self.shutdown_exit_code,
                         processes={name: dict(entry) for name, entry in self.entries.items()})
 
     def update(self, state=None, reason=None, name=None, **values):
@@ -135,6 +146,50 @@ class RuntimeLauncher:
         except Exception as error:
             with self.lock:
                 self.state, self.reason = 'failed', f'结束任务失败：{error}'
+        self.notify()
+
+    def shutdown(self):
+        # Only the hardware listener exposes this fixed host action. Keep it
+        # separate from runtime state: denied sudo must not stop the flight chain.
+        with self.lock:
+            if not self.snapshot()['can_shutdown']:
+                self.notify()
+                return
+            self.shutdown_state = 'requesting'
+            self.shutdown_reason = '正在请求实机主机关机'
+            self.shutdown_exit_code = ''
+            self.shutdown_log = ''
+            self.shutdown_worker = threading.Thread(target=self.run_shutdown, name='runtime-shutdown', daemon=True)
+            self.shutdown_worker.start()
+        self.notify()
+
+    def run_shutdown(self):
+        state, reason, code = 'failed', '', ''
+        try:
+            if self.closing.is_set():
+                raise RuntimeError('监听服务正在关闭，未执行关机')
+            log = self.directory / (uuid.uuid4().hex + '-shutdown.log')
+            with self.lock:
+                self.shutdown_log = str(log)
+            self.notify()
+            with log.open('wb') as output:
+                result = subprocess.run(['sudo', '-n', 'shutdown', 'now'], cwd=self.root, env=os.environ.copy(),
+                                        stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT, timeout=15)
+            code = str(result.returncode)
+            if result.returncode == 0:
+                state, reason = 'accepted', '关机命令已返回成功，等待主机关闭；尚未确认断电'
+            else:
+                with log.open('rb') as output:
+                    output.seek(0, 2)
+                    output.seek(max(0, output.tell() - 1200))
+                    detail = output.read().decode(errors='replace').strip()
+                reason = f'关机失败（退出码 {code}）：{detail or "请检查执行主机日志"}'
+        except subprocess.TimeoutExpired:
+            state, reason = 'unknown', '关机命令等待超时，结果未确认；不自动重试'
+        except Exception as error:
+            reason = f'关机失败：{error}'
+        with self.lock:
+            self.shutdown_state, self.shutdown_reason, self.shutdown_exit_code = state, reason, code
         self.notify()
 
     def environment(self):
@@ -287,5 +342,7 @@ class RuntimeLauncher:
         # Running monitor may have returned after every entry exited.
         if self.processes and not self.worker.is_alive():
             self.cleanup()
+        if self.shutdown_worker:
+            self.shutdown_worker.join()
         if self.lock_file:
             self.lock_file.close()

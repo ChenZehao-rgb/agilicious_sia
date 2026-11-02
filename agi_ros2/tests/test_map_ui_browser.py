@@ -84,7 +84,7 @@ def emit():
         opub.publish(origin); gpub.publish(goal)
     ticks[0]+=1
 source.create_timer(.01,emit)
-runtime_requests=[]; runtime_stops=[]
+runtime_requests=[]; runtime_stops=[]; runtime_shutdowns=[]
 def fake_runtime_start():
     runtime_requests.append(time.monotonic())
     transfer.runtime.update(state='starting', reason='synthetic startup', name='launch_realtime',
@@ -103,6 +103,16 @@ def fake_runtime_stop():
         transfer.runtime.update(state='stopped', reason='synthetic stopped')
     threading.Timer(.3, finish).start()
 transfer.runtime.stop=fake_runtime_stop
+def fake_runtime_shutdown():
+    runtime_shutdowns.append(time.monotonic())
+    with transfer.runtime.lock:
+        transfer.runtime.shutdown_state = 'failed' if len(runtime_shutdowns) == 1 else 'accepted'
+        transfer.runtime.shutdown_reason = ('关机失败：sudo: a password is required' if len(runtime_shutdowns) == 1
+                                            else '关机命令已返回成功，等待主机关闭；尚未确认断电')
+        transfer.runtime.shutdown_log = '/synthetic/shutdown.log'
+    transfer.runtime.notify()
+# Never let the browser fixture call a real shutdown implementation.
+transfer.runtime.shutdown=fake_runtime_shutdown
 worker=threading.Thread(target=executor.spin);worker.start()
 server=map_ui.make_server(node,map_ui.MBTiles(path),'127.0.0.1',0)
 http_thread=threading.Thread(target=server.serve_forever);http_thread.start()
@@ -118,7 +128,9 @@ try:
         expect(page.locator('#runtime-service')).to_contain_text('启动服务在线')
         expect(page.locator('#position')).to_contain_text('位置未知')
         expect(page.locator('#runtime-start')).to_be_enabled()
+        expect(page.locator('#runtime-shutdown')).to_be_enabled()
         page.locator('#runtime-mode').select_option('simulation')
+        expect(page.locator('#runtime-shutdown')).to_be_hidden()
         expect(page.locator('#runtime-service')).to_contain_text('该模式服务未连接')
         expect(page.locator('#runtime-start')).to_be_disabled()
         page.reload()
@@ -168,6 +180,30 @@ try:
         page.reload()
         expect(page.locator('#runtime-state')).to_have_text('已结束')
         assert len(runtime_stops)==1 and len(runtime_requests)==1
+        held_shutdown=[]
+        page.route('**/api/runtime/shutdown', lambda route: held_shutdown.append(route))
+        page.locator('#runtime-shutdown').click()
+        expect(page.locator('#runtime-request')).to_contain_text('关机结果未确认', timeout=7000)
+        assert len(held_shutdown)==1 and runtime_shutdowns==[]
+        for route in held_shutdown: route.abort()
+        page.unroute('**/api/runtime/shutdown')
+        page.locator('#runtime-shutdown').click()
+        expect(page.locator('#runtime-request')).to_have_text('关机请求已发送，等待执行端反馈')
+        expect(page.locator('#runtime-shutdown-status')).to_contain_text('sudo: a password is required')
+        expect(page.locator('#runtime-shutdown')).to_be_enabled()
+        expect(page.locator('#runtime-state')).to_have_text('已结束')
+        page.locator('#runtime-shutdown').click()
+        expect(page.locator('#runtime-shutdown-status')).to_contain_text('关机命令已返回成功')
+        expect(page.locator('#runtime-shutdown')).to_be_disabled()
+        expect(page.locator('#runtime-start')).to_be_disabled()
+        assert len(runtime_shutdowns)==2
+        page.reload()
+        expect(page.locator('#runtime-shutdown-status')).to_contain_text('尚未确认断电')
+        expect(page.locator('#runtime-shutdown')).to_be_disabled()
+        page.route('**/api/state', lambda route: route.abort())
+        expect(page.locator('#runtime-shutdown-status')).to_contain_text('最后报告 / 未确认')
+        assert len(runtime_shutdowns)==2
+        page.unroute('**/api/state')
         enabled[0]=True
         expect(page.locator("#phase")).to_have_text("稳定悬停")
         assert page.locator('#altitude').input_value()=='102.000'
@@ -303,7 +339,8 @@ try:
         assert not errors, errors
         assert all(r.startswith(url) for r in requests),requests
         (out/'result.json').write_text(json.dumps({'passed':True,'requests':len(requests),'external_requests':0,'commands':len(commands),'pauses':len(pauses),'pause_timeout_no_retry':True,'runtime_no_aircraft_online':True,'runtime_requests':len(runtime_requests),
-            'runtime_timeout_refresh_disconnect_no_retry':True,'runtime_stop_requests':len(runtime_stops),'runtime_stop_timeout_no_retry':True,'runtime_old_backend_404_guidance':True,'page_errors':errors,'fixture':'synthetic, not real map',
+            'runtime_timeout_refresh_disconnect_no_retry':True,'runtime_stop_requests':len(runtime_stops),'runtime_stop_timeout_no_retry':True,'runtime_old_backend_404_guidance':True,'hardware_shutdown_mock_requests':len(runtime_shutdowns),
+            'shutdown_hardware_only_permission_error_timeout_and_refresh':True,'page_errors':errors,'fixture':'synthetic, not real map',
             'position_updates_in_2_4s':len(changes), 'position_min_interval_ms':min(b-a for a,b in zip(changes,changes[1:])),
             'initial_auto_hover':True,'browser_stall_without_false_disconnect':True,'http_failure_and_timeout_recovery':True,
             'origin_refresh_without_invalid_position':True},indent=2))

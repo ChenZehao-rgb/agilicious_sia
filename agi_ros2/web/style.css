@@ -70,6 +70,10 @@ button:hover { background: #455d70; } button:disabled { opacity: .5; cursor: wai
 #runtime-mode { color: #eaf1f7; background: #151b21; border: 1px solid #4a5865; border-radius: 4px; padding: 9px; }
 #runtime-start { margin: 0; }
 #runtime-stop { background: #853d35; border-color: #bc655c; }
+#runtime-shutdown { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 36px; height: 36px; padding: 7px; color: #f09b90; background: #303a45; }
+#runtime-shutdown:hover:not(:disabled) { background: #633831; border-color: #bc655c; }
+#runtime-shutdown:focus-visible { outline: 2px solid #79baff; outline-offset: 2px; }
+#runtime-shutdown:disabled { cursor: not-allowed; }
 #runtime-processes { margin-top: 8px; }
 #runtime-reason { margin-top: 6px; }
 .runtime-failed { color: #f4c078; }

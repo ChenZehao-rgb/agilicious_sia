@@ -27,6 +27,11 @@
       <p id="map-action" class="detail" role="status"></p><div id="map-storage" class="hint"></div>
     </section>
   </details>
+  <button type="button" id="runtime-shutdown" title="关闭板载电脑" aria-label="关闭板载电脑" disabled>
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" focusable="false">
+      <path d="M12 3v9M6.3 5.7a9 9 0 1 0 11.4 0"/>
+    </svg>
+  </button>
 </header>
 <main>
   <section class="map-panel" aria-label="地图">
@@ -44,11 +49,13 @@
     <section id="runtime-panel"><h2>运行程序</h2>
       <div class="runtime-actions"><select id="runtime-mode" aria-label="启动模式"><option value="hardware">实机</option><option value="simulation">仿真</option></select>
         <button type="button" class="primary" id="runtime-start" disabled>一键启动实机</button>
-        <button type="button" id="runtime-stop" disabled>结束任务</button></div>
+        <button type="button" id="runtime-stop" disabled>结束任务</button>
+      </div>
       <div id="runtime-service" class="detail">该模式服务未连接</div>
       <div id="runtime-state" class="detail">未确认</div>
       <div id="runtime-processes" class="detail"></div>
       <div id="runtime-reason" class="detail"></div>
+      <div id="runtime-shutdown-status" class="detail" role="status"></div>
       <details id="runtime-logs"><summary>控制主机日志</summary><div id="runtime-log-paths" class="detail"></div></details>
       <p id="runtime-request" class="detail" role="status"></p>
       <p class="hint">结束任务会退出本次启动的全部程序，保留监听。实机请先落地并上锁。模式选择不会切换 ROS 域。</p>

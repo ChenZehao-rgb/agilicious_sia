@@ -287,6 +287,80 @@ run.main()
         self.assertEqual(self.calls, [])
         self.assertTrue(item.snapshot()['can_start'])
 
+    def test_shutdown_fixed_command_async_idempotent_and_hardware_only(self):
+        hardware = self.launcher('hardware')
+        simulation = self.launcher('simulation')
+        duplicate = self.launcher('hardware')
+        gate = threading.Event()
+        entered = threading.Event()
+        def execute(argv, **kwargs):
+            self.assertEqual(argv, ['sudo', '-n', 'shutdown', 'now'])
+            self.assertEqual(kwargs['cwd'], self.root)
+            self.assertEqual(kwargs['env'], dict(os.environ))
+            self.assertEqual(kwargs['stdin'], subprocess.DEVNULL)
+            self.assertNotIn('shell', kwargs)
+            entered.set()
+            gate.wait(5)
+            return subprocess.CompletedProcess(argv, 0)
+        with patch.object(runtime.subprocess, 'run', side_effect=execute) as run:
+            try:
+                simulation.shutdown()
+                duplicate.shutdown()
+                run.assert_not_called()
+                threads = [threading.Thread(target=hardware.shutdown) for _ in range(20)]
+                for thread in threads: thread.start()
+                for thread in threads: thread.join(timeout=1)
+                self.assertTrue(all(not thread.is_alive() for thread in threads))
+                self.assertTrue(entered.wait(1))
+                self.assertEqual(hardware.snapshot()['shutdown_state'], 'requesting')
+                self.assertFalse(hardware.snapshot()['can_start'])
+                hardware.start()
+                self.assertEqual(self.calls, [])
+                self.assertEqual(run.call_count, 1)
+            finally:
+                gate.set()
+                hardware.shutdown_worker.join(timeout=5)
+            self.assertEqual(hardware.snapshot()['shutdown_state'], 'accepted')
+            self.assertEqual(hardware.snapshot()['shutdown_exit_code'], '0')
+            self.assertFalse(hardware.snapshot()['can_shutdown'])
+            self.assertFalse(hardware.snapshot()['can_start'])
+            hardware.shutdown()
+            self.assertEqual(run.call_count, 1)
+
+    def test_shutdown_permission_failure_preserves_runtime_and_explicit_retry(self):
+        item = self.launcher('hardware')
+        item.update(state='running', reason='existing runtime')
+        def denied(argv, **kwargs):
+            kwargs['stdout'].write(b'sudo: a password is required\n')
+            return subprocess.CompletedProcess(argv, 1)
+        with patch.object(runtime.subprocess, 'run', side_effect=denied), patch.object(item, 'cleanup') as cleanup:
+            item.shutdown()
+            item.shutdown_worker.join(timeout=5)
+            cleanup.assert_not_called()
+        snapshot = item.snapshot()
+        self.assertEqual(snapshot['state'], 'running')
+        self.assertEqual(snapshot['reason'], 'existing runtime')
+        self.assertEqual(snapshot['shutdown_state'], 'failed')
+        self.assertIn('sudo: a password is required', snapshot['shutdown_reason'])
+        self.assertTrue(Path(snapshot['shutdown_log']).is_file())
+        self.assertTrue(snapshot['can_shutdown'])
+        with patch.object(runtime.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)) as run:
+            item.shutdown()
+            item.shutdown_worker.join(timeout=5)
+            run.assert_called_once()
+        self.assertEqual(item.snapshot()['shutdown_state'], 'accepted')
+
+    def test_shutdown_timeout_is_unknown_and_not_retried(self):
+        item = self.launcher('hardware')
+        with patch.object(runtime.subprocess, 'run', side_effect=subprocess.TimeoutExpired(['fake-shutdown'], 15)) as run:
+            item.shutdown()
+            item.shutdown_worker.join(timeout=5)
+            self.assertEqual(item.snapshot()['shutdown_state'], 'unknown')
+            self.assertIn('未确认', item.snapshot()['shutdown_reason'])
+            item.shutdown()
+            self.assertEqual(run.call_count, 1)
+            self.assertFalse(item.snapshot()['can_shutdown'])
+
     def test_missing_entry_and_invalid_mode(self):
         with self.assertRaises(ValueError): self.launcher('other')
         (self.root / 'betaflight_sitl/run.py').unlink()

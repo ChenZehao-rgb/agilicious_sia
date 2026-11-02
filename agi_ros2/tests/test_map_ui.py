@@ -424,6 +424,54 @@ class DDSTests(unittest.TestCase):
             finally:
                 server.shutdown(); server.server_close(); thread.join()
 
+    def test_hardware_shutdown_http_and_volatile_without_executing_shutdown(self):
+        shutdowns = []
+        self.source.create_subscription(Empty, 'ground_station/runtime/hardware/shutdown', shutdowns.append, relay.RUNTIME_QOS)
+        # All hardware shutdown requests stay inside this mock; never call sudo.
+        with patch.object(self.relay.runtime, 'shutdown') as shutdown:
+            self.run_for(.6)
+            server = map_ui.make_server(self.ui, map_ui.MBTiles(None), '127.0.0.1', 0)
+            thread = threading.Thread(target=server.serve_forever)
+            thread.start()
+            base = f'http://127.0.0.1:{server.server_port}'
+            def post(payload, origin=None):
+                headers = {'Content-Type': 'application/json'}
+                if origin: headers['Origin'] = origin
+                with urllib.request.urlopen(urllib.request.Request(base + '/api/runtime/shutdown',
+                                             json.dumps(payload).encode(), headers)) as response:
+                    return response.status, json.load(response)
+            try:
+                for payload, origin, code in [({'mode':'simulation'}, None, 400), ({'mode':'other'}, None, 400),
+                        ({'mode':'hardware', 'command':'shutdown now'}, None, 400), ({'mode':'hardware', 'host':'remote'}, None, 400),
+                        ({'mode':'hardware'}, 'http://unrelated.example', 403)]:
+                    with self.assertRaises(urllib.error.HTTPError) as error: post(payload, origin)
+                    self.assertEqual(error.exception.code, code)
+                status, result = post({'mode':'hardware'})
+                self.assertEqual(status, 202)
+                self.assertEqual(result['message'], '关机请求已发送，等待执行端反馈')
+                self.run_for(.15)
+                self.assertEqual(shutdown.call_count, 1)
+                self.assertEqual(len(shutdowns), 1)
+                late = []
+                self.source.create_subscription(Empty, 'ground_station/runtime/hardware/shutdown', late.append, relay.RUNTIME_QOS)
+                wrong = self.source.create_publisher(Empty, 'ground_station/runtime/simulation/shutdown', relay.RUNTIME_QOS)
+                self.run_for(.15)
+                wrong.publish(Empty())
+                self.run_for(.1)
+                self.assertEqual(late, [])
+                self.assertEqual(shutdown.call_count, 1)
+                for exception in (TimeoutError, RuntimeError):
+                    with patch.object(self.ui.runtime_shutdown_publisher, 'publish', side_effect=exception('synthetic')):
+                        with self.assertRaises(urllib.error.HTTPError) as error: post({'mode':'hardware'})
+                        self.assertEqual(error.exception.code, 503)
+                        self.assertIn('关机结果未确认', json.load(error.exception)['error'])
+                self.ui.latest['runtime/hardware/status']['received'] -= 4
+                with self.assertRaises(urllib.error.HTTPError) as error: post({'mode':'hardware'})
+                self.assertIn('服务未连接', json.load(error.exception)['error'])
+                self.assertEqual(shutdown.call_count, 1)
+            finally:
+                server.shutdown(); server.server_close(); thread.join()
+
     def test_pause_once_empty_volatile_and_immediate_retained_feedback(self):
         pauses = []
         self.source.create_subscription(Empty, 'pause_hover', pauses.append, 1)

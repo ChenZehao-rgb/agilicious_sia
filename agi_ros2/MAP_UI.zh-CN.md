@@ -139,6 +139,59 @@ Restart=on-failure、RestartSec=5 只重建监听；KillMode=control-group、Tim
 取消开机启动且**同时停止本服务及其控制链**：`sudo systemctl disable --now agi-ground-station.service`。
 只取消下次开机启动、不影响当前运行：`sudo systemctl disable agi-ground-station.service`。
 
+### 实机关机按钮
+
+上方状态栏右侧提供仅实机模式显示的电源图标，鼠标悬停显示“关闭板载电脑”。执行位置是网页显示的 hardware 监听主机，
+不是地面 HTTP 后台；把 PC 配成 hardware 也会请求关闭那台 PC，不按主机型号判断。
+请先落地、上锁再关机。仿真角色没有关机订阅，HTTP 也拒绝 simulation 模式的关机请求。
+
+固定路径为 `POST /api/runtime/shutdown`，只接收 `{"mode":"hardware"}`，发布一次
+`ground_station/runtime/hardware/shutdown`（std_msgs/Empty，RELIABLE、VOLATILE、depth=1）。
+执行端后台线程只运行 `sudo -n shutdown now`；`-n` 禁止等密码，不改变 shutdown now 的关机含义。
+没有可传入的命令/参数/主机地址，也没有自动重试或重连补发。权限失败不会主动结束已有控制链。
+重复请求在执行中或命令成功后不会再调用 shutdown；失败后允许用户明确重试。
+
+关机状态独立于程序运行状态。网页显示请求中、命令返回成功、sudo 错误或超时未确认，
+并给出执行主机的 `~/.local/state/agi_ros2/runtime/<仓库哈希>/hardware/<唯一编号>-shutdown.log`。
+15 s 命令等待超时只说明结果未知，不推断没有关机，也不允许自动重发。
+HTTP 202 仅说明已发布；即使命令返回 0，也不声称主机已经断电。失联只显示最后报告/未确认。
+关机过程中 systemd/操作系统负责停止服务；已有 control-group 与进程清理保持。
+
+在 CM5 上由管理员单独授权固定关机调用。先核对外部命令路径：
+
+```bash
+type -P shutdown
+sudo visudo -f /etc/sudoers.d/agi-shutdown
+```
+
+例如路径为 `/usr/sbin/shutdown`、运行用户为 ubuntu 时，文件内容为：
+
+```sudoers
+ubuntu ALL=(root) NOPASSWD: /usr/sbin/shutdown now
+```
+
+以目标机实际路径和用户替换。只授权固定的 `now` 调用，不配置 NOPASSWD: ALL。
+检查语法后，以实际运行用户查询权限（以下命令不执行关机）：
+
+```bash
+sudo visudo -c
+sudo -n -l /usr/sbin/shutdown now
+```
+
+更新后两端重新构建/source，重启地面 map_ui.py；CM5 在控制链停止后重启监听服务，再刷新网页。
+不能只刷新网页：旧 HTTP 后台没有 shutdown 接口，旧监听也没有对应订阅。
+本实现沿用现有 DDS 网络边界，没有新增身份认证；ROS_DOMAIN_ID 不构成关机请求的身份校验。
+没有在开发电脑自动修改 sudoers，也没有通过测试执行真实 shutdown。
+
+关机功能验证：进程测试 14/14、DDS/HTTP 11/11、Chrome 合成回归通过；构建安装及 Python/JS/差异空白检查通过。
+测试仅用替身执行关机分支，实际 shutdown 执行次数为 0。覆盖固定 argv/cwd、hardware-only、重复请求、
+sudo 权限失败不停止运行链、显式重试、超时结果未知、HTTP 校验、命令不保留、刷新/断网不重发。
+本机只重启了地面 map_ui.py 并保留 ROS 域 2，使用无效空对象验证新关机接口返回 400（不发布消息）；
+已有 simulation 监听未重启。CM5 尚需同步构建、配置固定关机权限并更新监听，真实关机未验证。
+[验证摘要](test/results/runtime_shutdown_20261102/validation.json)、
+[浏览器结果](test/results/runtime_shutdown_20261102/browser.json)。
+
+
 ### 非交互实时权限（目标机核验）
 
 launch_realtime 原样调用 `sudo -n true`，然后 `sudo -n chrt -f -p <priority> <tid>`。

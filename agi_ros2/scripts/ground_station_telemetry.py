@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run on the control host: latest-only telemetry relay and fixed, explicit runtime start/stop listener."""
+"""Run on the control host: latest-only telemetry relay and fixed runtime start/stop and hardware shutdown listener."""
 import math
 
 import rclpy
@@ -58,6 +58,8 @@ class GroundStationTelemetry(Node):
         self.runtime = RuntimeLauncher(mode, self.runtime_changed)
         self.create_subscription(Empty, f'ground_station/runtime/{mode}/start', lambda _: self.runtime.start(), RUNTIME_QOS)
         self.create_subscription(Empty, f'ground_station/runtime/{mode}/stop', lambda _: self.runtime.stop(), RUNTIME_QOS)
+        if mode == 'hardware':
+            self.create_subscription(Empty, 'ground_station/runtime/hardware/shutdown', lambda _: self.runtime.shutdown(), RUNTIME_QOS)
         self.publish_runtime()
         self.replace_timers(rates)
         self.add_on_set_parameters_callback(self.set_rates)

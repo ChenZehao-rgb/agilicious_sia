@@ -35,6 +35,14 @@ function renderRuntime() {
   $('runtime-start').textContent = '一键启动' + (mode === 'hardware' ? '实机' : '仿真');
   $('runtime-start').disabled = runtimeBusy || !online || summary.can_start !== 'true';
   $('runtime-stop').disabled = runtimeBusy || !online || summary.can_stop !== 'true';
+  $('runtime-shutdown').hidden = mode !== 'hardware';
+  $('runtime-shutdown').disabled = runtimeBusy || !online || summary.can_shutdown !== 'true';
+  $('runtime-shutdown-status').hidden = mode !== 'hardware';
+  $('runtime-shutdown-status').className = 'detail ' +
+    (['failed', 'unknown'].includes(summary.shutdown_state) ? 'runtime-failed' : '');
+  $('runtime-shutdown-status').textContent = summary.shutdown_reason
+    ? (online ? '' : '最后报告 / 未确认：') + summary.shutdown_reason +
+      (summary.shutdown_log ? `\n关机日志：${summary.shutdown_log}` : '') : '';
   $('runtime-service').textContent = (online ? '启动服务在线' : '该模式服务未连接 · 未确认') +
     (summary.hostname ? ` · ${summary.hostname}` : '');
   $('runtime-service').title = summary.instance || '';
@@ -59,7 +67,7 @@ $('runtime-mode').onchange = () => {
 };
 async function requestRuntime(action) {
   if ($('runtime-' + action).disabled) return;
-  const mode = $('runtime-mode').value, label = action === 'start' ? '启动' : '结束任务';
+  const mode = $('runtime-mode').value, label = {start: '启动', stop: '结束任务', shutdown: '关机'}[action];
   runtimeBusy = true; renderRuntime();
   $('runtime-request').textContent = `正在发送${label}请求…`;
   try {
@@ -76,6 +84,7 @@ async function requestRuntime(action) {
 }
 $('runtime-start').onclick = () => requestRuntime('start');
 $('runtime-stop').onclick = () => requestRuntime('stop');
+$('runtime-shutdown').onclick = () => requestRuntime('shutdown');
 function marker(previous, point, color, label) {
   if (!point) { if (previous) map.removeLayer(previous); return null; }
   if (previous) { previous.setLatLng(latlng(point)); previous.setTooltipContent(label); return previous; }
