@@ -2,10 +2,10 @@
 
 地图包、网页、Python HTTP 后台都在**地面电脑**。CM5/实际控制主机只增加普通优先级、
 只读的 `ground_station_telemetry`。浏览器访问本机 `http://127.0.0.1:8080`；
-地面电脑的 rclpy 经 ROS 2 / DDS 接收镜像遥测、发布既有 `GeographicGoal`。
+地面电脑的 rclpy 经 ROS 2 / DDS 接收镜像遥测、发布 `GeographicGoal` 与暂停 `Empty` 命令。
 因此地面电脑需要 ROS 2 和匹配的项目消息，不是只需浏览器。
 
-未实现暂停、实机启动按钮、ARM、起飞/降落或 AUTO 切换。关闭网页、后台退出、地面网络断开
+新增“暂停并悬停”；未实现实机启动按钮、ARM、起飞/降落或 AUTO 切换。关闭网页、后台退出、地面网络断开
 不主动取消目标或撤权；控制主机仍按原保护逻辑运行。不引入地面站心跳门控。
 
 ## 构建与同机 SITL
@@ -255,6 +255,109 @@ VOLATILE 限制晚加入者获取历史，不禁止 DDS 对既有未确认样本
 不用 cos(latitude)、heading correction 或 ECEF 替代。比例为零时经度未知；合法的零坐标不作缺失处理。
 会话/reset/映射变化清除旧轨迹关联。机头方向来自四元数 ENU yaw：heading=wrap360(90−yaw)，不使用速度方向。
 相对原点高度不是离地高度，方向虚线不是完整规划路径。
+
+## 暂停并悬停
+
+地面电脑与控制主机均须重新构建并 source **同版本的 agi_ros2 消息**，然后重启各自节点；
+本次 `GoalStatus` 新增 `bool pause_active`，只更新浏览器或 Python 文件不足以升级。
+构建、仿真/接收机、遥测转发和 UI 的准确启动命令见本文开头。跨机沿用同一 domain、兼容 RMW
+和既有网络配置；暂停命令直达控制节点，不经过 20/2 Hz 遥测定时器。
+
+在稳定 AUTO 中执行目标，转向、平移、升降、终点收敛或已悬停时均可点击橙色“暂停并悬停”。
+按钮不依赖目标输入、地图、地理原点或 `hover_stable`，只在自己的 HTTP 请求在途时禁用。
+暂停取消旧目标，刹停后持续保持终点及朝向，不自动恢复旧在线目标或底层 CSV。
+经纬高与待选点不被暂停改写；实际稳定后再次明确点击“执行目标”，按原有准入规则从新悬停点规划。
+暂停不调用 off/kill、不重新 warmup 或进入 AUTO；原授权、状态、围栏、遥控接管与故障逻辑仍有效。
+
+接口：`POST /api/pause`，JSON `{}`，每次有效请求只发布一次。
+HTTP 202 的“暂停请求已发送，等待控制端处理”只说明发布调用完成。
+网络超时显示结果未确认，无自动重试/重连补发。终端调试使用：
+
+```bash
+ros2 topic pub --once /pause_hover std_msgs/msg/Empty '{}'
+```
+
+topic 为相对名称 `pause_hover`，RELIABLE、VOLATILE、KEEP_LAST(1)；如使用 `/quad1` namespace，
+替换为 `/quad1/pause_hover`，UI、转发和控制节点也应使用对应 namespace。
+不同 DDS topic 不提供全局顺序；本实现保证控制端收到后的暂停优先级和无应用层自动重放，
+不承诺任意网络延迟下的跨 topic 排序或 exactly-once 交付。
+
+`GoalStatus.request_source=pause_hover`，最近请求仍为 PENDING / ACCEPTED / REJECTED；
+只有控制 tick 安装参考并通过该周期检查后才 ACCEPTED。暂停清掉尚未执行的普通目标；
+暂停 pending 时拒绝新普通目标，不排队等候。健康 idle 保留暂停到下一有效 FC 控制周期，
+撤权/AUTO 退出/disarm/kill/reset/输出故障按原路径清理。
+重复 pending 暂停合并为最近序号；已安装后的重复暂停不重规划、不延长时长、不移动停止点，
+活动请求沿用首次安装的编号，最近请求正常回报幂等接受。被拒绝的新目标不清除暂停标识。
+最近请求 B 被拒绝后，较早 pending 暂停 P 的执行结果只更新活动参考，不覆盖 B 的请求字段。
+
+`pause_active` 独立于最近请求来源；`active_enu` 是实际安装的刹停终点。
+MOVING / SETTLING / STABLE 分别显示“减速中 / 悬停收敛中 / 已暂停，稳定悬停”，地图 marker 显示“悬停点”。
+段结束用真实控制时刻判断，MPC 未来采样不会提前改变阶段；实际稳定仍要求速度 ≤0.2 m/s、位置误差 ≤0.2 m。
+同阶段内暂停标识、活动编号/停止点变化也发布新 revision，现有 relay 即时转发保留状态。
+刷新只恢复显示，状态过期或会话不匹配仍显示未确认。
+
+实现复用同一个 `CapturedReference`、`MinSnapTrajectory`、相对时间和末端 hover。
+从切换时当前活动参考取 p/v/a/j，使用原 `pilot.brake_deceleration`（配置未变）：
+`T=max(1.5, 1.875*|v0|/brake_deceleration)`，
+`p_stop=p0+0.5*T*v0+0.1*T²*a0+(T³/120)*j0`，末端 v/a/j=0。
+不对运动起点清零导数，不通过 scale 改坏起点边界；候选求解、有限采样和边界校验通过后才替换。
+固定位置参考保留已有位置和朝向。停止点通常不等于点击位置。
+heading 从既有 tilt×heading 组合中取回；局部标量 yaw 多项式保留未包裹角度，
+终止相对角为 `0.5*yaw_rate0*T`，heading/yaw rate 连续，末端 yaw rate=0。
+
+限制：该减速度参数用于时长设计，非零起始 a/j 下不保证严格峰值加速度上限或速度立即单调下降。
+yaw acceleration 起点按现有接口取零，不保证任意起始 yaw acceleration 连续。
+有限采样与端点围栏检查不等于全路径围栏、避障或形式化动力学保证；失败拒绝并保留仍有效的原参考。
+未连接或控制真实飞机，未完成实机飞行、CM5 实际运行或跨机断网延迟交付验证。
+
+相关验证命令（独立测试终端、空闲 domain/仿真端口，不与真实系统或交互仿真混用）：
+
+```bash
+source /opt/ros/humble/setup.bash
+source install/agi_ros2/local_setup.bash
+export ROS_DOMAIN_ID=91 ROS_LOCALHOST_ONLY=1 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
+cmake --build agilib/build --target tests -j 3
+agilib/build/tests --gtest_filter='CapturedOnlineReference.*:HardwareGeo.*'
+python3 agi_ros2/tests/test_map_ui.py
+python3 agi_ros2/tests/test_fc_control_delivery.py \
+  DeliveryTests.test_pause_priority_idle_sequence_and_reset \
+  DeliveryTests.test_online_goals_on_fc_control_thread \
+  DeliveryTests.test_geographic_goals_share_local_chain_and_reset_cleanup -v
+ctest --test-dir build/agi_ros2 --output-on-failure
+# 仅测试需要 Playwright 与 Chrome；输出目录必须不存在。
+python3 agi_ros2/tests/test_map_ui_browser.py --browser /opt/google/chrome/chrome \
+  --output /tmp/agi_pause_browser_check
+GZ_PARTITION=agi_pause_hover_check python3 agi_ros2/tests/test_sitl_go_to_position.py \
+  --state-source fc_fused --geographic --map-ui --pause-hover --output /tmp/agi_pause_sitl_check
+```
+
+`--pause-hover` 使用实际浏览器按钮、地面后台、ControlNode→HardwarePilot→CapturedReference→MPC→output
+和模拟接收机，分别在平移和转向中暂停，等到原目标预计结束之后仍保持，再明确点击新目标。
+保留 result.json、CSV、rosbag、日志与截图，最后执行原有 KILL 撤权检查。
+测试的浏览器只访问本机，地图底图不作为本次验证条件。
+
+本机 2026-11-02 最终验证：ROS2/Gazebo ON 构建、C++ 14/14、DDS/HTTP/地图 7/7、真实 control_node 3/3、
+ctest 2/2 和 Chrome 浏览器检查均通过。修改范围 clang-format、Tab/140 列、命名/空白与 Python/JS 语法检查通过。
+浏览器合成测试验证一次点击一次 Empty、空目标也可暂停、移动时可用、5 s HTTP 超时不重试、
+原输入保留、刷新不重发、三个暂停阶段、既有 marker tooltip 更新以及源停流后的未确认样式。
+快慢组频率回归保持 20/2 Hz；生产 relay 与 YAML 没有修改。
+
+最终真实 FC-fused SITL 的 AUTO/输出连续有效约 **128.67 s**，最大求解 **2.346 ms**、控制周期 **2.436 ms**。
+平移暂停时实测速度 **0.608→0.012 m/s**；停止点比点击前参考位置前移约 **0.618 m**。
+转向暂停前参考 yaw rate **0.201 rad/s**，末端参考 yaw rate=0。
+两次都等待超过旧目标预计结束时刻，随后浏览器明确点击新目标成功；最终 KILL 撤权和活动状态清理通过。
+两次暂停最后 2 s 的仿真真值最大位置误差分别 **0.0486 m / 0.0419 m**，速度最大 **0.0764 / 0.0759 m/s**。
+实测稳定不等同于计时器结束，合成测试单独覆盖 SETTLING 和实际速度/位置误差未达标。
+
+中间复测修正了两处测试观察方式：等待 FC 待合并样本真正计算后才断言 healthy idle；
+用保留型 GoalStatus 判断接受，避免漏收单周期 BEST_EFFORT 文本误报超时。未放宽控制门限。
+摘要、实际命令和日志见 [validation.json](test/results/pause_hover_20261102/validation.json)、
+[SITL 结果](test/results/pause_hover_20261102/sitl.json)、
+[平移暂停截图](test/results/pause_hover_20261102/pause_translation.png)、
+[转向暂停截图](test/results/pause_hover_20261102/pause_yaw.png)。
+原始 CSV、rosbag 与运行日志在 `/tmp/agi_pause_sitl_verified`；结果目录按现有规则被 Git 忽略，未提交或推送。
+测试专用 Playwright 安装在 `/tmp/agi_pause_qa`，本次浏览器命令额外使用 `PYTHONPATH=/tmp/agi_pause_qa:$PYTHONPATH`；
+未增加产品运行依赖，也未执行实机启动/飞行验证。
 
 ## 地图保存位置与离线范围
 

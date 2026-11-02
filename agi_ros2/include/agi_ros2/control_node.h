@@ -22,6 +22,7 @@
 #include "geometry_msgs/msg/point_stamped.hpp"
 #include "nav_msgs/msg/odometry.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "std_msgs/msg/empty.hpp"
 #include "std_msgs/msg/float64_multi_array.hpp"
 #include "std_msgs/msg/string.hpp"
 
@@ -36,13 +37,14 @@ private:
 	void onState(msg::FusedState::ConstSharedPtr message);
 	void onOutputStatus(msg::OutputStatus::ConstSharedPtr message);
 	void onGoToPosition(geometry_msgs::msg::PointStamped::ConstSharedPtr message);
+	void onPauseHover(std_msgs::msg::Empty::ConstSharedPtr message);
 	void onGeographicGoal(msg::GeographicGoal::ConstSharedPtr message);
 	void onOrigin(msg::NavigationOrigin::ConstSharedPtr message);
 	bool enqueueGoal(const agi::Vector<3>& target, const std::string& frame);
 	void clearPendingGoal(const char* reason);
 	void beginGoalRequest(const char* source, const std::string& frame);
 	void publishGoalStatus();
-	void updateGoalStatus(const agi::hardware::ControlDecision& decision, const std::optional<agi::Vector<3>>& goal);
+	void updateGoalStatus(const agi::hardware::ControlDecision& decision, const std::optional<agi::Vector<3>>& goal, bool pause);
 	void tick();
 	void dispatchFcState();
 	void runCycle(bool computation_requested);
@@ -85,6 +87,9 @@ private:
 	msg::NavigationOrigin _origin;
 	rclcpp::Subscription<msg::NavigationOrigin>::SharedPtr _origin_sub;
 	rclcpp::Subscription<msg::GeographicGoal>::SharedPtr _geographic_goal_sub;
+	rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr _pause_sub;
+	bool _pending_pause = false;
+	uint64_t _pending_pause_sequence = 0;
 	std::optional<agi::Vector<3>> _pending_goal;
 	uint64_t _pending_goal_sequence = 0;
 	msg::GoalStatus _goal_status;

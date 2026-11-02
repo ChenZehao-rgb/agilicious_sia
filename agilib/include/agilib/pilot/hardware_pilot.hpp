@@ -21,6 +21,8 @@ struct ControlDecision {
 	std::string goal_rejection{"AUTO reference inactive"};
 	std::string goal_event;
 	bool goal_accepted{false};
+	bool pause_active{false};
+	Vector<3> active_endpoint{Vector<3>::Zero()};
 	OnlineGoalPhase online_goal_phase{OnlineGoalPhase::None};
 };
 
@@ -32,7 +34,8 @@ public:
 	                       ReceiverPolicy receiver_policy = ReceiverPolicy::FreshSamples);
 	bool setTrajectory(const SetpointVector& relative_setpoints);
 	ControlDecision tick(const QuadState& fused_state, Evidence evidence, bool shadow_only = false, bool navigation_valid = false,
-	                     bool computation_requested = true, const Vector<3>* go_to_position = nullptr);
+	                     bool computation_requested = true, const Vector<3>* go_to_position = nullptr, bool pause_hover = false,
+	                     const Vector<3>& fence_min = Vector<3>::Constant(-INF), const Vector<3>& fence_max = Vector<3>::Constant(INF));
 	void reportOutputFault();
 	Mode mode() const { return _gate.mode(); }
 	unsigned warmCycles() const { return _warm_cycles; }
@@ -50,6 +53,7 @@ private:
 	const ReceiverPolicy _receiver_policy;
 	const double _go_to_pose_mean_vel;
 	const double _yaw_rate_max;
+	const double _brake_deceleration;
 	const std::thread::id _owner;
 	std::unique_ptr<Pilot> _pilot;
 	std::shared_ptr<BridgeBase> _sink;

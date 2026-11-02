@@ -62,3 +62,6 @@ button:hover { background: #455d70; } button:disabled { opacity: .5; cursor: wai
 #map.selecting-area { cursor: crosshair; }
 [hidden] { display: none !important; }
 @media (max-width: 850px) { body { height: auto; } main { grid-template-columns: 1fr; flex: none; } .map-panel { height: 60vh; min-height: 450px; } aside { overflow: visible; } header { padding: 10px; } .brand { width: 100%; } }
+
+#pause { background: #b76016; border-color: #ef9c49; margin: 4px 3px; }
+#pause:hover { background: #d47821; }

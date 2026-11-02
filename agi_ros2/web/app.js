@@ -21,7 +21,7 @@ function age(topic) { return (snapshot?.topics[topic]?.age_s ?? Infinity) + (per
 function fresh(topic) { return age(topic) < (topic === 'fused_state' ? 1 : 3); }
 function marker(previous, point, color, label) {
   if (!point) { if (previous) map.removeLayer(previous); return null; }
-  if (previous) { previous.setLatLng(latlng(point)); return previous; }
+  if (previous) { previous.setLatLng(latlng(point)); previous.setTooltipContent(label); return previous; }
   return L.circleMarker(latlng(point), {radius: 7, color, fillColor: color, fillOpacity: .75, weight: 2})
     .bindTooltip(label, {direction: 'top'}).addTo(map);
 }
@@ -86,6 +86,18 @@ $('goal-form').addEventListener('submit', async event => {
   } catch (_) { $('submission').textContent = '连接中断：发送结果未确认。请查看控制端全局反馈；不会自动重试。'; }
   finally { $('execute').disabled = false; }
 });
+$('pause').onclick = async () => {
+  if ($('pause').disabled) return;
+  $('pause').disabled = true;
+  $('submission').textContent = '正在发送暂停请求；结果未确认…';
+  try {
+    const response = await fetch('/api/pause', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: '{}', signal: AbortSignal.timeout(5000)});
+    const result = await response.json();
+    $('submission').textContent = response.ok ? result.message : (result.error || '暂停结果未确认');
+  } catch (_) { $('submission').textContent = '连接中断：暂停结果未确认。请查看控制端全局反馈；不会自动重试。'; }
+  finally { $('pause').disabled = false; }
+};
 function renderTelemetry() {
   const state = data('fused_state'), authority = data('authority'), health = data('health'), output = data('output_status');
   const goal = data('goal_status'), computation = data('computation_status');
@@ -101,7 +113,8 @@ function renderTelemetry() {
   $('navigation').title = snapshot?.mapping_error || '';
   badge('battery', health ? `${prefix('health')}电压 ${fmt(health.battery_voltage)} V` : '电压 未知', !!health && num(health.battery_voltage) && fresh('health'));
   const connected = fresh('fused_state') && fresh('computation_status') && httpOK;
-  const phase = ['无在线目标', '跟踪目标 / 转向', '终点收敛', '稳定悬停'];
+  const phase = goal?.pause_active ? ['无在线目标', '减速中', '悬停收敛中', '已暂停，稳定悬停']
+    : ['无在线目标', '跟踪目标 / 转向', '终点收敛', '稳定悬停'];
   const sessionMatches = !!goal && !!computation && goal.control_session_start === computation.control_session_start && goal.clock_id === state?.clock_id;
   const phaseConfirmed = connected && sessionMatches && (!goal.active_valid || snapshot.goal_matches_state);
   const initialAuto = !goal?.active_valid && computation?.trajectory_active;
@@ -113,7 +126,7 @@ function renderTelemetry() {
     (!snapshot.goal_matches_state ? '\n会话未匹配；不显示旧目标坐标' : '') : initialAuto ? 'AUTO 参考已激活 · 尚无在线目标' : goal ? '当前快照无活动目标' : '活动目标未知';
   if (goal?.request_sequence) {
     const requested = goal.request_source === 'go_to_geographic_position' ? goal.requested_geographic : goal.requested_enu;
-    const values = goal.request_source === 'go_to_geographic_position' ? `${fmt(requested.latitude, 8)}, ${fmt(requested.longitude, 8)}, ${fmt(requested.altitude_msl)} m MSL`
+    const values = goal.request_source === 'pause_hover' ? '暂停并悬停' : goal.request_source === 'go_to_geographic_position' ? `${fmt(requested.latitude, 8)}, ${fmt(requested.longitude, 8)}, ${fmt(requested.altitude_msl)} m MSL`
       : `${fmt(requested.x)}, ${fmt(requested.y)}, ${fmt(requested.z)} m (${goal.request_frame})`;
     $('request').textContent = `#${goal.request_sequence} · ${['无请求', '待处理', '已接受', '已拒绝'][goal.request_state] || '未知'}\n${values}\n${goal.request_reason}`;
   } else $('request').textContent = '尚无目标请求';
@@ -140,7 +153,7 @@ function renderState() {
   }
   const point = snapshot.position, origin = data('navigation/origin');
   originMarker = marker(originMarker, !snapshot.mapping_error ? origin : null, '#5ecce8', 'FC 导航原点');
-  activeMarker = marker(activeMarker, snapshot.active_position, '#86e1ad', '已接受目标');
+  activeMarker = marker(activeMarker, snapshot.active_position, '#86e1ad', data('goal_status')?.pause_active ? '悬停点' : '已接受目标');
   direction.setLatLngs(point && snapshot.active_position ? [latlng(point), latlng(snapshot.active_position)] : []);
   if (point) {
     if (!airplane) airplane = L.marker(latlng(point), {icon: L.divIcon({className: 'aircraft', html: '<span>▲</span>', iconSize: [36, 36], iconAnchor: [18, 18]})}).addTo(map);

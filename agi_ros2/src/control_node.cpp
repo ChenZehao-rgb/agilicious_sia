@@ -99,6 +99,8 @@ ControlNode::ControlNode()
 	_state_sub = create_subscription<msg::FusedState>("fused_state", 1, std::bind(&ControlNode::onState, this, std::placeholders::_1));
 	_goal_sub = create_subscription<geometry_msgs::msg::PointStamped>(
 	        "go_to_position", 1, std::bind(&ControlNode::onGoToPosition, this, std::placeholders::_1));
+	_pause_sub = create_subscription<std_msgs::msg::Empty>("pause_hover", rclcpp::QoS(1).reliable().durability_volatile(),
+	                                                       std::bind(&ControlNode::onPauseHover, this, std::placeholders::_1));
 	_origin_sub = create_subscription<msg::NavigationOrigin>("navigation/origin", rclcpp::QoS(1).transient_local(),
 	                                                         std::bind(&ControlNode::onOrigin, this, std::placeholders::_1));
 	_geographic_goal_sub = create_subscription<msg::GeographicGoal>(
@@ -197,7 +199,35 @@ void ControlNode::clearPendingGoal(const char* reason) {
 		}
 	}
 	_pending_goal.reset();
+	if (_pending_pause && _pending_pause_sequence == _goal_status.request_sequence) {
+		_goal_status.request_state = msg::GoalStatus::REJECTED;
+		_goal_status.request_reason = reason;
+		publishGoalStatus();
+	}
+	_pending_pause = false;
+	if (_goal_status.active_valid) {
+		_goal_status.active_valid = false;
+		_goal_status.pause_active = false;
+		_goal_status.active_phase = msg::GoalStatus::NO_TARGET;
+		_goal_status.active_reason = reason;
+		publishGoalStatus();
+	}
 	_goal_rejection = reason;
+}
+
+void ControlNode::onPauseHover(std_msgs::msg::Empty::ConstSharedPtr) {
+	// Finish the superseded pending request before publishing the new request.
+	if (_pending_goal && _pending_goal_sequence == _goal_status.request_sequence) {
+		_goal_status.request_state = msg::GoalStatus::REJECTED;
+		_goal_status.request_reason = "superseded by pause_hover";
+		publishGoalStatus();
+	}
+	_pending_goal.reset();
+	beginGoalRequest("pause_hover", "odom");
+	// Coalesce pending pauses into the latest sequence; no command queue or replay.
+	_pending_pause = true;
+	_pending_pause_sequence = _goal_status.request_sequence;
+	publishGoalStatus();
 }
 
 void ControlNode::onGoToPosition(geometry_msgs::msg::PointStamped::ConstSharedPtr message) {
@@ -226,19 +256,21 @@ void ControlNode::publishGoalStatus() {
 	_goal_status_pub->publish(_goal_status);
 }
 
-void ControlNode::updateGoalStatus(const agi::hardware::ControlDecision& decision, const std::optional<agi::Vector<3>>& goal) {
+void ControlNode::updateGoalStatus(const agi::hardware::ControlDecision& decision, const std::optional<agi::Vector<3>>& goal, bool pause) {
 	bool changed = false;
-	if (goal) {
-		if (_pending_goal_sequence == _goal_status.request_sequence) {
+	const uint64_t sequence = pause ? _pending_pause_sequence : _pending_goal_sequence;
+	if (goal || pause) {
+		if (sequence == _goal_status.request_sequence) {
 			_goal_status.request_state = decision.goal_accepted ? msg::GoalStatus::ACCEPTED : msg::GoalStatus::REJECTED;
 			_goal_status.request_reason = decision.goal_event;
 			changed = true;
 		}
-		if (decision.goal_accepted) {
-			_goal_status.active_request_sequence = _pending_goal_sequence;
-			_goal_status.active_enu.x = goal->x();
-			_goal_status.active_enu.y = goal->y();
-			_goal_status.active_enu.z = goal->z();
+		// Idempotent pauses retain the first installed active request identity.
+		if (decision.goal_accepted && !(pause && _goal_status.pause_active)) {
+			_goal_status.active_request_sequence = sequence;
+			_goal_status.active_enu.x = decision.active_endpoint.x();
+			_goal_status.active_enu.y = decision.active_endpoint.y();
+			_goal_status.active_enu.z = decision.active_endpoint.z();
 			_goal_status.active_fc_session = _state.navigation_session;
 			_goal_status.active_fc_reset_counter = _state.fc_reset_counter;
 			_goal_status.active_generation = _state.reset_counter;
@@ -247,7 +279,9 @@ void ControlNode::updateGoalStatus(const agi::hardware::ControlDecision& decisio
 	}
 	const auto phase = static_cast<uint8_t>(decision.online_goal_phase);
 	const bool active = phase != msg::GoalStatus::NO_TARGET;
-	if (_goal_status.active_valid != active || _goal_status.active_phase != phase) {
+	if (_goal_status.active_valid != active || _goal_status.active_phase != phase ||
+	    _goal_status.pause_active != decision.pause_active) {
+		_goal_status.pause_active = decision.pause_active;
 		_goal_status.active_reason = active ? decision.goal_rejection : decision.reason;
 		_goal_status.active_valid = active;
 		_goal_status.active_phase = phase;
@@ -304,6 +338,8 @@ bool ControlNode::enqueueGoal(const agi::Vector<3>& target, const std::string& f
 		rejection = "nonfinite position";
 	else if (_output_fault)
 		rejection = "output/state reset pending";
+	else if (_pending_pause)
+		rejection = "pause_hover pending";
 	else if (_pending_goal)
 		rejection = "another target pending";
 	else
@@ -462,11 +498,17 @@ void ControlNode::runCycle(bool computation_requested) {
 	}
 	_computation_requested = computation_requested;
 	_sample_age_before = _fc_event_control ? monotonicSeconds() - evidence.fc_sample_time : NAN;
-	const auto goal = _pending_goal;
+	const bool pause = _pending_pause;
+	const auto goal = pause ? std::nullopt : _pending_goal;
+	_pending_pause = false;
 	_pending_goal.reset();
-	const auto decision = _pilot->tick(state, evidence, _shadow_only, navigation_valid, computation_requested, goal ? &*goal : nullptr);
+	const bool fenced = _mode == "hardware" || _fc_event_control;
+	const agi::Vector<3> fence_min = fenced ? agi::Vector<3>(_geofence_min.data()) : agi::Vector<3>::Constant(-agi::INF);
+	const agi::Vector<3> fence_max = fenced ? agi::Vector<3>(_geofence_max.data()) : agi::Vector<3>::Constant(agi::INF);
+	const auto decision = _pilot->tick(state, evidence, _shadow_only, navigation_valid, computation_requested, goal ? &*goal : nullptr,
+	                                   pause, fence_min, fence_max);
 	_goal_rejection = decision.goal_rejection;
-	updateGoalStatus(decision, goal);
+	updateGoalStatus(decision, goal, pause);
 	_cycle_end_time = monotonicSeconds();
 	if (warm_before > 0 && (fault || _pilot->warmCycles() < warm_before)) ++_warm_resets;
 	_cycle_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - cycle_start).count();

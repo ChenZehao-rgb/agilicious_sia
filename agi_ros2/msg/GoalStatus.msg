@@ -19,6 +19,8 @@ uint8 NO_TARGET=0
 uint8 MOVING=1
 uint8 SETTLING=2
 uint8 STABLE=3
+# Installed pause reference, independent of the latest request source/state.
+bool pause_active
 bool active_valid
 uint64 active_request_sequence
 geometry_msgs/Point active_enu

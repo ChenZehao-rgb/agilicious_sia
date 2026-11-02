@@ -57,7 +57,10 @@ def main():
     parser.add_argument('--yaw-chain', action='store_true')
     parser.add_argument('--geographic', action='store_true', help='Two WGS84/MSL goals from the actual FC origin')
     parser.add_argument('--map-ui', action='store_true', help='Send geographic goals through the local UI HTTP server')
+    parser.add_argument('--pause-hover', action='store_true', help='Browser goal/pause clicks in translation and yaw; requires Playwright/Chrome')
     args = parser.parse_args()
+    if args.pause_hover and not (args.map_ui and args.geographic):
+        parser.error('--pause-hover requires --map-ui --geographic --state-source fc_fused')
     if args.map_ui and not args.geographic:
         parser.error('--map-ui requires --geographic')
     with socket.socket() as port_socket:
@@ -87,7 +90,7 @@ def main():
     node = rclpy.create_node('online_goal_validation', parameter_overrides=[Parameter('use_sim_time', value=not fc_state)])
     latest, rows, events, processes, streams, subscriptions = {}, {}, [], [], [], []
     result = {'passed': False, 'state_source': args.state_source, 'yaw_chain': args.yaw_chain,
-              'geographic': args.geographic, 'map_ui': args.map_ui, 'runtime_config': str(runtime), 'goals': [], 'yaw_pulses': []}
+              'geographic': args.geographic, 'map_ui': args.map_ui, 'pause_hover': args.pause_hover, 'runtime_config': str(runtime), 'goals': [], 'yaw_pulses': []}
     truth_offset = [0., 0., 0.]
 
     def sim_time():
@@ -107,7 +110,7 @@ def main():
                 row[key] = getattr(msg, key)
         elif topic == 'goal_status':
             for key in ('request_sequence', 'request_state', 'request_reason', 'active_valid',
-                        'active_request_sequence', 'active_phase', 'active_reason'):
+                        'active_request_sequence', 'active_phase', 'active_reason', 'pause_active'):
                 row[key] = getattr(msg, key)
             row['active_enu'] = xyz(msg.active_enu)
         elif topic.startswith('sensors/fc/'):
@@ -300,12 +303,102 @@ def main():
                     longitude=origin.longitude+lon_units*1e-7, altitude_msl=origin.altitude+2.))
             targets = [(500*1.1131949424743652*.01*origin.longitude_scale, 100*1.1131949424743652*.01, 2.),
                        (-200*1.1131949424743652*.01*origin.longitude_scale, 500*1.1131949424743652*.01, 2.)]
+        if args.pause_hover:
+            from playwright.sync_api import sync_playwright
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch(executable_path='/opt/google/chrome/chrome', headless=True,
+                                                       args=['--no-sandbox'])
+                page = browser.new_page(viewport={'width': 1440, 'height': 960})
+                # Test exercises the UI; map downloads/external resources are irrelevant.
+                page.route('**/*', lambda route: route.continue_() if route.request.url.startswith(ui_url) else route.abort())
+                browser_commands = []
+                page.on('request', lambda request: browser_commands.append(request.url)
+                        if request.method == 'POST' else None)
+                page.goto(ui_url)
+                def click_goal(point):
+                    geo = dict(latitude=origin.latitude+point[1]/111319.49424743652,
+                               longitude=origin.longitude+point[0]/(111319.49424743652*origin.longitude_scale),
+                               altitude_msl=origin.altitude+point[2])
+                    for field, key in [('latitude','latitude'), ('longitude','longitude'), ('altitude','altitude_msl')]:
+                        page.locator('#'+field).fill(str(geo[key]))
+                    sequence = latest['goal_status'].request_sequence
+                    page.locator('#execute').click()
+                    wait_for(lambda: latest['goal_status'].request_sequence > sequence and
+                             latest['goal_status'].request_state == GoalStatus.ACCEPTED, 5, 'browser goal accepted')
+                    assert not latest['goal_status'].pause_active
+                    return geo
+                pause_results = []
+                for mode in ('translation', 'yaw'):
+                    start = xyz(latest['reference'].pose.pose.position)
+                    heading = yaw(latest['reference'].pose.pose.orientation)
+                    direction = heading + (1.5 if mode == 'yaw' else 0.)
+                    target = [start[0]+12*math.cos(direction), start[1]+12*math.sin(direction), start[2]]
+                    goal_time = time.monotonic()
+                    geo = click_goal(target)
+                    if mode == 'translation':
+                        wait_for(lambda: norm(xyz(latest['reference'].twist.twist.linear)) > .6 and
+                                 norm(xyz(latest['fused_state'].velocity)) > .4, 30, 'translation before pause')
+                    else:
+                        wait_for(lambda: abs(latest['reference'].twist.twist.angular.z) > .2, 20, 'yaw before pause')
+                    before_speed = norm(xyz(latest['fused_state'].velocity))
+                    before_rate = latest['reference'].twist.twist.angular.z
+                    before_position = xyz(latest['reference'].pose.pose.position)
+                    pause_sequence = latest['goal_status'].request_sequence + 1
+                    pause_time = time.monotonic()
+                    page.locator('#pause').click()
+                    wait_for(lambda: latest['goal_status'].request_sequence == pause_sequence and
+                             latest['goal_status'].request_state == GoalStatus.ACCEPTED and
+                             latest['goal_status'].pause_active, 5, 'browser pause accepted')
+                    stopped = xyz(latest['goal_status'].active_enu)
+                    assert latest['goal_status'].active_phase == GoalStatus.MOVING
+                    if mode == 'translation':
+                        assert norm(a-b for a,b in zip(stopped, before_position)) > .1
+                    stable_window(stopped, 3, 30, require_active=True)
+                    wait_for(lambda: latest['goal_status'].active_phase == GoalStatus.STABLE, 3, 'pause stable phase')
+                    # Hold past the original goal's yaw+translation completion time.
+                    original_duration = 12 + (1.875*1.5/.5 if mode == 'yaw' else 1.5)
+                    delay(max(3, goal_time + original_duration + 2 - time.monotonic()))
+                    assert latest['goal_status'].pause_active and stable(stopped)
+                    assert norm(a-b for a,b in zip(xyz(latest['reference'].pose.pose.position), stopped)) < 1e-6
+                    assert norm(xyz(latest['reference'].twist.twist.linear)) == 0
+                    assert norm(xyz(latest['reference'].twist.twist.angular)) == 0
+                    for field, key in [('latitude','latitude'), ('longitude','longitude'), ('altitude','altitude_msl')]:
+                        assert float(page.locator('#'+field).input_value()) == geo[key]
+                    # Refresh displays retained pause feedback without publishing a command.
+                    count = len(browser_commands)
+                    page.reload()
+                    page.wait_for_function("document.getElementById('phase').textContent === '已暂停，稳定悬停'")
+                    assert len(browser_commands) == count
+                    page.screenshot(path=str(out / ('pause_'+mode+'.png')), full_page=True)
+                    end_wall = time.monotonic()
+                    summary = dict(mode=mode, pause_wall=pause_time, stop=stopped, click_reference=before_position,
+                                   speed_before=before_speed, yaw_rate_before=before_rate,
+                                   speed_after=norm(xyz(latest['fused_state'].velocity)),
+                                   original_goal_end_waited=True)
+                    for topic in ('fused_state', 'ground_truth'):
+                        window = [r for r in rows[topic] if end_wall-2 <= r['wall'] <= end_wall]
+                        expected = [a+b for a,b in zip(stopped,truth_offset)] if topic == 'ground_truth' else stopped
+                        summary[topic] = dict(position_error_max=max(norm(a-b for a,b in zip(r['position'], expected)) for r in window),
+                                              speed_max=max(norm(r['velocity']) for r in window))
+                        assert summary[topic]['position_error_max'] <= .2 and summary[topic]['speed_max'] <= .2
+                    event('browser_pause_verified', **summary)
+                    pause_results.append(summary)
+                    # An explicit new UI goal in the same AUTO session must work.
+                    next_target = [stopped[0]+.5*math.cos(direction), stopped[1]+.5*math.sin(direction), stopped[2]]
+                    click_goal(next_target)
+                    stable_window(next_target, 2, 40, require_active=True)
+                assert browser_commands.count(ui_url+'/api/pause') == 2
+                assert browser_commands.count(ui_url+'/api/goal') == 4
+                result['pauses'] = pause_results
+                result['browser_commands'] = browser_commands
+                browser.close()
         for index, target in enumerate(targets):
             start_ref = xyz(latest['reference'].pose.pose.position)
             start_heading = yaw(latest['reference'].pose.pose.orientation)
             horizontal = [target[i]-start_ref[i] for i in range(2)]
             end_heading = math.atan2(horizontal[1], horizontal[0]) if norm(horizontal) > 1e-6 else start_heading
             goal_start = time.monotonic()
+            previous_sequence = latest['goal_status'].request_sequence
             goal_stream = (out / f'goal_{index}_cli.log').open('w')
             streams.append(goal_stream)
             goal = '{header: {frame_id: odom}, point: {x: %s, y: %s, z: %s}}' % target
@@ -335,14 +428,19 @@ def main():
                     if cli.poll() is None:
                         os.killpg(cli.pid, signal.SIGINT)
                         cli.wait(timeout=5)
-            def accepted_rows():
-                return [x for x in rows['computation_status'] if x['wall'] >= goal_start
-                        and 'go_to_position accepted:' in x['reason']]
-            wait_for(lambda: bool(accepted_rows()), 5, 'goal acceptance')
-            accepted = accepted_rows()[0]
+            # Acceptance is a retained control-owned state. A single best-effort
+            # computation event can be lost while the HTTP caller is blocked.
+            def goal_accepted():
+                status = latest['goal_status']
+                if status.request_sequence <= previous_sequence:
+                    return False
+                if status.request_state == GoalStatus.REJECTED:
+                    raise RuntimeError('goal rejected: ' + status.request_reason)
+                return status.request_state == GoalStatus.ACCEPTED and status.active_valid
+            wait_for(goal_accepted, 5, 'retained goal acceptance')
+            accepted = next(r for r in reversed(rows['goal_status']) if r['request_sequence'] > previous_sequence
+                            and r['request_state'] == GoalStatus.ACCEPTED)
             event('goal_accepted', target=target, stamp=accepted['stamp'])
-            wait_for(lambda: latest.get('goal_status') and latest['goal_status'].request_state == GoalStatus.ACCEPTED,
-                     3, 'retained goal acceptance')
             accepted_sequence = latest['goal_status'].active_request_sequence
             if args.map_ui:
                 # A valid geographic request outside the existing fence must not erase A.

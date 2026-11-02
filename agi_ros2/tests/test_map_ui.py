@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 import map_ui
 import ground_station_telemetry as relay
 import rclpy
+from std_msgs.msg import Empty
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.parameter import Parameter
 from rosidl_runtime_py.convert import message_to_ordereddict
@@ -271,6 +272,68 @@ class DDSTests(unittest.TestCase):
             self.origin_pub.publish(origin)
             self.run_for(.1)
             self.assertIsNotNone(self.ui.snapshot()['position'], field)
+
+    def test_pause_once_empty_volatile_and_immediate_retained_feedback(self):
+        pauses = []
+        self.source.create_subscription(Empty, 'pause_hover', pauses.append, 1)
+        self.run_for(.2)
+        server = map_ui.make_server(self.ui, map_ui.MBTiles(None), '127.0.0.1', 0)
+        thread = threading.Thread(target=server.serve_forever)
+        thread.start()
+        base = f'http://127.0.0.1:{server.server_port}'
+        try:
+            def post(payload, origin=None):
+                headers = {'Content-Type': 'application/json'}
+                if origin:
+                    headers['Origin'] = origin
+                return urllib.request.urlopen(urllib.request.Request(base + '/api/pause', json.dumps(payload).encode(), headers))
+            for payload, origin, code in [({'extra': 1}, None, 400), ({}, 'http://unrelated.example', 403)]:
+                with self.assertRaises(urllib.error.HTTPError) as error:
+                    post(payload, origin)
+                self.assertEqual(error.exception.code, code)
+            with post({}) as response:
+                self.assertEqual(response.status, 202)
+                self.assertEqual(json.load(response)['message'], '暂停请求已发送，等待控制端处理')
+            self.run_for(.1)
+            self.assertEqual(len(pauses), 1)
+            late = []
+            self.source.create_subscription(Empty, 'pause_hover', late.append, 1)
+            for _ in range(3):
+                urllib.request.urlopen(base + '/api/state').close()
+            self.run_for(.2)
+            self.assertEqual(len(pauses), 1)
+            self.assertEqual(late, [])
+            # Long slow timer proves retained pause changes are forwarded as events.
+            self.relay.set_parameters([Parameter('slow_rate_hz', value=.01)])
+            goal = GoalStatus(pause_active=True, active_valid=True, active_phase=GoalStatus.MOVING,
+                              active_request_sequence=1, revision=1)
+            self.goal_pub.publish(goal)
+            self.run_for(.1)
+            self.assertTrue(self.ui.snapshot()['topics']['goal_status']['data']['pause_active'])
+            goal.active_enu.x = 3.
+            goal.revision = 2
+            self.goal_pub.publish(goal)
+            self.run_for(.1)
+            self.assertEqual(self.ui.snapshot()['topics']['goal_status']['data']['active_enu']['x'], 3.)
+            original = self.ui.pause_publisher
+            class BrokenPublisher:
+                def __init__(self, exception):
+                    self.exception = exception
+                def publish(self, message):
+                    raise self.exception('synthetic failure')
+            try:
+                for exception in (RuntimeError, TimeoutError):
+                    self.ui.pause_publisher = BrokenPublisher(exception)
+                    with self.assertRaises(urllib.error.HTTPError) as error:
+                        post({})
+                    self.assertEqual(error.exception.code, 503)
+                    self.assertIn('未确认', json.load(error.exception)['error'])
+            finally:
+                self.ui.pause_publisher = original
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
 
     def test_late_snapshot_http_validation_and_no_replay(self):
         state, origin = mapping()

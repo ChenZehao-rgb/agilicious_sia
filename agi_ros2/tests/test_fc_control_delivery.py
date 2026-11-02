@@ -20,6 +20,7 @@ from agi_ros2.msg import GoalStatus, GeographicGoal, NavigationOrigin, Computati
 from test_node_pipeline import CLOCK_ID, Harness
 from test_shadow_pipeline import ShadowHarness
 from geometry_msgs.msg import PointStamped
+from std_msgs.msg import Empty
 from nav_msgs.msg import Odometry
 from rclpy.qos import QoSProfile, DurabilityPolicy
 from test_fc_fused_pipeline import FcHarness
@@ -318,6 +319,124 @@ class DeliveryTests(unittest.TestCase):
 
     def test_geographic_goals_share_local_chain_and_reset_cleanup(self):
         self.online_goal_scenario(True, geographic=True)
+
+    def test_pause_priority_idle_sequence_and_reset(self):
+        h = DeliveryHarness(shadow=False)
+        self.addCleanup(h.close)
+        h.subscribe('reference', Odometry)
+        h.subscribe('goal_status', GoalStatus)
+        goals = h.publisher('go_to_position', PointStamped)
+        pauses = h.publisher('pause_hover', Empty)
+        h.run(1.5)
+        h.auto = True
+        h.run(.1)
+        self.assertTrue(h.received['computation_status'][-1].hover_stable)
+        goal = PointStamped()
+        goal.header.frame_id = 'odom'
+        goal.point.x, goal.point.z = 8., 1.
+        def hold_after_computed_sample():
+            h.next_state = 0.
+            h.drive()
+            h.stopped = True
+            until = time.monotonic() + .012
+            # A just-published sample may still be coalesced by the 8 ms scheduler.
+            # Wait for its actual computation before asserting idle semantics.
+            while h.received['computation_status'][-1].fc_time_usec != h.last_state.fc_time_usec and time.monotonic() < until:
+                h.run(.0005)
+            self.assertEqual(h.received['computation_status'][-1].fc_time_usec, h.last_state.fc_time_usec)
+            self.assertTrue(h.received['computation_status'][-1].controller_success)
+
+        # Supply one fresh FC sample, then exercise callbacks during healthy idle.
+        # The hold lasts less than the existing 25 ms watchdog; all gates stay on.
+        hold_after_computed_sample()
+        try:
+            goals.publish(goal)
+            h.run(.003)
+            self.assertEqual(h.received['goal_status'][-1].request_state, GoalStatus.PENDING)
+            pauses.publish(Empty())
+            h.run(.003)
+            pending = h.received['goal_status'][-1]
+            self.assertEqual(pending.request_source, 'pause_hover')
+            self.assertEqual(pending.request_state, GoalStatus.PENDING)
+            sequence = pending.request_sequence
+            goals.publish(goal)
+            h.run(.003)
+            rejected = h.received['goal_status'][-1]
+            self.assertEqual(rejected.request_state, GoalStatus.REJECTED)
+            self.assertEqual(rejected.request_reason, 'pause_hover pending')
+            self.assertFalse(rejected.active_valid)
+        finally:
+            h.stopped = False
+        h.run(.08)
+        status = h.received['goal_status'][-1]
+        self.assertTrue(status.pause_active)
+        self.assertTrue(status.active_valid)
+        self.assertEqual(status.active_request_sequence, sequence)
+        self.assertEqual(status.request_sequence, sequence+1)
+        self.assertEqual(status.request_state, GoalStatus.REJECTED)
+        self.assertEqual(status.active_phase, GoalStatus.STABLE)
+        self.assertEqual((status.active_enu.x, status.active_enu.y, status.active_enu.z), h.position)
+        self.assertTrue(h.received['control_command'][-1].permit_override)
+        pauses.publish(Empty())
+        h.run(.05)
+        status = h.received['goal_status'][-1]
+        self.assertEqual(status.request_state, GoalStatus.ACCEPTED)
+        self.assertEqual(status.active_request_sequence, sequence)
+        goals.publish(goal)
+        h.run(.5)
+        status = h.received['goal_status'][-1]
+        self.assertFalse(status.pause_active)
+        self.assertEqual(status.active_phase, GoalStatus.MOVING)
+        previous_revision = status.revision
+        pauses.publish(Empty())
+        h.run(.05)
+        status = h.received['goal_status'][-1]
+        self.assertTrue(status.pause_active)
+        self.assertEqual(status.request_state, GoalStatus.ACCEPTED)
+        self.assertEqual(status.active_phase, GoalStatus.MOVING)
+        self.assertGreater(status.revision, previous_revision)
+        self.assertNotEqual(status.active_enu.x, goal.point.x)
+        stop = (status.active_enu.x, status.active_enu.y, status.active_enu.z)
+        active_sequence = status.active_request_sequence
+        goals.publish(goal)
+        h.run(.05)
+        self.assertEqual(h.received['goal_status'][-1].request_state, GoalStatus.REJECTED)
+        self.assertTrue(h.received['goal_status'][-1].pause_active)
+        pauses.publish(Empty())
+        h.run(2.)
+        status = h.received['goal_status'][-1]
+        self.assertEqual(status.active_request_sequence, active_sequence)
+        self.assertEqual((status.active_enu.x, status.active_enu.y, status.active_enu.z), stop)
+        # A stop can be within 0.2 m already; explicitly make actual speed unstable.
+        h.velocity = (.3, 0., 0.)
+        h.run(.05)
+        self.assertEqual(h.received['goal_status'][-1].active_phase, GoalStatus.SETTLING)
+        h.position, h.velocity = stop, (0., 0., 0.)
+        h.run(.05)
+        self.assertEqual(h.received['goal_status'][-1].active_phase, GoalStatus.STABLE)
+        goals.publish(goal)
+        h.run(.05)
+        self.assertFalse(h.received['goal_status'][-1].pause_active)
+        self.assertEqual(h.received['goal_status'][-1].request_state, GoalStatus.ACCEPTED)
+        # Pending pause cannot cross an FC reset, including after a new AUTO edge.
+        hold_after_computed_sample()
+        pauses.publish(Empty())
+        h.run(.003)
+        self.assertEqual(h.received['goal_status'][-1].request_state, GoalStatus.PENDING)
+        h.generation += 1
+        h.fc_reset += 1
+        h.next_state = 0.
+        h.stopped = False
+        h.run(.08)
+        self.assertEqual(h.received['goal_status'][-1].request_state, GoalStatus.REJECTED)
+        self.assertFalse(h.received['goal_status'][-1].pause_active)
+        h.run(.7)
+        h.auto = False
+        h.run(.08)
+        h.auto = True
+        h.run(.08)
+        self.assertTrue(h.received['computation_status'][-1].trajectory_active)
+        self.assertFalse(h.received['goal_status'][-1].active_valid)
 
     def test_origin_receiver_does_not_touch_health(self):
         h = FcHarness()

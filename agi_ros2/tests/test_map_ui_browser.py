@@ -19,6 +19,7 @@ from test_map_ui import mapping
 import map_ui
 import ground_station_telemetry as relay
 import rclpy
+from std_msgs.msg import Empty
 from rclpy.executors import SingleThreadedExecutor
 from agi_ros2.msg import FusedState, NavigationOrigin, GoalStatus, ComputationStatus, Health, GeographicGoal, Authority
 from playwright.sync_api import sync_playwright, expect
@@ -55,6 +56,8 @@ goal=GoalStatus(clock_id=s.clock_id,control_session_start=10.,active_valid=True,
                 active_fc_session=s.navigation_session,active_fc_reset_counter=s.fc_reset_counter,active_generation=s.reset_counter,
                 active_phase=GoalStatus.STABLE,request_state=GoalStatus.ACCEPTED)
 goal.active_enu.x=3.;goal.active_enu.z=2.
+pauses=[]
+source.create_subscription(Empty,'pause_hover',pauses.append,1)
 commands=[]
 source.create_subscription(GeographicGoal,'go_to_geographic_position',lambda m: commands.append(m),1)
 enabled=[True]; ticks=[0]; moving=[False]; auto_active=[True]; hover_stable=[True]
@@ -168,6 +171,40 @@ try:
         time.sleep(.3);assert len(commands)==1
         page.reload();expect(page.locator("#phase")).to_have_text("稳定悬停")
         assert len(commands)==1
+        # No selected target is needed; moving state and goal HTTP busy do not disable pause.
+        page.locator('#clear').click()
+        goal.active_phase=GoalStatus.MOVING;gpub.publish(goal)
+        expect(page.locator('#phase')).to_have_text('跟踪目标 / 转向')
+        page.evaluate("document.getElementById('execute').disabled=true")
+        expect(page.locator('#pause')).to_be_enabled()
+        page.locator('#pause').click()
+        expect(page.locator('#submission')).to_have_text('暂停请求已发送，等待控制端处理')
+        page.wait_for_timeout(200);assert len(pauses)==1 and len(commands)==1
+        for field in ['latitude','longitude','altitude']: assert page.locator('#'+field).input_value()==''
+        goal.pause_active=True;goal.request_source='pause_hover';goal.request_sequence=2
+        goal.active_request_sequence=2;gpub.publish(goal)
+        expect(page.locator('#phase')).to_have_text('减速中')
+        expect(page.locator('#request')).to_contain_text('暂停并悬停')
+        assert '0.00, 0.00, 0.00' not in page.locator('#request').inner_text()
+        assert page.evaluate('activeMarker.getTooltip().getContent()')=='悬停点'
+        goal.active_phase=GoalStatus.SETTLING;gpub.publish(goal)
+        expect(page.locator('#phase')).to_have_text('悬停收敛中')
+        goal.active_phase=GoalStatus.STABLE;gpub.publish(goal)
+        expect(page.locator('#phase')).to_have_text('已暂停，稳定悬停')
+        page.reload();expect(page.locator('#phase')).to_have_text('已暂停，稳定悬停')
+        assert len(pauses)==1
+        page.locator('#latitude').fill('1.23');page.locator('#longitude').fill('2.34');page.locator('#altitude').fill('110')
+        # Actual AbortSignal timeout; no HTTP retry or inferred success.
+        held_routes=[]
+        page.route('**/api/pause', lambda route: held_routes.append(route))
+        page.locator('#pause').click()
+        expect(page.locator('#pause')).to_be_disabled()
+        expect(page.locator('#submission')).to_contain_text('暂停结果未确认',timeout=7000)
+        expect(page.locator('#pause')).to_be_enabled()
+        assert len(held_routes)==1 and len(pauses)==1
+        for route in held_routes: route.abort()
+        page.unroute('**/api/pause')
+        assert [page.locator('#'+field).input_value() for field in ['latitude','longitude','altitude']]==['1.23','2.34','110']
         page.wait_for_timeout(400)
         page.screenshot(path=str(out/'desktop.png'),full_page=True)
         enabled[0]=False;page.wait_for_timeout(3500)
@@ -183,7 +220,7 @@ try:
         page.close();assert len(commands)==1
         assert not errors, errors
         assert all(r.startswith(url) for r in requests),requests
-        (out/'result.json').write_text(json.dumps({'passed':True,'requests':len(requests),'external_requests':0,'commands':len(commands),'page_errors':errors,'fixture':'synthetic, not real map',
+        (out/'result.json').write_text(json.dumps({'passed':True,'requests':len(requests),'external_requests':0,'commands':len(commands),'pauses':len(pauses),'pause_timeout_no_retry':True,'page_errors':errors,'fixture':'synthetic, not real map',
             'position_updates_in_2_4s':len(changes), 'position_min_interval_ms':min(b-a for a,b in zip(changes,changes[1:])),
             'initial_auto_hover':True,'browser_stall_without_false_disconnect':True,'http_failure_and_timeout_recovery':True,
             'origin_refresh_without_invalid_position':True},indent=2))

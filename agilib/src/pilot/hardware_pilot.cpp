@@ -26,6 +26,7 @@ HardwarePilot::HardwarePilot(const PilotParams& params, TimeFunction clock, Time
           _receiver_policy(receiver_policy),
           _go_to_pose_mean_vel(params.go_to_pose_mean_vel_),
           _yaw_rate_max(params.quad_.omega_max_.z()),
+          _brake_deceleration(params.brake_deceleration_),
           _owner(std::this_thread::get_id()),
           _reference(std::make_shared<CapturedReference>()),
           _gate(policy, observation_delay, receiver_policy) {
@@ -94,7 +95,8 @@ void HardwarePilot::reportOutputFault() {
 }
 
 ControlDecision HardwarePilot::tick(const QuadState& state, Evidence evidence, bool shadow_only, bool navigation_valid,
-                                    bool computation_requested, const Vector<3>* go_to_position) {
+                                    bool computation_requested, const Vector<3>* go_to_position, bool pause_hover,
+                                    const Vector<3>& fence_min, const Vector<3>& fence_max) {
 	checkOwner();
 	if (_navigation_policy == NavigationPolicy::FcFused &&
 	    (evidence.fc_session != _fc_session || evidence.fc_generation != _fc_generation ||
@@ -149,7 +151,10 @@ ControlDecision HardwarePilot::tick(const QuadState& state, Evidence evidence, b
 	std::string compute_failure;
 	bool goal_installed = false;
 	bool segment_ended = false;
-	if (go_to_position) result.goal_event = "go_to_position rejected: AUTO/state/authorization unavailable";
+	if (pause_hover)
+		result.goal_event = "pause_hover rejected: AUTO/state/authorization unavailable";
+	else if (go_to_position)
+		result.goal_event = "go_to_position rejected: AUTO/state/authorization unavailable";
 	if (!ready) {
 		_warm_cycles = 0;
 	} else {
@@ -162,9 +167,24 @@ ControlDecision HardwarePilot::tick(const QuadState& state, Evidence evidence, b
 			if (_online_moving && !_reference->movingAt(now)) {
 				_online_moving = false;
 				segment_ended = true;
-				result.goal_event = "go_to_position segment ended; holding target (arrival requires stable state)";
+				result.goal_event =
+				        _reference->pauseActive()
+				                ? "pause_hover segment ended; holding stop point (stability requires actual state)"
+				                : "go_to_position segment ended; holding target (arrival requires stable state)";
 			}
-			if (go_to_position) {
+			if (pause_hover && _reference_active) {
+				std::string rejection;
+				try {
+					rejection = _reference->pauseHover(now, _brake_deceleration, fence_min, fence_max);
+				} catch (const std::exception& error) {
+					rejection = error.what();
+				}
+				goal_installed = rejection.empty();
+				if (goal_installed)
+					_online_moving = _reference->movingAt(now);
+				else
+					result.goal_event = "pause_hover rejected: " + rejection;
+			} else if (!pause_hover && go_to_position) {
 				const std::string rejection = goalRejection(state, now);
 				if (!go_to_position->allFinite()) {
 					result.goal_event = "go_to_position rejected: nonfinite position";
@@ -236,20 +256,35 @@ ControlDecision HardwarePilot::tick(const QuadState& state, Evidence evidence, b
 	result.mode = _gate.mode();
 	result.reason = _gate.reason();
 	result.goal_rejection = goalRejection(state, now);
-	if (segment_ended && !_reference_active && !go_to_position)
+	if (segment_ended && !_reference_active && !go_to_position && !pause_hover)
 		result.goal_event = "go_to_position cleared: control/safety check failed";
 	if (goal_installed) {
 		result.goal_accepted = _reference_active;
-		result.goal_event = _reference_active ? "go_to_position accepted: absolute odom target installed"
-		                                      : "go_to_position rejected: control/safety check failed after planning";
+		if (pause_hover)
+			result.goal_event = _reference_active ? "pause_hover accepted: braking/hover reference installed or already active"
+			                                      : "pause_hover rejected: control/safety check failed after planning";
+		else
+			result.goal_event = _reference_active ? "go_to_position accepted: absolute odom target installed"
+			                                      : "go_to_position rejected: control/safety check failed after planning";
 	}
+	result.pause_active = _reference->pauseActive();
 	if (_reference->hasOnlineTarget()) {
+		result.active_endpoint = _reference->onlineEndpoint();
 		result.online_goal_phase = _online_moving
 		                                   ? OnlineGoalPhase::Moving
 		                                   : (result.goal_rejection.empty() ? OnlineGoalPhase::Stable : OnlineGoalPhase::Settling);
-		result.reason += _online_moving ? "; online target moving"
-		                                : (result.goal_rejection.empty() ? "; online target stable hover"
-		                                                                 : "; online target holding; settling");
+		if (result.pause_active) {
+			if (_online_moving)
+				result.reason += "; pause braking";
+			else if (result.goal_rejection.empty())
+				result.reason += "; paused stable hover";
+			else
+				result.reason += "; pause holding; settling";
+		} else {
+			result.reason += _online_moving ? "; online target moving"
+			                                : (result.goal_rejection.empty() ? "; online target stable hover"
+			                                                                 : "; online target holding; settling");
+		}
 	}
 	if (!result.goal_event.empty()) result.reason += "; " + result.goal_event;
 	if (!compute_failure.empty()) result.reason += "; " + compute_failure;
