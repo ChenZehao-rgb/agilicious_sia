@@ -24,15 +24,18 @@ HardwarePilot::HardwarePilot(const PilotParams& params, TimeFunction clock, Time
           _navigation_policy(policy),
           _observation_delay(observation_delay),
           _receiver_policy(receiver_policy),
-          _go_to_pose_mean_vel(params.go_to_pose_mean_vel_),
+          _go_to_pose_max_vel(params.go_to_pose_max_vel_),
+          _go_to_pose_max_acc(params.go_to_pose_max_acc_),
           _yaw_rate_max(params.quad_.omega_max_.z()),
           _brake_deceleration(params.brake_deceleration_),
           _owner(std::this_thread::get_id()),
           _reference(std::make_shared<CapturedReference>()),
           _gate(policy, observation_delay, receiver_policy) {
 	const auto& cfg = params.pipeline_cfg_;
-	if (!std::isfinite(_go_to_pose_mean_vel) || _go_to_pose_mean_vel <= 0)
-		throw ParameterException("go_to_pose_mean_vel must be finite and positive");
+	if (!std::isfinite(_go_to_pose_max_vel) || _go_to_pose_max_vel <= 0)
+		throw ParameterException("go_to_pose_max_vel must be finite and positive");
+	if (!std::isfinite(_go_to_pose_max_acc) || _go_to_pose_max_acc <= 0)
+		throw ParameterException("go_to_pose_max_acc must be finite and positive");
 	// Check before constructing Pilot, whose general-purpose constructor may open devices.
 	if (!_clock || !params.valid() || cfg.bridge_cfg.type != "External" || cfg.estimator_cfg.type != "External" ||
 	    (cfg.outer_controller_cfg.type != "MPC" && cfg.outer_controller_cfg.type != "GEO") || cfg.sampler_cfg.type != "Time" ||
@@ -190,7 +193,8 @@ ControlDecision HardwarePilot::tick(const QuadState& state, Evidence evidence, b
 					result.goal_event = "go_to_position rejected: nonfinite position";
 				} else if (!rejection.empty()) {
 					result.goal_event = "go_to_position rejected: " + rejection;
-				} else if (_reference->goToPosition(*go_to_position, now, _go_to_pose_mean_vel, _yaw_rate_max)) {
+				} else if (_reference->goToPosition(*go_to_position, now, _go_to_pose_max_vel, _go_to_pose_max_acc,
+				                                    _yaw_rate_max)) {
 					goal_installed = true;
 					_online_moving = true;
 				} else {

@@ -84,7 +84,8 @@ pilot:
   takeoff_threshold: 1.0
   start_land_speed: 0.5
   brake_deceleration: 3.0
-  go_to_pose_mean_vel: 1.0
+  go_to_pose_max_vel: 2.0  # 在线平移最大/巡航速度 (m/s)
+  go_to_pose_max_acc: 1.0  # 在线平移加速/减速峰值 (m/s²)
   stop_after_feedthrough: true
   feedthrough_timeout: 0.1
   viz_sampler_dt: 0.1

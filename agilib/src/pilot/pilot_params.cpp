@@ -123,6 +123,8 @@ bool PilotParams::load(const Yaml& yaml, const std::string& controller_override)
   yaml["start_land_speed"].getIfDefined(start_land_speed_);
   yaml["brake_deceleration"].getIfDefined(brake_deceleration_);
   yaml["go_to_pose_mean_vel"].getIfDefined(go_to_pose_mean_vel_);
+	yaml["go_to_pose_max_vel"].getIfDefined(go_to_pose_max_vel_);
+	yaml["go_to_pose_max_acc"].getIfDefined(go_to_pose_max_acc_);
   yaml["stop_after_feedthrough"].getIfDefined(stop_after_feedthrough_);
   yaml["feedthrough_timeout"].getIfDefined(feedthrough_timeout_);
 
@@ -362,6 +364,8 @@ std::ostream& operator<<(std::ostream& os, const PilotParams& params) {
   os << "start land speed:             " << params.start_land_speed_ << '\n';
   os << "brake deceleration:           " << params.brake_deceleration_ << '\n';
   os << "go to pose velocity:          " << params.go_to_pose_mean_vel_ << '\n';
+	os << "online go to pose max vel:    " << params.go_to_pose_max_vel_ << '\n';
+	os << "online go to pose max acc:    " << params.go_to_pose_max_acc_ << '\n';
   os << "stop after feedthough:        " << params.stop_after_feedthrough_
      << '\n';
   os << "trajectory visualization dt:  " << params.traj_viz_dt_ << '\n';

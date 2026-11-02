@@ -2,6 +2,8 @@
 #define AGILIB_REFERENCE_CAPTURED_REFERENCE_H_
 
 #include <algorithm>
+#include <limits>
+#include <vector>
 
 #include "agilib/math/gravity.hpp"
 #include "agilib/reference/trajectory_reference/polynomial_trajectory.hpp"
@@ -15,9 +17,9 @@ public:
 	CapturedReference() : ReferenceBase("Captured hover/trajectory") {}
 	void setTrajectory(std::shared_ptr<SampledTrajectory> trajectory) { _trajectory = std::move(trajectory); }
 	// Online references are already in odom; the configured CSV keeps its capture transform.
-	bool goToPosition(const Vector<3>& position, double now, double mean_velocity, double yaw_rate_max) {
-		if (!position.allFinite() || !std::isfinite(now) || !std::isfinite(mean_velocity) || mean_velocity <= 0 ||
-		    !std::isfinite(yaw_rate_max) || yaw_rate_max <= 0)
+	bool goToPosition(const Vector<3>& position, double now, double max_velocity, double max_acceleration, double yaw_rate_max) {
+		if (!position.allFinite() || !std::isfinite(now) || !std::isfinite(max_velocity) || max_velocity <= 0 ||
+		    !std::isfinite(max_acceleration) || max_acceleration <= 0 || !std::isfinite(yaw_rate_max) || yaw_rate_max <= 0)
 			return false;
 		QuadState start = getSetpoint(start_state_, now).state.getHoverState();
 		start.t = 0;
@@ -40,17 +42,52 @@ public:
 			turn = std::make_shared<MinSnapTrajectory>(start, turn_end);
 			if (!turn->valid()) return false;
 		}
+		const double distance = displacement.norm();
+		if (!std::isfinite(distance)) return false;
 		QuadState end = turn_end;
 		end.p = position;
-		end.t += std::max(displacement.norm() / mean_velocity, 1.5);
-		if (!start.valid() || !end.valid()) return false;
-		auto trajectory = std::make_shared<MinSnapTrajectory>(turn_end, end);
-		if (!trajectory->valid()) return false;
+		std::vector<QuadState> boundaries{turn_end};
+		if (distance <= 1e-9) {
+			// Keep a valid rest-to-rest hold, including the requested endpoint.
+			end.t += 1.5;
+		} else {
+			double velocity = std::min(max_velocity, std::sqrt(max_acceleration * distance / 1.875));
+			double acceleration_time = 1.875 * velocity / max_acceleration;
+			double cruise_time = std::max(0.0, distance / velocity - acceleration_time);
+			// Suppress only roundoff at the triangular/trapezoidal boundary.
+			if (cruise_time <= 32 * std::numeric_limits<double>::epsilon() * std::max(1.0, acceleration_time)) cruise_time = 0;
+			const double scale = std::max(1.0, 1.5 / (2 * acceleration_time + cruise_time));
+			acceleration_time *= scale;
+			cruise_time *= scale;
+			velocity /= scale;
+			const Vector<3> direction = displacement / distance;
+			QuadState acceleration_end = turn_end;
+			acceleration_end.t += acceleration_time;
+			acceleration_end.p += .5 * velocity * acceleration_time * direction;
+			acceleration_end.v = velocity * direction;
+			boundaries.push_back(acceleration_end);
+			if (cruise_time > 0) {
+				QuadState cruise_end = acceleration_end;
+				cruise_end.t += cruise_time;
+				cruise_end.p = position - .5 * velocity * acceleration_time * direction;
+				boundaries.push_back(cruise_end);
+			}
+			end.t = boundaries.back().t + acceleration_time;
+		}
+		boundaries.push_back(end);
+		std::vector<std::shared_ptr<MinSnapTrajectory>> trajectories;
+		trajectories.reserve(boundaries.size() - 1);
+		for (size_t i = 1; i < boundaries.size(); ++i) {
+			if (!boundaries[i - 1].valid() || !boundaries[i].valid() || boundaries[i].t <= boundaries[i - 1].t) return false;
+			auto trajectory = std::make_shared<MinSnapTrajectory>(boundaries[i - 1], boundaries[i]);
+			if (!trajectory->valid()) return false;
+			trajectories.push_back(std::move(trajectory));
+		}
 		_pause_yaw.reset();
 		_online_turn = std::move(turn);
 		_online_turn_end = turn_end.t;
 		_online_heading = alignment;
-		_online_trajectory = std::move(trajectory);
+		_online_trajectories = std::move(trajectories);
 		_online_start = now;
 		_online_end = end;
 		_online_end.q(end.q() * alignment);
@@ -109,7 +146,7 @@ public:
 		_online_turn.reset();
 		_online_turn_end = 0;
 		_online_heading = heading;
-		_online_trajectory = std::move(trajectory);
+		_online_trajectories = {std::move(trajectory)};
 		_pause_yaw = std::move(yaw);
 		_online_start = now;
 		_online_end = end;
@@ -123,11 +160,11 @@ public:
 	void clearOnlineTarget() {
 		_pause_yaw.reset();
 		_online_turn.reset();
-		_online_trajectory.reset();
+		_online_trajectories.clear();
 	}
-	bool hasOnlineTarget() const { return static_cast<bool>(_online_trajectory); }
+	bool hasOnlineTarget() const { return !_online_trajectories.empty(); }
 	bool movingAt(double now) const {
-		if (_online_trajectory) return now - _online_start < _online_end.t;
+		if (hasOnlineTarget()) return now - _online_start < _online_end.t;
 		return _execute_trajectory && now - start_state_.t < _trajectory->getEndTime();
 	}
 	void capture(const QuadState& state, double now, bool execute_trajectory) {
@@ -139,13 +176,23 @@ public:
 		_execute_trajectory = execute_trajectory && static_cast<bool>(_trajectory);
 	}
 	Setpoint getSetpoint(const QuadState& state, const Scalar t) override {
-		if (_online_trajectory) {
+		if (hasOnlineTarget()) {
 			const double relative_time = std::max(0.0, t - _online_start);
 			if (relative_time >= _online_end.t) return hover(_online_end, t);
 			// PolynomialTrajectory uses max(state.t, t): both must share the relative clock.
 			QuadState query = state;
 			query.t = relative_time;
-			const auto& trajectory = relative_time < _online_turn_end ? _online_turn : _online_trajectory;
+			auto trajectory = _online_turn;
+			if (relative_time >= _online_turn_end) {
+				trajectory = _online_trajectories.back();
+				// Select anew for each query: an MPC horizon may precede the next current-time query.
+				for (const auto& segment : _online_trajectories) {
+					if (relative_time < segment->getEndTime()) {
+						trajectory = segment;
+						break;
+					}
+				}
+			}
 			Setpoint result = trajectory->getSetpoint(query, relative_time);
 			if (_pause_yaw) {
 				const Quaternion yaw(Eigen::AngleAxisd((*_pause_yaw)(relative_time), Vector<3>::UnitZ()));
@@ -173,7 +220,7 @@ public:
 		result.input.t = t;
 		return result;
 	}
-	bool isHover() const override { return !_execute_trajectory && !_online_trajectory; }
+	bool isHover() const override { return !_execute_trajectory && !hasOnlineTarget(); }
 
 private:
 	static Setpoint hover(const QuadState& state, double t) {
@@ -186,7 +233,7 @@ private:
 	std::shared_ptr<Polynomial<>> _pause_yaw;
 	std::shared_ptr<SampledTrajectory> _trajectory;
 	std::shared_ptr<MinSnapTrajectory> _online_turn;
-	std::shared_ptr<MinSnapTrajectory> _online_trajectory;
+	std::vector<std::shared_ptr<MinSnapTrajectory>> _online_trajectories;
 	double _online_turn_end{0};
 	Quaternion _online_heading{Quaternion::Identity()};
 	QuadState _online_end;

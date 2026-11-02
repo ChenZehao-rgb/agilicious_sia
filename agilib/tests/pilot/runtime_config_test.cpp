@@ -7,6 +7,7 @@
 #include <stdexcept>
 
 #include "agilib/controller/mpc/mpc_params.hpp"
+#include "agilib/pilot/hardware_pilot.hpp"
 #include "agilib/pilot/pilot_params.hpp"
 #include "agilib/utils/module_config.hpp"
 
@@ -57,6 +58,44 @@ TEST(RuntimeConfig, InlinePilotPreservesRequiredLimitsAndMigratedMpcParameters) 
 	std::shared_ptr<ControllerBase> controller;
 	ASSERT_TRUE(inline_params.createController(controller, inline_params.pipeline_cfg_.outer_controller_cfg));
 	EXPECT_NE(controller, nullptr);
+}
+
+TEST(RuntimeConfig, OnlineLimitsAreIndependentOfLegacyMeanVelocity) {
+	PilotParams defaults;
+	EXPECT_DOUBLE_EQ(defaults.go_to_pose_max_vel_, 2);
+	EXPECT_DOUBLE_EQ(defaults.go_to_pose_max_acc_, 1);
+	EXPECT_DOUBLE_EQ(defaults.go_to_pose_mean_vel_, 1.5);
+	std::ostringstream document;
+	document << minimalGeoPilot();
+	for (const auto& fields : {std::string("go_to_pose_mean_vel: 7.0\n"),
+	                           std::string("go_to_pose_mean_vel: 7.0\ngo_to_pose_max_vel: 3.0\ngo_to_pose_max_acc: 0.6\n")}) {
+		PilotParams params;
+		params.directory_ = repositoryRoot();
+		ASSERT_TRUE(params.load(Yaml(document.str() + "\n" + fields)));
+		EXPECT_DOUBLE_EQ(params.go_to_pose_mean_vel_, 7);
+		EXPECT_DOUBLE_EQ(params.go_to_pose_max_vel_, fields.find("max_vel") == std::string::npos ? 2 : 3);
+		EXPECT_DOUBLE_EQ(params.go_to_pose_max_acc_, fields.find("max_acc") == std::string::npos ? 1 : .6);
+	}
+	for (const auto* profile : {"hardware.yaml", "simulation.yaml"}) {
+		const Yaml config(repositoryRoot() / "agi_ros2/config" / profile);
+		EXPECT_FALSE(config["pilot"]["go_to_pose_mean_vel"].isDefined());
+		EXPECT_DOUBLE_EQ(config["pilot"]["go_to_pose_max_vel"].as<double>(), 2);
+		EXPECT_DOUBLE_EQ(config["pilot"]["go_to_pose_max_acc"].as<double>(), 1);
+	}
+	PilotParams params;
+	params.directory_ = repositoryRoot();
+	ASSERT_TRUE(params.load(minimalGeoPilot()));
+	params.velocity_in_bodyframe_ = false;
+	params.go_to_pose_mean_vel_ = NAN;  // HardwarePilot must not validate or consume the legacy value.
+	EXPECT_NO_THROW(hardware::HardwarePilot(params, [] { return 10.0; }));
+	for (double invalid : {0.0, -1.0, double(NAN), double(INF)}) {
+		params.go_to_pose_max_vel_ = invalid;
+		EXPECT_THROW(hardware::HardwarePilot(params, [] { return 10.0; }), ParameterException);
+		params.go_to_pose_max_vel_ = 2;
+		params.go_to_pose_max_acc_ = invalid;
+		EXPECT_THROW(hardware::HardwarePilot(params, [] { return 10.0; }), ParameterException);
+		params.go_to_pose_max_acc_ = 1;
+	}
 }
 
 TEST(RuntimeConfig, RejectsInlineAndFileParameterAmbiguity) {

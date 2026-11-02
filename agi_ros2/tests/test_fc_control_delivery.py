@@ -243,7 +243,7 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(h.received['goal_status'][-1].request_state, GoalStatus.REJECTED)
         self.assertTrue(h.received['goal_status'][-1].active_valid)
         self.assertEqual(h.received['goal_status'][-1].active_request_sequence, active_sequence)
-        h.run(.9)
+        h.run(1.3)
         self.assertEqual(reference(), (.5, 0., 1.))
         self.assertIn('segment ended; holding target', log_text())
         self.assertEqual(h.received['goal_status'][-1].active_phase, GoalStatus.SETTLING)
@@ -265,8 +265,8 @@ class DeliveryTests(unittest.TestCase):
         send((.5, .5, 1.))
         self.assertEqual(log_text().count('go_to_position accepted:'), 2)
         # Existing yaw-first behavior: pi/2 turn takes 1.875*(pi/2)/.5 s,
-        # followed by the 1.5 s translation. Do not mistake the turn for a stall.
-        h.run(7.6)
+        # followed by the sqrt(7.5*0.5) s translation. Do not mistake the turn for a stall.
+        h.run(8.1)
         for actual, expected in zip(reference(), (.5, .5, 1.)):
             self.assertAlmostEqual(actual, expected, places=12)
         self.assertEqual(h.received['computation_status'][-1].warm_cycles, 50)

@@ -293,8 +293,14 @@ OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 \
 转向和平移均复用 `MinSnapTrajectory` 的完整 Setpoint。转向 yaw 为起终角速度、角加速度均为零的五次多项式；
 转向时长为 `max(1.875*abs(最短转角)/pilot.quadrotor.omega_max[2], 1.5 s)`，
 其中 1.875 是该多项式的峰值角速度系数，无需转向则省略转向段。
-平移使用 `pilot.go_to_pose_mean_vel`，时长为 `max(距离/该速度, 1.5 s)`，总时长为两段之和。
-当前 simulation/hardware 配置分别沿用 1.0 m/s 平均速度和 0.5 rad/s yaw 上限；平均速度不是严格峰值速度限制。
+平移由平滑加速、可选匀速、平滑减速三个 MinSnap 段组成，连接处 p/v/a/j 连续。
+`pilot.go_to_pose_max_vel`（默认 2.0 m/s）限定峰值速度，距离足够时即巡航速度；
+`pilot.go_to_pose_max_acc`（默认 1.0 m/s²）限定正常加速与减速的加速度峰值。
+距离 D 下采用 `V=min(Vmax,sqrt(Amax*D/1.875))`、`Ta=1.875*V/Amax`、`Tc=max(0,D/V-Ta)`；
+短距离降低峰值并省略巡航。平移总时间 `2*Ta+Tc` 不足 1.5 s 时，同倍率延长时间并反比例降低速度。
+零位移生成合法定点保持。总时间另加前置转向时间，现有 yaw 上限不变。
+旧通用 `Pilot::goToPose` 仍使用 `go_to_pose_mean_vel`；ROS2 在线选点不再读取该参数，也不做旧参数回退。
+暂停仍使用原 `brake_deceleration` 算法，不受正常平移 `max_acc` 约束。
 转向或平移尚未结束时拒绝新目标，不排队；参考段结束后仍须实际速度和位置误差满足上述条件，
 才可在同一次 AUTO 中接收下一目标，不增加等待时间或新的授权门槛。
 实机仍检查已配置的 odom 围栏，正常授权、时效和故障撤权检查继续生效。

@@ -70,6 +70,8 @@ class PilotParams : public ParameterBase {
   Scalar start_land_speed_{0.6};
   Scalar brake_deceleration_{5.0};
   Scalar go_to_pose_mean_vel_{1.5};
+	Scalar go_to_pose_max_vel_{2.0};
+	Scalar go_to_pose_max_acc_{1.0};
   bool stop_after_feedthrough_{true};
   Scalar feedthrough_timeout_{0.05};
 

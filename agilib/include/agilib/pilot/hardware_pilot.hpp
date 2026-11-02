@@ -51,7 +51,8 @@ private:
 	const NavigationPolicy _navigation_policy;
 	const double _observation_delay;
 	const ReceiverPolicy _receiver_policy;
-	const double _go_to_pose_mean_vel;
+	const double _go_to_pose_max_vel;
+	const double _go_to_pose_max_acc;
 	const double _yaw_rate_max;
 	const double _brake_deceleration;
 	const std::thread::id _owner;

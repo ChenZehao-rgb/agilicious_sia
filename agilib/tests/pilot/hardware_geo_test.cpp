@@ -116,6 +116,142 @@ TEST_F(HardwareGeo, ExplicitTrajectoryUsesCapturedFrameAndEndsInHover) {
 	EXPECT_TRUE(decision.reference.v.isZero());
 }
 
+TEST(CapturedOnlineReference, CruiseProfilesRespectBoundariesLimitsAndQueryOrder) {
+	struct Case {
+		double distance;
+		double velocity;
+		double acceleration_time;
+		double cruise_time;
+	};
+	for (const auto& test : {Case{20, 2, 3.75, 6.25}, Case{5, 1.632993161855452, 3.061862178478973, 0}, Case{7.5, 2, 3.75, 0},
+	                         Case{.01, .0133333333333333, .75, 0}, Case{0, 0, .75, 0}}) {
+		SCOPED_TRACE(test.distance);
+		QuadState state;
+		state.setZero();
+		state.t = 100;
+		state.p = Vector<3>(0, 0, 1);
+		const Vector<3> target(test.distance, 0, 1);
+		auto reference = std::make_shared<CapturedReference>();
+		reference->capture(state, state.t, false);
+		ASSERT_TRUE(reference->goToPosition(target, state.t, 2, 1, .5));
+		ASSERT_TRUE(reference->hasOnlineTarget());
+		EXPECT_FALSE(reference->isHover());
+		EXPECT_TRUE(reference->onlineEndpoint().isApprox(target));
+		const double ta = test.acceleration_time, tc = test.cruise_time;
+		const double duration = 2 * ta + tc;
+		EXPECT_TRUE(reference->movingAt(state.t + duration - 1e-6));
+		EXPECT_FALSE(reference->movingAt(state.t + duration + 1e-6));
+		for (int i = 0; i <= 1000; ++i) {
+			const double time = duration * i / 1000;
+			const auto point = reference->getSetpoint(state, state.t + time);
+			ASSERT_TRUE(point.state.valid());
+			ASSERT_TRUE(point.input.valid());
+			EXPECT_NEAR(point.state.q().norm(), 1, 1e-8);
+			EXPECT_NEAR(point.input.collective_thrust, (point.state.a - GVEC).norm(), 1e-8);
+			EXPECT_LT((point.input.omega - point.state.w).norm(), 1e-8);
+			EXPECT_LE(point.state.v.norm(), 2 + 1e-7);
+			EXPECT_LE(point.state.a.norm(), 1 + 1e-7);
+			EXPECT_NEAR(point.state.p.y(), 0, 1e-8);
+			EXPECT_NEAR(point.state.p.z(), 1, 1e-8);
+			const double u = std::clamp(std::min(time, duration - time) / ta, 0.0, 1.0);
+			const double expected_speed = test.velocity * u * u * u * (10 - 15 * u + 6 * u * u);
+			EXPECT_NEAR(point.state.v.x(), expected_speed, 1e-7);
+			if (time > ta && time < ta + tc) {
+				EXPECT_NEAR(point.state.p.x(), .5 * test.velocity * ta + test.velocity * (time - ta), 1e-7);
+				EXPECT_LT(point.state.a.norm(), 1e-7);
+				EXPECT_LT(point.state.j.norm(), 1e-7);
+			}
+		}
+		for (double time : {0.0, ta, ta + tc, duration}) {
+			const auto at = reference->getSetpoint(state, state.t + time);
+			const auto left = reference->getSetpoint(state, state.t + time - 1e-6);
+			const auto right = reference->getSetpoint(state, state.t + time + 1e-6);
+			EXPECT_LT((left.state.p - right.state.p).norm(), 1e-5);
+			EXPECT_LT((left.state.v - right.state.v).norm(), 1e-5);
+			EXPECT_LT((left.state.a - right.state.a).norm(), 1e-5);
+			EXPECT_LT((left.state.j - right.state.j).norm(), 1e-5);
+			EXPECT_LT(left.state.q().angularDistance(right.state.q()), 1e-5);
+			EXPECT_NEAR(left.input.collective_thrust, right.input.collective_thrust, 1e-5);
+			EXPECT_LT((left.input.omega - right.input.omega).norm(), 1e-5);
+			EXPECT_LT(at.state.a.norm(), 1e-7);
+			EXPECT_LT(at.state.j.norm(), 1e-7);
+			const double expected_x = time == 0          ? 0
+			                          : time == duration ? test.distance
+			                          : time == ta       ? .5 * test.velocity * ta
+			                                             : test.distance - .5 * test.velocity * ta;
+			EXPECT_NEAR(at.state.p.x(), expected_x, 1e-7);
+			EXPECT_NEAR(at.state.v.x(), time == 0 || time == duration ? 0 : test.velocity, 1e-7);
+		}
+		// Each real TimeSampler horizon crosses segments; the next control tick starts earlier again.
+		TimeSampler sampler(20, duration / 10);
+		for (double time : {ta / 2, ta + tc / 2, ta + tc + ta / 2}) {
+			state.t = 100 + time;
+			const auto expected = reference->getSetpoint(state, state.t);
+			SetpointVector sampled;
+			ASSERT_TRUE(sampler.getAt(state, {reference}, &sampled));
+			for (size_t i = 0; i < sampled.size(); ++i) {
+				const double query = state.t + i * duration / 10;
+				const auto actual = reference->getSetpoint(state, query);
+				EXPECT_LT((actual.state.p - sampled[i].state.p).norm(), 1e-7);
+				EXPECT_LT((actual.state.v - sampled[i].state.v).norm(), 1e-7);
+				EXPECT_LT((actual.state.a - sampled[i].state.a).norm(), 1e-7);
+				EXPECT_LT((actual.state.j - sampled[i].state.j).norm(), 1e-7);
+				EXPECT_LT(actual.state.q().angularDistance(sampled[i].state.q()), 1e-7);
+				EXPECT_LT((actual.input.omega - sampled[i].input.omega).norm(), 1e-7);
+				EXPECT_NEAR(actual.input.collective_thrust, sampled[i].input.collective_thrust, 1e-7);
+			}
+			const auto revisited = reference->getSetpoint(state, state.t);
+			EXPECT_LT((revisited.state.x - expected.state.x).norm(), 1e-8);
+		}
+		for (double time : {duration + 1e-6, duration + 100}) {
+			const auto end = reference->getSetpoint(state, 100 + time);
+			EXPECT_TRUE(end.state.p.isApprox(target));
+			EXPECT_TRUE(end.state.v.isZero());
+			EXPECT_TRUE(end.state.a.isZero());
+			EXPECT_TRUE(end.state.j.isZero());
+			EXPECT_TRUE(end.input.omega.isZero());
+			EXPECT_DOUBLE_EQ(end.input.collective_thrust, G);
+		}
+	}
+}
+
+TEST(CapturedOnlineReference, InvalidReplacementClearCaptureAndNearZeroHold) {
+	QuadState state;
+	state.setZero();
+	state.p.z() = 1;
+	CapturedReference reference;
+	reference.capture(state, 10, false);
+	ASSERT_TRUE(reference.goToPosition(Vector<3>(20, 0, 1), 10, 2, 1, .5));
+	const auto before = reference.getSetpoint(state, 18);
+	for (double invalid : {0.0, -1.0, double(NAN), double(INF)}) {
+		EXPECT_FALSE(reference.goToPosition(Vector<3>(1, 0, 1), 11, invalid, 1, .5));
+		EXPECT_FALSE(reference.goToPosition(Vector<3>(1, 0, 1), 11, 2, invalid, .5));
+		EXPECT_LT((reference.getSetpoint(state, 18).state.x - before.state.x).norm(), 1e-8);
+	}
+	// Failure after computing a candidate turn must also leave all old segments intact.
+	EXPECT_FALSE(reference.goToPosition(Vector<3>(-1e308, 1e308, 1), 11, 2, 1, .5));
+	EXPECT_LT((reference.getSetpoint(state, 18).state.x - before.state.x).norm(), 1e-8);
+	for (double distance : {0.0, 1e-12}) {
+		const Vector<3> target(distance, 0, 1);
+		ASSERT_TRUE(reference.goToPosition(target, 10, 2, 1, .5));
+		EXPECT_TRUE(reference.hasOnlineTarget());
+		for (double time : {10.0, 10.75, 11.5, 100.0}) EXPECT_TRUE(reference.getSetpoint(state, time).state.valid());
+		EXPECT_LT((reference.getSetpoint(state, 100).state.p - target).norm(), 1e-15);
+		EXPECT_FALSE(reference.movingAt(11.5));
+	}
+	reference.clearOnlineTarget();
+	EXPECT_FALSE(reference.hasOnlineTarget());
+	EXPECT_TRUE(reference.isHover());
+	EXPECT_FALSE(reference.movingAt(10));
+	EXPECT_TRUE(reference.getSetpoint(state, 100).state.p.isApprox(state.p));
+	ASSERT_TRUE(reference.goToPosition(Vector<3>(20, 0, 1), 10, 2, 1, .5));
+	state.p = Vector<3>(3, 2, 1);
+	reference.capture(state, 12, false);
+	EXPECT_FALSE(reference.hasOnlineTarget());
+	EXPECT_FALSE(reference.pauseActive());
+	EXPECT_TRUE(reference.getSetpoint(state, 100).state.p.isApprox(state.p));
+}
+
 TEST(CapturedOnlineReference, AbsoluteEndpointsRelativeClockAndPredictionDoNotChangeExecution) {
 	const Vector<3> target(5, -1, 2);
 	for (double yaw : {0.0, M_PI / 2, -2.0}) {
@@ -126,7 +262,7 @@ TEST(CapturedOnlineReference, AbsoluteEndpointsRelativeClockAndPredictionDoNotCh
 		state.q(yaw);
 		auto reference = std::make_shared<CapturedReference>();
 		reference->capture(state, state.t, false);
-		ASSERT_TRUE(reference->goToPosition(target, state.t, 1.0, .5));
+		ASSERT_TRUE(reference->goToPosition(target, state.t, 2.0, 1.0, .5));
 		const auto start = reference->getSetpoint(state, state.t);
 		EXPECT_LT((start.state.p - state.p).norm(), 1e-8);
 		EXPECT_LT(start.state.v.norm(), 1e-8);
@@ -135,11 +271,11 @@ TEST(CapturedOnlineReference, AbsoluteEndpointsRelativeClockAndPredictionDoNotCh
 		EXPECT_NEAR(start.state.getYaw(), yaw, 1e-8);
 		const double heading = std::atan2(target.y() - state.p.y(), target.x() - state.p.x());
 		const double turn_duration = std::max(1.875 * std::abs(std::remainder(heading - yaw, 2 * M_PI)) / .5, 1.5);
-		const double duration = (target - state.p).norm();
+		const double duration = 2 * std::sqrt(1.875 * (target - state.p).norm());
 		const auto middle = reference->getSetpoint(state, state.t + turn_duration + duration / 2);
 		EXPECT_LT((middle.state.p - (target + state.p) / 2).norm(), 1e-6);
 		EXPECT_GT(middle.state.v.norm(), .1);
-		const auto dynamic = reference->getSetpoint(state, state.t + turn_duration + duration / 4);
+		const auto dynamic = reference->getSetpoint(state, state.t + turn_duration + duration / 6);
 		EXPECT_NEAR(dynamic.input.collective_thrust, (dynamic.state.a - GVEC).norm(), 1e-8);
 		EXPECT_TRUE(dynamic.input.omega.isApprox(dynamic.state.w));
 		EXPECT_GT(dynamic.input.omega.norm(), 1e-4);
@@ -181,10 +317,10 @@ TEST(CapturedOnlineReference, TurnsInPlaceAlongShortestArcThenMovesWithConsisten
 		const Vector<3> target = state.p + Vector<3>(3 * std::cos(headings.y()), 3 * std::sin(headings.y()), 1);
 		const double delta = std::remainder(headings.y() - headings.x(), 2 * M_PI);
 		const double turn_duration = std::max(1.875 * std::abs(delta) / .5, 1.5);
-		const double move_duration = (target - state.p).norm();
+		const double move_duration = 2 * std::sqrt(1.875 * (target - state.p).norm());
 		CapturedReference reference;
 		reference.capture(state, state.t, false);
-		ASSERT_TRUE(reference.goToPosition(target, state.t, 1, .5));
+		ASSERT_TRUE(reference.goToPosition(target, state.t, 2, 1, .5));
 		for (int i = 0; i <= 100; ++i) {
 			const auto point = reference.getSetpoint(state, state.t + turn_duration * i / 100);
 			EXPECT_LT((point.state.p - state.p).norm(), 1e-8);
@@ -236,58 +372,74 @@ TEST(CapturedOnlineReference, VerticalAndZeroDisplacementKeepHeadingWithoutTurnD
 		CapturedReference reference;
 		reference.capture(state, state.t, false);
 		const Vector<3> target = state.p + Vector<3>(0, 0, dz);
-		ASSERT_TRUE(reference.goToPosition(target, state.t, 1, .5));
-		const auto middle = reference.getSetpoint(state, state.t + .75);
+		ASSERT_TRUE(reference.goToPosition(target, state.t, 2, 1, .5));
+		const double duration = std::max(1.5, 2 * std::sqrt(1.875 * std::abs(dz)));
+		const auto middle = reference.getSetpoint(state, state.t + duration / 2);
 		EXPECT_LT((middle.state.p - (state.p + target) / 2).norm(), 1e-8);
-		for (double dt : {0.0, .75, 1.5, 100.0}) {
+		for (double dt : {0.0, duration / 2, duration, 100.0}) {
 			const auto point = reference.getSetpoint(state, state.t + dt);
 			EXPECT_NEAR(point.state.getYaw(), 2.4, 1e-8);
 			EXPECT_LT(point.state.w.norm(), 1e-8);
 		}
-		EXPECT_FALSE(reference.movingAt(state.t + 1.5));
+		EXPECT_FALSE(reference.movingAt(state.t + duration + 1e-6));
 	}
 }
 
 TEST(CapturedOnlineReference, PausePreservesDerivativesAndNeverRevealsOldTrajectory) {
 	for (const Vector<3>& target : {Vector<3>(8, 5, 6), Vector<3>(0, 0, 8)}) {
 		for (double deceleration : {3.0, .3}) {
-			QuadState state;
-			state.setZero();
-			state.t = 100;
-			state.q(std::atan2(target.y(), target.x()));
-			CapturedReference reference;
-			reference.capture(state, state.t, false);
-			ASSERT_TRUE(reference.goToPosition(target, state.t, 1, .5));
-			const double now = state.t + 3;
-			const auto before = reference.getSetpoint(state, now).state;
-			ASSERT_GT(before.v.norm(), .1);
-			ASSERT_GT(before.a.norm(), .01);
-			ASSERT_GT(before.j.norm(), .01);
-			const double duration = std::max(1.5, 1.875 * before.v.norm() / deceleration);
-			const Vector<3> endpoint = before.p + .5 * duration * before.v + .1 * duration * duration * before.a +
-			                           duration * duration * duration / 120 * before.j;
-			ASSERT_TRUE(reference.pauseHover(now, deceleration, Vector<3>::Constant(-100), Vector<3>::Constant(100)).empty());
-			const auto after = reference.getSetpoint(state, now).state;
-			EXPECT_LT((after.p - before.p).norm(), 1e-7);
-			EXPECT_LT((after.v - before.v).norm(), 1e-7);
-			EXPECT_LT((after.a - before.a).norm(), 1e-7);
-			EXPECT_LT((after.j - before.j).norm(), 1e-7);
-			EXPECT_LT(after.q().angularDistance(before.q()), 1e-7);
-			EXPECT_LT((after.w - before.w).norm(), 1e-7);
-			reference.getSetpoint(state, now + 1000);  // MPC horizon is not execution time.
-			EXPECT_TRUE(reference.movingAt(now));
-			EXPECT_FALSE(reference.movingAt(now + duration));
-			ASSERT_TRUE(
-			        reference.pauseHover(now + .3, deceleration, Vector<3>::Constant(-100), Vector<3>::Constant(100)).empty());
-			EXPECT_FALSE(reference.movingAt(now + duration));
-			for (int i = 0; i < 100; ++i) EXPECT_TRUE(reference.getSetpoint(state, now + duration * i / 100).state.valid());
-			for (double offset : {duration, duration + 10, duration + 1000}) {
-				const auto held = reference.getSetpoint(state, now + offset).state;
-				EXPECT_LT((held.p - endpoint).norm(), 1e-7);
-				EXPECT_TRUE(held.v.isZero());
-				EXPECT_TRUE(held.a.isZero());
-				EXPECT_TRUE(held.j.isZero());
-				EXPECT_TRUE(held.w.isZero());
+			for (double pause_time : {3.0, 3.9, 6.5}) {
+				QuadState state;
+				state.setZero();
+				state.t = 100;
+				state.q(std::atan2(target.y(), target.x()));
+				CapturedReference reference;
+				reference.capture(state, state.t, false);
+				const double heading = reference.getSetpoint(state, state.t).state.getHoverState().getYaw();
+				const double delta = target.head<2>().norm() > 1e-6
+				                             ? std::remainder(std::atan2(target.y(), target.x()) - heading, 2 * M_PI)
+				                             : 0;
+				const double turn_duration = delta == 0 ? 0 : std::max(1.5, 1.875 * std::abs(delta) / .5);
+				ASSERT_TRUE(reference.goToPosition(target, state.t, 2, 1, .5));
+				const double now = state.t + turn_duration + pause_time;
+				const auto before = reference.getSetpoint(state, now).state;
+				ASSERT_GT(before.v.norm(), .1);
+				if (pause_time == 3.9) {
+					ASSERT_LT(before.a.norm(), 1e-7);
+					ASSERT_LT(before.j.norm(), 1e-7);
+				} else {
+					ASSERT_GT(before.a.norm(), .01);
+					ASSERT_GT(before.j.norm(), .01);
+				}
+				const double duration = std::max(1.5, 1.875 * before.v.norm() / deceleration);
+				const Vector<3> endpoint = before.p + .5 * duration * before.v + .1 * duration * duration * before.a +
+				                           duration * duration * duration / 120 * before.j;
+				ASSERT_TRUE(reference.pauseHover(now, deceleration, Vector<3>::Constant(-100), Vector<3>::Constant(100))
+				                    .empty());
+				const auto after = reference.getSetpoint(state, now).state;
+				EXPECT_LT((after.p - before.p).norm(), 1e-7);
+				EXPECT_LT((after.v - before.v).norm(), 1e-7);
+				EXPECT_LT((after.a - before.a).norm(), 1e-7);
+				EXPECT_LT((after.j - before.j).norm(), 1e-7);
+				EXPECT_LT(after.q().angularDistance(before.q()), 1e-7);
+				EXPECT_LT((after.w - before.w).norm(), 1e-7);
+				reference.getSetpoint(state, now + 1000);  // MPC horizon is not execution time.
+				EXPECT_TRUE(reference.movingAt(now));
+				EXPECT_FALSE(reference.movingAt(now + duration + 1e-6));
+				ASSERT_TRUE(
+				        reference.pauseHover(now + .3, deceleration, Vector<3>::Constant(-100), Vector<3>::Constant(100))
+				                .empty());
+				EXPECT_FALSE(reference.movingAt(now + duration + 1e-6));
+				for (int i = 0; i < 100; ++i)
+					EXPECT_TRUE(reference.getSetpoint(state, now + duration * i / 100).state.valid());
+				for (double offset : {duration + 1e-6, duration + 10, duration + 1000}) {
+					const auto held = reference.getSetpoint(state, now + offset).state;
+					EXPECT_LT((held.p - endpoint).norm(), 1e-7);
+					EXPECT_TRUE(held.v.isZero());
+					EXPECT_TRUE(held.a.isZero());
+					EXPECT_TRUE(held.j.isZero());
+					EXPECT_TRUE(held.w.isZero());
+				}
 			}
 		}
 	}
@@ -301,7 +453,7 @@ TEST(CapturedOnlineReference, PauseYawCrossesPiAndPreservesUnwrappedStopAngle) {
 		CapturedReference reference;
 		reference.capture(state, 10, false);
 		const double goal_heading = -initial;
-		ASSERT_TRUE(reference.goToPosition(Vector<3>(5 * std::cos(goal_heading), 5 * std::sin(goal_heading), 0), 10, 1, .5));
+		ASSERT_TRUE(reference.goToPosition(Vector<3>(5 * std::cos(goal_heading), 5 * std::sin(goal_heading), 0), 10, 2, 1, .5));
 		const auto before = reference.getSetpoint(state, 10.5).state;
 		ASSERT_GT(std::abs(before.w.z()), .01);
 		ASSERT_TRUE(reference.pauseHover(10.5, 3, Vector<3>::Constant(-100), Vector<3>::Constant(100)).empty());
@@ -386,7 +538,7 @@ TEST(CapturedOnlineReference, RejectedBrakeIsAtomicAndFixedReferenceDoesNotRecap
 	state.p = Vector<3>(1, 2, 3);
 	CapturedReference reference;
 	reference.capture(state, 10, false);
-	ASSERT_TRUE(reference.goToPosition(Vector<3>(8, 2, 3), 10, 1, .5));
+	ASSERT_TRUE(reference.goToPosition(Vector<3>(8, 2, 3), 10, 2, 1, .5));
 	const auto before = reference.getSetpoint(state, 12).state;
 	EXPECT_FALSE(reference.pauseHover(12, 3, Vector<3>::Constant(-1), Vector<3>::Constant(1)).empty());
 	EXPECT_FALSE(reference.pauseActive());
@@ -460,7 +612,7 @@ TEST_F(HardwareGeo, OnlineTargetsRequireActualHoverAndCanRepeatWithoutAutoEdge) 
 	EXPECT_NE(step(true, true, true, false, &second).goal_event.find("trajectory moving"), std::string::npos);
 	Vector<3> invalid(NAN, 0, 0);
 	EXPECT_NE(step(true, true, true, false, &invalid).goal_event.find("nonfinite"), std::string::npos);
-	for (int i = 0; i < 170; ++i) decision = step(true);
+	for (int i = 0; i < 290; ++i) decision = step(true);
 	EXPECT_TRUE(decision.permit_override);
 	EXPECT_TRUE(decision.trajectory_active);
 	EXPECT_TRUE(decision.reference.p.isApprox(target));
@@ -484,7 +636,7 @@ TEST_F(HardwareGeo, OnlineTargetsRequireActualHoverAndCanRepeatWithoutAutoEdge) 
 	for (int i = 0; i < 170; ++i) decision = step(true);
 	EXPECT_TRUE(decision.reference.p.isApprox(target));
 	EXPECT_NE(step(true, true, true, false, &target).goal_event.find("trajectory moving"), std::string::npos);
-	for (int i = 0; i < 600; ++i) decision = step(true);
+	for (int i = 0; i < 720; ++i) decision = step(true);
 	EXPECT_TRUE(decision.reference.p.isApprox(second));
 	EXPECT_NEAR(decision.reference.getYaw(), M_PI / 2, 1e-8);
 	EXPECT_TRUE(decision.permit_override);
@@ -515,7 +667,7 @@ TEST_F(HardwareGeo, OnlineTargetShadowAndFaultResetPreserveConfiguredCsv) {
 	ASSERT_NE(decision.goal_event.find("accepted"), std::string::npos);
 	EXPECT_TRUE(decision.goal_accepted);
 	EXPECT_EQ(decision.online_goal_phase, OnlineGoalPhase::Moving);
-	for (int i = 0; i < 770; ++i) {
+	for (int i = 0; i < 900; ++i) {
 		decision = step(true, true, true, true);
 		ASSERT_FALSE(decision.permit_override);
 		ASSERT_TRUE(decision.trajectory_active);
