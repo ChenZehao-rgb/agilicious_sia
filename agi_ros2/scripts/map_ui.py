@@ -17,6 +17,9 @@ from map_store import MapStore, estimate
 
 import rclpy
 from rclpy.node import Node
+from rclpy.parameter import Parameter
+from rcl_interfaces.msg import Parameter as ParameterMsg, ParameterType
+from rcl_interfaces.srv import GetParameters, SetParametersAtomically
 from std_msgs.msg import Empty
 from diagnostic_msgs.msg import DiagnosticArray
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
@@ -33,7 +36,10 @@ METERS_PER_DEGREE = f32(f32(f32(f32(111.3195) * 1000) * 100) / 10000000) * 10000
 
 
 def finite(*values):
-    return all(isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x) for x in values)
+    try:
+        return all(isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x) for x in values)
+    except OverflowError:
+        return False
 
 
 def clean_json(value):
@@ -44,6 +50,45 @@ def clean_json(value):
     if isinstance(value, float) and not math.isfinite(value):
         return None
     return value
+
+
+TUNING_GROUPS = {
+    'trajectory': ('go_to_pose_max_vel', 'go_to_pose_max_acc'),
+    'mpc': ('Q_pos_x', 'Q_pos_y', 'Q_pos_z', 'Q_att_x', 'Q_att_y', 'Q_att_z',
+            'Q_vel', 'R_collective_thrust', 'R_body_rates', 'exp_decay'),
+}
+TUNING_METADATA = ('mode', 'controller_type', 'clock_id', 'control_session_start')
+
+
+def unique_json(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError('重复字段: ' + key)
+        result[key] = value
+    return result
+
+
+def tuning_patch(payload):
+    if not isinstance(payload, dict) or set(payload) != {'group', 'values'}:
+        raise ValueError('调参需要 group 和 values')
+    group, values = payload['group'], payload['values']
+    if not isinstance(group, str) or group not in TUNING_GROUPS or not isinstance(values, dict) or not values:
+        raise ValueError('调参分组或参数无效')
+    parameters = []
+    for name, value in values.items():
+        if name not in TUNING_GROUPS[group]:
+            raise ValueError('未知参数: ' + name)
+        if name == 'R_body_rates':
+            if not isinstance(value, list) or len(value) != 3 or not finite(*value) or min(value) < 0:
+                raise ValueError('R_body_rates 需要三个有限非负数，顺序 x/y/z')
+            value = [float(v) for v in value]
+        else:
+            if not finite(value) or value < 0 or (value == 0 and (group == 'trajectory' or name == 'exp_decay')):
+                raise ValueError('参数数值无效: ' + name)
+            value = float(value)
+        parameters.append(Parameter(name, value=value).to_parameter_msg())
+    return parameters
 
 
 def mapping_error(state, origin):
@@ -154,6 +199,8 @@ class MapUI(Node):
         self.lock = threading.Lock()
         self.latest = {}
         self.version = 0
+        self.tuning_get_client = self.create_client(GetParameters, 'flight_control/get_runtime_parameters')
+        self.tuning_set_client = self.create_client(SetParametersAtomically, 'flight_control/set_runtime_parameters')
         self.command_publisher = self.create_publisher(GeographicGoal, 'go_to_geographic_position',
                                                      QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                                                                 durability=DurabilityPolicy.VOLATILE))
@@ -213,6 +260,43 @@ class MapUI(Node):
         return clean_json({'topics': topics, 'position': position, 'mapping_error': error,
                            'heading_deg': heading_degrees(state['orientation']) if state and state['fc_state_valid'] else None,
                            'active_position': active, 'goal_matches_state': goal_matches, 'identity': identity})
+
+    def tuning_call(self, client, request):
+        # HTTP worker waits without holding telemetry lock; the existing ROS spin
+        # owns response handling. Never spin this node in a second executor.
+        if not client.service_is_ready():
+            raise ValueError('控制服务未连接，未发送请求')
+        done = threading.Event()
+        future = client.call_async(request)
+        future.add_done_callback(lambda _: done.set())
+        if not done.wait(2):
+            client.remove_pending_request(future)
+            raise TimeoutError('结果未确认；可能已执行，不自动重试，请读取当前值核实')
+        return future.result()
+
+    def get_tuning(self):
+        names = list(TUNING_METADATA) + list(TUNING_GROUPS['trajectory']) + list(TUNING_GROUPS['mpc'])
+        response = self.tuning_call(self.tuning_get_client, GetParameters.Request(names=names))
+        if len(response.values) != len(names):
+            raise ValueError('控制端返回值不完整')
+        values = {}
+        for name, value in zip(names, response.values):
+            values[name] = (list(value.double_array_value) if value.type == ParameterType.PARAMETER_DOUBLE_ARRAY
+                            else Parameter.from_parameter_msg(ParameterMsg(name=name, value=value)).value)
+        return {**{key: values[key] for key in TUNING_METADATA},
+                **{group: {name: values[name] for name in fields} for group, fields in TUNING_GROUPS.items()}}
+
+    def set_tuning(self, payload):
+        parameters = tuning_patch(payload)
+        response = self.tuning_call(self.tuning_set_client, SetParametersAtomically.Request(parameters=parameters))
+        if not response.result.successful:
+            return {'status': 'rejected', 'message': '未应用：' + response.result.reason}
+        result = {'status': 'applied', 'message': '已确认应用'}
+        try:
+            result['current'] = self.get_tuning()
+        except Exception:
+            result['message'] = '已确认应用，回读未完成；请读取当前值核实'
+        return result
 
     def start_runtime(self, payload):
         return self.runtime_request(payload, 'start')
@@ -295,6 +379,11 @@ def make_server(node, tiles, host, port, maps=None):
             path = unquote(urlsplit(self.path).path)
             if path == '/api/state':
                 return self.respond(200, node.snapshot())
+            if path == '/api/tuning':
+                try:
+                    return self.respond(200, node.get_tuning())
+                except Exception as error:
+                    return self.respond(503, {'error': '参数不可读取：' + str(error)})
             if path == '/api/map':
                 return self.respond(200, tiles.info)
             if path == '/api/maps':
@@ -321,7 +410,7 @@ def make_server(node, tiles, host, port, maps=None):
         def do_POST(self):
             map_actions = ('estimate', 'download', 'resume', 'cancel', 'select')
             action = self.path.removeprefix('/api/maps/') if self.path.startswith('/api/maps/') else None
-            if self.path not in ('/api/goal', '/api/pause', '/api/runtime/start', '/api/runtime/stop', '/api/runtime/shutdown') and (not maps or action not in map_actions):
+            if self.path not in ('/api/tuning', '/api/goal', '/api/pause', '/api/runtime/start', '/api/runtime/stop', '/api/runtime/shutdown') and (not maps or action not in map_actions):
                 return self.respond(404, {'error': 'not found'})
             # JSON and same-origin only: an unrelated website cannot issue flight goals.
             origin = self.headers.get('Origin')
@@ -334,10 +423,13 @@ def make_server(node, tiles, host, port, maps=None):
                 if not 0 < size <= 4096:
                     raise ValueError('invalid request length')
                 self.connection.settimeout(3)
-                data = json.loads(self.rfile.read(size))
+                data = json.loads(self.rfile.read(size),
+                                  object_pairs_hook=unique_json if self.path == '/api/tuning' else dict)
                 if not isinstance(data, dict):
                     raise ValueError('JSON object required')
-                if self.path == '/api/goal':
+                if self.path == '/api/tuning':
+                    result = node.set_tuning(data)
+                elif self.path == '/api/goal':
                     result = node.submit(data)
                 elif self.path == '/api/pause':
                     result = node.pause(data)
@@ -357,6 +449,8 @@ def make_server(node, tiles, host, port, maps=None):
                     maps.cancel.set()
                     result = maps.status()
             except TimeoutError as error:
+                if self.path == '/api/tuning':
+                    return self.respond(503, {'status': 'unconfirmed', 'message': str(error)})
                 if self.path in ('/api/runtime/start', '/api/runtime/stop', '/api/runtime/shutdown'):
                     label = {'start': '启动', 'stop': '结束任务', 'shutdown': '关机'}[self.path.rsplit('/', 1)[1]]
                     return self.respond(503, {'error': label + '结果未确认；不自动重试'})
@@ -366,11 +460,13 @@ def make_server(node, tiles, host, port, maps=None):
             except (ValueError, UnicodeError) as error:
                 return self.respond(400, {'error': str(error)})
             except Exception:
+                if self.path == '/api/tuning':
+                    return self.respond(503, {'status': 'unconfirmed', 'message': '结果未确认；不自动重试，请读取当前值核实'})
                 if self.path in ('/api/runtime/start', '/api/runtime/stop', '/api/runtime/shutdown'):
                     label = {'start': '启动', 'stop': '结束任务', 'shutdown': '关机'}[self.path.rsplit('/', 1)[1]]
                     return self.respond(503, {'error': label + '结果未确认；不自动重试'})
                 return self.respond(503, {'error': '发布结果未确认；不自动重试' if self.path in ('/api/goal', '/api/pause') else '地图操作失败'})
-            return self.respond(202, result)
+            return self.respond(200 if self.path == '/api/tuning' else 202, result)
 
     return ThreadingHTTPServer((host, port), Handler)
 

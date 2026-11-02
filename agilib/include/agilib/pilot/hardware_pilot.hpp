@@ -1,7 +1,9 @@
 #pragma once
 #include <thread>
+#include <utility>
 
 #include "agilib/bridge/betaflight/hardware_safety.hpp"
+#include "agilib/controller/mpc/controller_mpc.hpp"
 #include "agilib/pilot/pilot.hpp"
 #include "agilib/reference/captured_reference.h"
 
@@ -36,6 +38,9 @@ public:
 	ControlDecision tick(const QuadState& fused_state, Evidence evidence, bool shadow_only = false, bool navigation_valid = false,
 	                     bool computation_requested = true, const Vector<3>* go_to_position = nullptr, bool pause_hover = false,
 	                     const Vector<3>& fence_min = Vector<3>::Constant(-INF), const Vector<3>& fence_max = Vector<3>::Constant(INF));
+	std::pair<double, double> getTrajectoryParameters() const;
+	bool setTrajectoryParameters(double max_velocity, double max_acceleration);
+	std::shared_ptr<MpcController> getMpcController();
 	void reportOutputFault();
 	Mode mode() const { return _gate.mode(); }
 	unsigned warmCycles() const { return _warm_cycles; }
@@ -51,8 +56,8 @@ private:
 	const NavigationPolicy _navigation_policy;
 	const double _observation_delay;
 	const ReceiverPolicy _receiver_policy;
-	const double _go_to_pose_max_vel;
-	const double _go_to_pose_max_acc;
+	double _go_to_pose_max_vel;
+	double _go_to_pose_max_acc;
 	const double _yaw_rate_max;
 	const double _brake_deceleration;
 	const std::thread::id _owner;

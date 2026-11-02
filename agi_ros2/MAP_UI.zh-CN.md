@@ -8,6 +8,52 @@
 支持“运行程序”和“暂停并悬停”；运行按钮只启动进程，不执行 ARM、起飞/降落或 AUTO 切换。关闭网页、后台退出、地面网络断开
 不主动取消目标或撤权；控制主机仍按原保护逻辑运行。不引入地面站心跳门控。
 
+## 运行调参
+
+顶部“调参”打开弹窗，读取当前连接控制端的模式、控制器和实际参数，不采用运行区下拉框作为目标。
+可飞行中读取和分组应用，不依赖地图、GPS、悬停或 disarm；目标提交仍沿用原准入规则。
+
+- 轨迹组：`go_to_pose_max_vel`、`go_to_pose_max_acc` 严格为有限正值，供**后续新生成的在线轨迹**使用。
+  当前航段的 p/v/a/j、结束时间、暂停减速、yaw 和 CSV 不随调参改变。
+- MPC 组：Q_pos/Q_att/Q_vel、R_collective_thrust、R_body_rates、exp_decay 应用到活动 MPC，供**后续求解**使用。
+  同一实例在完整控制计算之间安装，不 reset、不清 warmup、不退出 AUTO。GEO 时 MPC 组不适用。
+  权重允许有限非负值；exp_decay 为有限正值，允许大于 1，但实际指数加权矩阵必须有限。
+  Q_vel 标量同步作用三轴；R_body_rates 三输入仍合为 x/y/z 数组。Q_att 保持四元数残差，T/m 单位为 m/s²。
+- 每个 MPC 名称和输入框均有原生鼠标悬停说明，文案仅在 `web/tuning.js` 的静态映射维护。
+  调大一项不保证响应更快，R 惩罚相对参考的输入而非相邻周期变化，exp_decay 为预测时域缩放。
+
+每项显示控制端“实际值”，编辑后标为“草稿”。“读取当前值”刷新实际值但保留草稿，
+“撤销轨迹/MPC 草稿”将对应组重新载入当前实际值。仅显式点击对应应用按钮才提交改变字段；
+另一组和未编辑字段不会随旧页面值写回。读取只发生在打开、手动读取、应用后，不增加遥测参数流。
+关闭、Esc、刷新及悬停均不提交；同组请求在途时禁用重复应用。
+
+“已确认应用”表示控制端已经安装；明确拒绝则未应用并保留草稿。超时表示**结果未确认，可能已经执行**，
+不重试或回滚，可“读取当前值”核实。“已确认应用，回读未完成”仍表示 SET 成功。
+会话改变会标记旧实际值过期并要求重新读取，草稿不会自动重发。
+**仅本次运行有效，重启按配置文件加载**，不写 hardware.yaml / simulation.yaml。
+
+HTTP 为 `GET /api/tuning`、`POST /api/tuning`，只转发固定分组/字段。
+例如 POST `{"group":"mpc","values":{"Q_pos_x":60,"R_body_rates":[100,100,80]}}`。
+控制端专用服务采用 `GetParameters` 与 `SetParametersAtomically`，不使用 ROS 节点参数数据库。
+在正确 ROS 域/source 环境下手动调试（命名空间部署时给路径加对应前缀）：
+
+```bash
+ros2 service call /flight_control/get_runtime_parameters rcl_interfaces/srv/GetParameters \
+  '{names: [mode, controller_type, go_to_pose_max_vel, go_to_pose_max_acc, Q_pos_x, R_body_rates, exp_decay]}'
+ros2 service call /flight_control/set_runtime_parameters rcl_interfaces/srv/SetParametersAtomically \
+  '{parameters: [{name: go_to_pose_max_vel, value: {type: 3, double_value: 1.5}}]}'
+ros2 service call /flight_control/set_runtime_parameters rcl_interfaces/srv/SetParametersAtomically \
+  '{parameters: [{name: Q_pos_x, value: {type: 3, double_value: 60.0}}, {name: R_body_rates, value: {type: 8, double_array_value: [100.0, 100.0, 80.0]}}]}'
+```
+
+`ros2 param set` 不会更新这些运行值。更新部署需重建控制端和地面端包，加载新的控制节点、
+map_ui.py 与网页；不会向已经运行的旧进程自动注入功能。
+直接回归沿用 `tests/test_map_ui.py`、`tests/test_map_ui_browser.py` 和
+`tests/test_fc_control_delivery.py DeliveryTests.test_runtime_parameter_services_install_between_active_cycles`。
+隔离 SITL 可运行 `tests/test_sitl_go_to_position.py --output <新目录> --state-source fc_fused --map-ui --geographic --runtime-tuning`，
+它会在 A 运动中更新，检查 B 采用新速度、MPC 安装、控制会话、时序与 KILL；必须使用独立 ROS 域和空闲仿真端口。
+单线程串行更新仍占用回调时间，不能据此宣称 CM5 实时性或实飞稳定性已验证。
+
 ## 一键启动与部署
 
 右侧“运行程序”位于地理目标表单上方。选择实机/仿真，在对应服务在线时点击一次启动。

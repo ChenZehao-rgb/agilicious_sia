@@ -113,6 +113,27 @@ def fake_runtime_shutdown():
     transfer.runtime.notify()
 # Never let the browser fixture call a real shutdown implementation.
 transfer.runtime.shutdown=fake_runtime_shutdown
+# Dedicated synthetic runtime service; no flight controller is involved.
+from rcl_interfaces.srv import GetParameters, SetParametersAtomically
+from rclpy.parameter import Parameter
+runtime_values = dict(mode='sitl', controller_type='MPC', clock_id=s.clock_id, control_session_start=10.,
+                      go_to_pose_max_vel=2., go_to_pose_max_acc=1., Q_pos_x=50., Q_pos_y=50., Q_pos_z=100.,
+                      Q_att_x=10., Q_att_y=10., Q_att_z=50., Q_vel=5., R_collective_thrust=1.,
+                      R_body_rates=[100.,100.,100.], exp_decay=1.)
+tuning_requests=[]; tuning_reads=[]
+def read_tuning(request, response):
+    tuning_reads.append(time.monotonic())
+    response.values = [Parameter(name, value=runtime_values.get(name)).get_parameter_value() for name in request.names]
+    return response
+def set_tuning(request, response):
+    patch_values = {item.name: Parameter.from_parameter_msg(item).value for item in request.parameters}
+    if 'R_body_rates' in patch_values: patch_values['R_body_rates'] = list(patch_values['R_body_rates'])
+    tuning_requests.append(patch_values)
+    runtime_values.update(patch_values)
+    response.result.successful = True
+    return response
+source.create_service(GetParameters, 'flight_control/get_runtime_parameters', read_tuning)
+source.create_service(SetParametersAtomically, 'flight_control/set_runtime_parameters', set_tuning)
 worker=threading.Thread(target=executor.spin);worker.start()
 server=map_ui.make_server(node,map_ui.MBTiles(path),'127.0.0.1',0)
 http_thread=threading.Thread(target=server.serve_forever);http_thread.start()
@@ -125,6 +146,91 @@ try:
         context.route('**/*', lambda route: route.continue_() if route.request.url.startswith(url) else route.abort())
         page=context.new_page();page.on('pageerror',lambda e: errors.append(str(e)));page.on('request',lambda r: requests.append(r.url))
         page.goto(url)
+        page.locator('#open-tuning').click()
+        expect(page.locator('#tuning-read-status')).to_contain_text('已读取')
+        expect(page.locator('#tuning-identity')).to_have_text('仿真 · MPC')
+        # All twelve exact tooltip strings come from the user-supplied prompt.
+        help_text = page.evaluate('mpcHelp')
+        assert list(help_text) == ['Q_pos_x','Q_pos_y','Q_pos_z','Q_att_x','Q_att_y','Q_att_z','Q_vel',
+                                  'R_collective_thrust','R_body_rates_x','R_body_rates_y','R_body_rates_z','exp_decay']
+        for name, description in help_text.items():
+            label = page.locator(f'label[for="tuning-{name}"]')
+            field = page.locator('#tuning-' + name)
+            expect(label).to_have_attribute('title', description)
+            expect(field).to_have_attribute('title', description)
+            label.hover(); field.hover(); page.locator('#tuning-title').hover()
+        assert not tuning_requests
+        page.locator('#tuning-Q_pos_x').fill('60')
+        page.locator('#tuning-go_to_pose_max_vel').fill('1.5')
+        runtime_values['go_to_pose_max_acc'] = .8
+        page.locator('#tuning-read').click()
+        expect(page.locator('#actual-go_to_pose_max_acc')).to_contain_text('0.8')
+        expect(page.locator('#tuning-Q_pos_x')).to_have_value('60')
+        page.locator('#tuning-apply-trajectory').click()
+        expect(page.locator('#tuning-result-trajectory')).to_contain_text('已确认应用')
+        assert tuning_requests == [{'go_to_pose_max_vel':1.5}]
+        expect(page.locator('#tuning-Q_pos_x')).to_have_value('60')
+        page.locator('#tuning-R_body_rates_y').fill('110')
+        page.locator('#tuning-apply-mpc').click()
+        expect(page.locator('#tuning-result-mpc')).to_contain_text('已确认应用')
+        assert tuning_requests[-1] == {'Q_pos_x':60., 'R_body_rates':[100.,110.,100.]}
+        page.screenshot(path=str(out/'tuning.png'))
+        page.locator('#tuning-Q_pos_y').fill('65')
+        page.keyboard.press('Escape')
+        expect(page.locator('#tuning-dialog')).not_to_be_visible()
+        assert len(tuning_requests)==2
+        page.locator('#open-tuning').click()
+        expect(page.locator('#tuning-Q_pos_y')).to_have_value('65')
+        page.locator('#tuning-revert-mpc').click()
+        expect(page.locator('#tuning-Q_pos_y')).to_have_value('50')
+        held_tuning=[]
+        page.route('**/api/tuning', lambda route: held_tuning.append(route) if route.request.method == 'POST' else route.continue_())
+        page.locator('#tuning-Q_vel').fill('6')
+        page.locator('#tuning-apply-mpc').click()
+        expect(page.locator('#tuning-apply-mpc')).to_be_disabled()
+        expect(page.locator('#tuning-result-mpc')).to_contain_text('结果未确认', timeout=8000)
+        assert len(held_tuning)==1 and len(tuning_requests)==2
+        for route in held_tuning: route.abort()
+        page.unroute('**/api/tuning')
+        # Explicit rejection keeps the draft and the last actual value.
+        page.route('**/api/tuning', lambda route: route.fulfill(status=200, content_type='application/json',
+                   body='{"status":"rejected","message":"未应用：fixture rejection"}')
+                   if route.request.method == 'POST' else route.continue_())
+        page.locator('#tuning-apply-mpc').click()
+        expect(page.locator('#tuning-result-mpc')).to_contain_text('未应用')
+        expect(page.locator('#tuning-Q_vel')).to_have_value('6')
+        expect(page.locator('#actual-Q_vel')).to_contain_text('实际：5')
+        page.unroute('**/api/tuning')
+        # A confirmed SET survives a failed GET; no invented rollback/failure.
+        page.route('**/api/tuning', lambda route: route.fulfill(status=200, content_type='application/json',
+                   body='{"status":"applied","message":"已确认应用，回读未完成"}')
+                   if route.request.method == 'POST' else route.continue_())
+        page.locator('#tuning-apply-mpc').click()
+        expect(page.locator('#tuning-result-mpc')).to_contain_text('已确认应用，回读未完成')
+        expect(page.locator('#tuning-apply-mpc')).to_be_disabled()
+        page.unroute('**/api/tuning')
+        page.locator('#tuning-read').click()
+        expect(page.locator('#tuning-apply-mpc')).to_be_enabled()
+        page.evaluate("checkTuningSession({topics:{computation_status:{age_s:0,data:{control_session_start:11}}}})")
+        expect(page.locator('#tuning-read-status')).to_contain_text('旧实际值已过期')
+        expect(page.locator('#tuning-apply-trajectory')).to_be_disabled()
+        assert len(tuning_requests)==2
+        page.locator('#tuning-read').click()
+        expect(page.locator('#tuning-apply-mpc')).to_be_enabled()
+        page.evaluate("checkTuningSession({topics:{goal_status:{age_s:0,data:{clock_id:'new-boot',control_session_start:10}}}})")
+        expect(page.locator('#tuning-read-status')).to_contain_text('旧实际值已过期')
+        runtime_values['controller_type']='GEO'
+        page.locator('#tuning-read').click()
+        expect(page.locator('#tuning-read-status')).to_contain_text('MPC 参数不适用')
+        expect(page.locator('#tuning-apply-mpc')).to_be_disabled()
+        expect(page.locator('#tuning-apply-trajectory')).to_be_enabled()
+        runtime_values['controller_type']='MPC'
+        count_reads = len(tuning_reads)
+        page.wait_for_timeout(300)
+        assert len(tuning_reads)==count_reads
+        page.locator('#close-tuning').click()
+        page.reload()
+        assert len(tuning_requests)==2
         expect(page.locator('#runtime-service')).to_contain_text('启动服务在线')
         expect(page.locator('#position')).to_contain_text('位置未知')
         expect(page.locator('#runtime-start')).to_be_enabled()
@@ -338,7 +444,7 @@ try:
         assert len(runtime_requests)==1 and len(runtime_stops)==1 and transfer.runtime.snapshot()['state']=='stopped'
         assert not errors, errors
         assert all(r.startswith(url) for r in requests),requests
-        (out/'result.json').write_text(json.dumps({'passed':True,'requests':len(requests),'external_requests':0,'commands':len(commands),'pauses':len(pauses),'pause_timeout_no_retry':True,'runtime_no_aircraft_online':True,'runtime_requests':len(runtime_requests),
+        (out/'result.json').write_text(json.dumps({'passed':True,'tuning_tooltips':12,'tuning_patches':tuning_requests,'tuning_timeout_no_retry':True,'requests':len(requests),'external_requests':0,'commands':len(commands),'pauses':len(pauses),'pause_timeout_no_retry':True,'runtime_no_aircraft_online':True,'runtime_requests':len(runtime_requests),
             'runtime_timeout_refresh_disconnect_no_retry':True,'runtime_stop_requests':len(runtime_stops),'runtime_stop_timeout_no_retry':True,'runtime_old_backend_404_guidance':True,'hardware_shutdown_mock_requests':len(runtime_shutdowns),
             'shutdown_hardware_only_permission_error_timeout_and_refresh':True,'page_errors':errors,'fixture':'synthetic, not real map',
             'position_updates_in_2_4s':len(changes), 'position_min_interval_ms':min(b-a for a,b in zip(changes,changes[1:])),

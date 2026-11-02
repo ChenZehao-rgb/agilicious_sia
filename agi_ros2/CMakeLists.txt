@@ -3,7 +3,7 @@ project(agi_ros2 LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
 find_package(ament_cmake REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
-foreach(dep diagnostic_msgs rclcpp sensor_msgs geometry_msgs nav_msgs std_msgs rosgraph_msgs builtin_interfaces)
+foreach(dep rcl_interfaces diagnostic_msgs rclcpp sensor_msgs geometry_msgs nav_msgs std_msgs rosgraph_msgs builtin_interfaces)
   find_package(${dep} REQUIRED)
 endforeach()
 rosidl_generate_interfaces(${PROJECT_NAME}
@@ -51,7 +51,7 @@ foreach(target state_fusion_node fc_state_adapter_node control_node command_outp
   install(TARGETS ${target} DESTINATION lib/${PROJECT_NAME})
 endforeach()
 ament_target_dependencies(state_fusion_node diagnostic_msgs)
-ament_target_dependencies(control_node geometry_msgs)
+ament_target_dependencies(control_node geometry_msgs rcl_interfaces)
 set_target_properties(agilib acados_mpc PROPERTIES INSTALL_RPATH "$ORIGIN;${ACADOS_ROOT}/lib" LINK_FLAGS "-Wl,--disable-new-dtags")
 install(TARGETS agilib acados_mpc LIBRARY DESTINATION lib ARCHIVE DESTINATION lib)
 add_executable(betaflight_msp_node src/msp_node.cpp src/msp_telemetry.cpp

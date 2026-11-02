@@ -213,6 +213,7 @@ function renderTelemetry() {
   if (airplane) airplane.getElement()?.classList.toggle('old', !fresh('fused_state') || !httpOK || !snapshot?.position);
 }
 function renderState() {
+  checkTuningSession(snapshot);
   const key = JSON.stringify(snapshot.identity);
   if (key !== identity) {
     identity = key; track = []; trail.setLatLngs([]); lastStateVersion = -1;

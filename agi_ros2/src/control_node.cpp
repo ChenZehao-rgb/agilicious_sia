@@ -1,12 +1,14 @@
 #include "agi_ros2/control_node.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <functional>
 #include <limits>
 #include <memory>
+#include <set>
 #include <stdexcept>
 
 #include "agi_ros2/fc_geographic.h"
@@ -19,6 +21,8 @@
 
 namespace agi_ros2 {
 namespace {
+constexpr std::array<const char*, 10> kMpcNames = {
+        "Q_pos_x", "Q_pos_y", "Q_pos_z", "Q_att_x", "Q_att_y", "Q_att_z", "Q_vel", "R_collective_thrust", "R_body_rates", "exp_decay"};
 constexpr double kUnknownTime = std::numeric_limits<double>::quiet_NaN();
 using agi::hardware::monotonicSeconds;
 using agi::hardware::SafetyGate;
@@ -96,6 +100,12 @@ ControlNode::ControlNode()
 		RCLCPP_INFO(get_logger(), "Loaded trajectory: %s (%zu samples, %.3f s)", trajectory.c_str(), points.size(),
 		            points.back().state.t);
 	}
+	_get_runtime_parameters = create_service<rcl_interfaces::srv::GetParameters>(
+	        "~/get_runtime_parameters",
+	        std::bind(&ControlNode::getRuntimeParameters, this, std::placeholders::_1, std::placeholders::_2));
+	_set_runtime_parameters = create_service<rcl_interfaces::srv::SetParametersAtomically>(
+	        "~/set_runtime_parameters",
+	        std::bind(&ControlNode::setRuntimeParameters, this, std::placeholders::_1, std::placeholders::_2));
 	_state_sub = create_subscription<msg::FusedState>("fused_state", 1, std::bind(&ControlNode::onState, this, std::placeholders::_1));
 	_goal_sub = create_subscription<geometry_msgs::msg::PointStamped>(
 	        "go_to_position", 1, std::bind(&ControlNode::onGoToPosition, this, std::placeholders::_1));
@@ -135,6 +145,110 @@ ControlNode::ControlNode()
 	} else {
 		_timer = create_wall_timer(std::chrono::milliseconds(10), std::bind(&ControlNode::tick, this));
 	}
+}
+
+void ControlNode::getRuntimeParameters(const std::shared_ptr<rcl_interfaces::srv::GetParameters::Request> request,
+                                       std::shared_ptr<rcl_interfaces::srv::GetParameters::Response> response) {
+	const auto trajectory = _pilot->getTrajectoryParameters();
+	const auto controller = _pilot->getMpcController();
+	const auto mpc = controller ? controller->getParameters() : nullptr;
+	for (const auto& name : request->names) {
+		rclcpp::Parameter value(name);
+		if (name == "mode")
+			value = rclcpp::Parameter(name, _mode);
+		else if (name == "controller_type")
+			value = rclcpp::Parameter(name, controller ? "MPC" : "GEO");
+		else if (name == "clock_id")
+			value = rclcpp::Parameter(name, _clock_id);
+		else if (name == "control_session_start")
+			value = rclcpp::Parameter(name, _session_start);
+		else if (name == "go_to_pose_max_vel")
+			value = rclcpp::Parameter(name, trajectory.first);
+		else if (name == "go_to_pose_max_acc")
+			value = rclcpp::Parameter(name, trajectory.second);
+		else if (mpc) {
+			const auto found = std::find(kMpcNames.begin(), kMpcNames.end(), name);
+			const auto index = std::distance(kMpcNames.begin(), found);
+			if (index < 3)
+				value = rclcpp::Parameter(name, mpc->Q_pos_[index]);
+			else if (index < 6)
+				value = rclcpp::Parameter(name, mpc->Q_att_[index - 3]);
+			else if (index == 6) {
+				if ((mpc->Q_vel_.array() == mpc->Q_vel_[0]).all())
+					value = rclcpp::Parameter(name, mpc->Q_vel_[0]);
+				else
+					value = rclcpp::Parameter(name,
+					                          std::vector<double>{mpc->Q_vel_[0], mpc->Q_vel_[1], mpc->Q_vel_[2]});
+			} else if (index == 7)
+				value = rclcpp::Parameter(name, mpc->R_[0]);
+			else if (index == 8)
+				value = rclcpp::Parameter(name, std::vector<double>{mpc->R_[1], mpc->R_[2], mpc->R_[3]});
+			else if (index == 9)
+				value = rclcpp::Parameter(name, mpc->exp_decay_);
+		}
+		response->values.push_back(value.get_parameter_value().to_value_msg());
+	}
+}
+
+void ControlNode::setRuntimeParameters(const std::shared_ptr<rcl_interfaces::srv::SetParametersAtomically::Request> request,
+                                       std::shared_ptr<rcl_interfaces::srv::SetParametersAtomically::Response> response) {
+	const double begin = monotonicSeconds();
+	try {
+		if (request->parameters.empty()) throw std::invalid_argument("empty patch");
+		auto trajectory = _pilot->getTrajectoryParameters();
+		const auto controller = _pilot->getMpcController();
+		const auto candidate = controller ? controller->getParameters() : nullptr;
+		std::set<std::string> seen;
+		bool trajectory_group = false, mpc_group = false;
+		for (const auto& parameter : request->parameters) {
+			const auto& name = parameter.name;
+			if (!seen.insert(name).second) throw std::invalid_argument("duplicate parameter: " + name);
+			const bool is_trajectory = name == "go_to_pose_max_vel" || name == "go_to_pose_max_acc";
+			const auto found = std::find(kMpcNames.begin(), kMpcNames.end(), name);
+			if (!is_trajectory && found == kMpcNames.end()) throw std::invalid_argument("unknown parameter: " + name);
+			trajectory_group |= is_trajectory;
+			mpc_group |= !is_trajectory;
+			if (trajectory_group && mpc_group) throw std::invalid_argument("one group per patch");
+			if (!is_trajectory && !candidate) throw std::invalid_argument("MPC unavailable for GEO");
+			const auto& value = parameter.value;
+			using Type = rcl_interfaces::msg::ParameterType;
+			if (name == "R_body_rates") {
+				if (value.type != Type::PARAMETER_DOUBLE_ARRAY || value.double_array_value.size() != 3)
+					throw std::invalid_argument("R_body_rates requires three numeric elements x/y/z");
+				for (int i = 0; i < 3; ++i) candidate->R_[i + 1] = value.double_array_value[i];
+				continue;
+			}
+			if (value.type != Type::PARAMETER_DOUBLE && value.type != Type::PARAMETER_INTEGER)
+				throw std::invalid_argument("numeric value required: " + name);
+			const double number = value.type == Type::PARAMETER_DOUBLE ? value.double_value : value.integer_value;
+			if (name == "go_to_pose_max_vel")
+				trajectory.first = number;
+			else if (name == "go_to_pose_max_acc")
+				trajectory.second = number;
+			else {
+				const auto index = std::distance(kMpcNames.begin(), found);
+				if (index < 3)
+					candidate->Q_pos_[index] = number;
+				else if (index < 6)
+					candidate->Q_att_[index - 3] = number;
+				else if (index == 6)
+					candidate->Q_vel_.setConstant(number);
+				else if (index == 7)
+					candidate->R_[0] = number;
+				else if (index == 9)
+					candidate->exp_decay_ = number;
+			}
+		}
+		// This callback runs between complete cycles on HardwarePilot's owner executor.
+		response->result.successful = trajectory_group ? _pilot->setTrajectoryParameters(trajectory.first, trajectory.second)
+		                                               : controller->updateParameters(candidate);
+		response->result.reason = response->result.successful ? "installed" : "invalid values or weighted matrix overflow";
+	} catch (const std::invalid_argument& error) {
+		response->result.successful = false;
+		response->result.reason = error.what();
+	}
+	RCLCPP_INFO(get_logger(), "Runtime parameters: installed=%d callback_us=%.1f reason=%s", response->result.successful,
+	            1e6 * (monotonicSeconds() - begin), response->result.reason.c_str());
 }
 
 void ControlNode::onState(msg::FusedState::ConstSharedPtr message) {

@@ -47,6 +47,61 @@ protected:
 	double _now = 10;
 };
 
+TEST_F(HardwareGeo, RuntimeTrajectoryParametersPreserveCurrentReferenceAndAffectNewTargets) {
+	const auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path();
+	PilotParams params;
+	params.directory_ = root / "agi_ros2/config";
+	ASSERT_TRUE(params.load(Yaml(root / "agi_ros2/config/simulation.yaml")["pilot"], "GEO"));
+	auto baseline = std::make_unique<HardwarePilot>(params, [this] { return _now; });
+	const auto paired = [&](bool automatic, const Vector<3>* target = nullptr) {
+		const auto actual = step(automatic, true, true, false, target);
+		_runtime.swap(baseline);
+		_now -= .01;
+		const auto expected = step(automatic, true, true, false, target);
+		_runtime.swap(baseline);
+		EXPECT_TRUE(actual.reference.p.isApprox(expected.reference.p, 1e-12));
+		EXPECT_TRUE(actual.reference.v.isApprox(expected.reference.v, 1e-12));
+		EXPECT_TRUE(actual.reference.a.isApprox(expected.reference.a, 1e-12));
+		EXPECT_TRUE(actual.reference.j.isApprox(expected.reference.j, 1e-12));
+		EXPECT_EQ(actual.online_goal_phase, expected.online_goal_phase);
+		EXPECT_EQ(actual.permit_override, expected.permit_override);
+		return actual;
+	};
+	for (int i = 0; i < 80; ++i) paired(false);
+	ASSERT_TRUE(paired(true).permit_override);
+	const Vector<3> target = _state.p + Vector<3>(20, 0, 0);
+	ASSERT_TRUE(paired(true, &target).goal_accepted);
+	for (int i = 0; i < 100; ++i) _state = paired(true).reference;
+	ASSERT_TRUE(_runtime->setTrajectoryParameters(.7, .4));
+	EXPECT_EQ(_runtime->warmCycles(), 50u);
+	EXPECT_FALSE(_runtime->getMpcController());
+	EXPECT_FALSE(_runtime->setTrajectoryParameters(1, NAN));
+	EXPECT_EQ(_runtime->getTrajectoryParameters(), std::make_pair(.7, .4));
+	// Same completion phase and p/v/a/j through the complete original segment.
+	for (int i = 0; i < 1800; ++i) _state = paired(true).reference;
+	for (const double distance : {10., .1}) {
+		const Vector<3> next = _state.p + Vector<3>(distance, 0, 0);
+		const auto accepted = step(true, true, true, false, &next);
+		ASSERT_TRUE(accepted.goal_accepted);
+		CapturedReference expected;
+		expected.capture(_state, _now, false);
+		ASSERT_TRUE(expected.goToPosition(next, _now, .7, .4, params.quad_.omega_max_.z()));
+		const double start = _now;
+		for (int i = 0; i < 2100; ++i) {
+			const auto actual = step(true);
+			const auto point = expected.getSetpoint(_state, _now).state;
+			EXPECT_TRUE(actual.reference.p.isApprox(point.p, 1e-9));
+			EXPECT_TRUE(actual.reference.v.isApprox(point.v, 1e-9));
+			EXPECT_LE(actual.reference.v.norm(), .7 + 1e-9);
+			EXPECT_LE(actual.reference.a.norm(), .4 + 1e-9);
+			_state = actual.reference;
+			if (_now - start > 1 && !expected.movingAt(_now)) break;
+		}
+		EXPECT_TRUE(_state.p.isApprox(next));
+		step(true);
+	}
+}
+
 TEST_F(HardwareGeo, CapturesPositionAndYawOnlyAfterHealthyArmedAutoEdge) {
 	for (int i = 0; i < 80; ++i) EXPECT_FALSE(step(true).permit_override);
 	ASSERT_EQ(_runtime->warmCycles(), 50u);

@@ -2,6 +2,8 @@
 
 #include <gtest/gtest.h>
 
+#include <limits>
+
 #include "agilib/controller/mpc/mpc_params.hpp"
 #include "agilib/math/gravity.hpp"
 #include "agilib/simulator/quadrotor_simulator.hpp"
@@ -233,4 +235,86 @@ TEST(MPC, InvalidReferenceClearsPreviousOutput) {
 	references.front().input.collective_thrust = -1.0;
 	EXPECT_FALSE(controller.getCommand(state, references, &prediction));
 	EXPECT_FALSE(controller.getCommand(state, references, nullptr));
+}
+
+namespace agi::acados {
+#include "acados/ocp_nlp/ocp_nlp_cost_nls.h"
+#include "blasfeo_d_aux.h"
+}  // namespace agi::acados
+
+namespace agi {
+// Read the installed acados matrices, not a duplicate parameter-side cache.
+class MpcRuntimeTestAccess {
+public:
+	static Matrix<acados::MpcWrapper::NY, acados::MpcWrapper::NY> stage(MpcController& controller, int index) {
+		auto& wrapper = controller._wrapper;
+		Matrix<acados::MpcWrapper::NY, acados::MpcWrapper::NY> result;
+		auto* model = static_cast<acados::ocp_nlp_cost_nls_model*>(wrapper._nlp_in->cost[index]);
+		acados::blasfeo_unpack_dmat(result.rows(), result.cols(), &model->W, 0, 0, result.data(), result.rows());
+		return result;
+	}
+	static Matrix<acados::MpcWrapper::NYN, acados::MpcWrapper::NYN> terminal(MpcController& controller) {
+		auto& wrapper = controller._wrapper;
+		Matrix<acados::MpcWrapper::NYN, acados::MpcWrapper::NYN> result;
+		auto* model = static_cast<acados::ocp_nlp_cost_nls_model*>(wrapper._nlp_in->cost[acados::MpcWrapper::N]);
+		acados::blasfeo_unpack_dmat(result.rows(), result.cols(), &model->W, 0, 0, result.data(), result.rows());
+		return result;
+	}
+};
+}  // namespace agi
+
+TEST(MPC, RuntimeWeightsAreInstalledAtomicallyAndUsedByNextSolve) {
+	using W = acados::MpcWrapper;
+	MpcController controller(Quadrotor(M, L), std::make_shared<MpcParameters>());
+	QuadState state;
+	state.setZero();
+	QuadState target = state;
+	target.p << .2, -.1, .3;
+	SetpointVector reference{Setpoint(target, Command(0.0, G, Vector<3>::Zero()))}, prediction;
+	for (int i = 0; i < 5; ++i) ASSERT_TRUE(controller.getCommand(state, reference, &prediction));
+	const auto before = prediction.front().input;
+	auto candidate = controller.getParameters();
+	candidate->Q_pos_ *= 4;
+	candidate->Q_vel_.setConstant(5);
+	candidate->R_ << 1, 100, 110, 120;
+	candidate->exp_decay_ = 1.01;
+	EXPECT_NE(controller.getParameters()->Q_pos_.x(), candidate->Q_pos_.x());
+	ASSERT_TRUE(controller.updateParameters(candidate));
+	Vector<W::NY> diagonal;
+	diagonal << candidate->Q_pos_, candidate->Q_att_, candidate->Q_vel_, candidate->R_;
+	const Matrix<W::NY, W::NY> weights = diagonal.asDiagonal();
+	for (int i = 0; i < W::N; ++i) EXPECT_TRUE(MpcRuntimeTestAccess::stage(controller, i).isApprox(std::pow(1.01, i) * weights, 1e-12));
+	const Matrix<W::NYN, W::NYN> terminal = std::pow(1.01, W::N) * weights.topLeftCorner<W::NYN, W::NYN>();
+	EXPECT_TRUE(MpcRuntimeTestAccess::terminal(controller).isApprox(terminal, 1e-12));
+	for (int i = 0; i < 5; ++i) ASSERT_TRUE(controller.getCommand(state, reference, &prediction));
+	EXPECT_GT(std::abs(before.collective_thrust - prediction.front().input.collective_thrust) +
+	                  (before.omega - prediction.front().input.omega).norm(),
+	          .01);
+	for (const double invalid : {-1., double(NAN), double(INFINITY), 1e100}) {
+		auto rejected = controller.getParameters();
+		rejected->exp_decay_ = invalid;
+		EXPECT_FALSE(controller.updateParameters(rejected));
+		EXPECT_DOUBLE_EQ(controller.getParameters()->exp_decay_, 1.01);
+		for (int i = 0; i < W::N; ++i)
+			EXPECT_TRUE(MpcRuntimeTestAccess::stage(controller, i).isApprox(std::pow(1.01, i) * weights, 1e-12));
+		EXPECT_TRUE(MpcRuntimeTestAccess::terminal(controller).isApprox(terminal, 1e-12));
+	}
+	// Finite gamma and finite stage costs can still overflow only at the terminal.
+	auto terminal_overflow = controller.getParameters();
+	terminal_overflow->Q_pos_.x() = std::numeric_limits<double>::max() / std::pow(1.01, W::N - .5);
+	ASSERT_TRUE(std::isfinite(terminal_overflow->Q_pos_.x() * std::pow(1.01, W::N - 1)));
+	EXPECT_FALSE(controller.updateParameters(terminal_overflow));
+	for (int i = 0; i < W::N; ++i) EXPECT_TRUE(MpcRuntimeTestAccess::stage(controller, i).isApprox(std::pow(1.01, i) * weights, 1e-12));
+	EXPECT_TRUE(MpcRuntimeTestAccess::terminal(controller).isApprox(terminal, 1e-12));
+	auto invalid_weight = controller.getParameters();
+	invalid_weight->R_[2] = -1;
+	EXPECT_FALSE(controller.updateParameters(invalid_weight));
+	candidate->Q_pos_.setZero();
+	candidate->Q_att_.setZero();
+	candidate->Q_vel_.setZero();
+	candidate->R_.setZero();
+	candidate->exp_decay_ = .95;
+	ASSERT_TRUE(controller.updateParameters(candidate));
+	for (int i = 0; i < W::N; ++i) EXPECT_TRUE(MpcRuntimeTestAccess::stage(controller, i).isZero());
+	EXPECT_TRUE(MpcRuntimeTestAccess::terminal(controller).isZero());
 }

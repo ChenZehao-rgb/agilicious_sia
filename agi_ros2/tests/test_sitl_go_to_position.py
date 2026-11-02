@@ -58,7 +58,10 @@ def main():
     parser.add_argument('--geographic', action='store_true', help='Two WGS84/MSL goals from the actual FC origin')
     parser.add_argument('--map-ui', action='store_true', help='Send geographic goals through the local UI HTTP server')
     parser.add_argument('--pause-hover', action='store_true', help='Browser goal/pause clicks in translation and yaw; requires Playwright/Chrome')
+    parser.add_argument('--runtime-tuning', action='store_true', help='Apply trajectory/MPC patches during flight through HTTP')
     args = parser.parse_args()
+    if args.runtime_tuning and not (args.map_ui and args.geographic and args.state_source == 'fc_fused'):
+        parser.error('--runtime-tuning requires --map-ui --geographic --state-source fc_fused')
     if args.pause_hover and not (args.map_ui and args.geographic):
         parser.error('--pause-hover requires --map-ui --geographic --state-source fc_fused')
     if args.map_ui and not args.geographic:
@@ -71,7 +74,7 @@ def main():
     def http(path, payload=None):
         request = urllib.request.Request(ui_url + path, None if payload is None else json.dumps(payload).encode(),
                                          {'Content-Type': 'application/json'})
-        with urllib.request.urlopen(request, timeout=2) as response:
+        with urllib.request.urlopen(request, timeout=6) as response:
             return json.load(response)
 
     fc_state = args.state_source == 'fc_fused'
@@ -124,12 +127,14 @@ def main():
                        yaw=yaw(msg.orientation), rates=xyz(msg.body_rates), fc_flags=msg.fc_flags)
         elif topic == 'computation_status':
             for key in ('warm_cycles', 'trajectory_active', 'hover_stable', 'reference_elapsed', 'solve_seconds', 'cycle_seconds',
-                        'state_age', 'navigation_age', 'imu_age', 'reason', 'controller_type', 'controller_success'):
+                        'state_age', 'navigation_age', 'imu_age', 'reason', 'controller_type', 'controller_success',
+                        'control_session_start', 'warm_resets'):
                 row[key] = getattr(msg, key)
         elif topic == 'control_command':
             row.update(permit_override=msg.permit_override, sequence=msg.sequence, total_thrust=msg.total_thrust,
                        body_rates=xyz(msg.body_rates), mode=msg.mode, evidence_now=msg.evidence.now,
-                       imu_time=msg.evidence.imu_time, imu_sample_time=msg.evidence.imu_sample_time)
+                       imu_time=msg.evidence.imu_time, imu_sample_time=msg.evidence.imu_sample_time,
+                       control_start_steady_time=msg.control_start_steady_time)
         elif topic == 'output_status':
             for key in ('override_active', 'reason', 'last_fault', 'fault_count', 'command_age', 'write_seconds'):
                 row[key] = getattr(msg, key)
@@ -303,6 +308,14 @@ def main():
                     longitude=origin.longitude+lon_units*1e-7, altitude_msl=origin.altitude+2.))
             targets = [(500*1.1131949424743652*.01*origin.longitude_scale, 100*1.1131949424743652*.01, 2.),
                        (-200*1.1131949424743652*.01*origin.longitude_scale, 500*1.1131949424743652*.01, 2.)]
+        if args.runtime_tuning:
+            targets = [(16., 0., 2.), (28., 0., 2.)]
+            geographic_goals = [dict(latitude=origin.latitude+y/111319.49424743652,
+                                    longitude=origin.longitude+x/(111319.49424743652*origin.longitude_scale),
+                                    altitude_msl=origin.altitude+z) for x,y,z in targets]
+            initial_tuning = http('/api/tuning')
+            assert initial_tuning['controller_type'] == 'MPC'
+            result['runtime_tuning'] = dict(initial=initial_tuning)
         if args.pause_hover:
             from playwright.sync_api import sync_playwright
             with sync_playwright() as playwright:
@@ -450,6 +463,34 @@ def main():
                 assert latest['goal_status'].active_request_sequence == accepted_sequence
                 assert latest['goal_status'].active_valid
                 event('rejected_B_preserved_A', active_sequence=accepted_sequence)
+            if args.runtime_tuning and index == 0:
+                wait_for(lambda: norm(xyz(latest['reference'].twist.twist.linear)) > .3, 25, 'A moving before tuning')
+                before = http('/api/tuning')
+                tuning_wall = time.monotonic()
+                trajectory_result = http('/api/tuning', dict(group='trajectory', values={'go_to_pose_max_vel':1.2,
+                                                                                       'go_to_pose_max_acc':.8}))
+                assert trajectory_result['status'] == 'applied', trajectory_result
+                mpc_result = http('/api/tuning', dict(group='mpc', values={'Q_pos_x':before['mpc']['Q_pos_x']*1.02}))
+                assert mpc_result['status'] == 'applied', mpc_result
+                assert mpc_result['current']['control_session_start'] == before['control_session_start']
+                assert mpc_result['current']['mpc']['Q_pos_x'] == before['mpc']['Q_pos_x']*1.02
+                assert mpc_result['current']['trajectory'] == {'go_to_pose_max_vel':1.2,'go_to_pose_max_acc':.8}
+                event('runtime_parameters_applied_while_moving', trajectory=trajectory_result, mpc=mpc_result,
+                      active_sequence=accepted_sequence)
+                delay(.5)
+                assert latest['goal_status'].active_request_sequence == accepted_sequence
+                assert latest['computation_status'].trajectory_active and latest['computation_status'].warm_cycles == 50
+                window = [r for r in rows['computation_status'] if tuning_wall-.2 <= r['wall'] <= tuning_wall+.5]
+                commands_window = [r for r in rows['control_command'] if tuning_wall-.2 <= r['control_start_steady_time'] <= tuning_wall+.5]
+                assert window and commands_window
+                assert all(r['controller_success'] and r['trajectory_active'] for r in window)
+                assert all(r['permit_override'] for r in commands_window)
+                times = [r['control_start_steady_time'] for r in commands_window]
+                result['runtime_tuning'].update(applied_wall=tuning_wall, trajectory=trajectory_result, mpc=mpc_result,
+                    cycle_interval_max_s=max(b-a for a,b in zip(times,times[1:])),
+                    solve_max_s=max(r['solve_seconds'] for r in window),
+                    cycle_max_s=max(r['cycle_seconds'] for r in window),
+                    warm_resets_before=window[0]['warm_resets'], warm_resets_after=window[-1]['warm_resets'])
             stable_window(target, 15 if args.yaw_chain or args.geographic else 3, 90, require_active=True)
             wait_for(lambda: latest['goal_status'].active_phase == GoalStatus.STABLE, 3, 'structured stable phase')
             if args.map_ui:
@@ -476,6 +517,12 @@ def main():
             reference_rows = [r for r in rows['reference'] if accepted['stamp']+.02 <= r['stamp']
                               and goal_start <= r['wall'] <= end_wall]
             assert reference_rows
+            if args.runtime_tuning:
+                peak = max(norm(r['velocity']) for r in reference_rows)
+                expected_peak = initial_tuning['trajectory']['go_to_pose_max_vel'] if index == 0 else 1.2
+                assert abs(peak-expected_peak) < .001, (peak, expected_peak)
+                goal_result['reference_peak_speed'] = peak
+                goal_result['trajectory_parameters_used'] = 'original A' if index == 0 else 'updated B'
             turn_rows = [r for r in reference_rows if abs(angle_error(r['yaw'], end_heading)) > 1e-4]
             assert all(norm(a-b for a,b in zip(r['position'], start_ref)) < 1e-6 for r in turn_rows), \
                 'translation started before reference turn finished'

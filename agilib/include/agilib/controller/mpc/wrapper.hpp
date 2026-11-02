@@ -3,6 +3,10 @@
 #include "agilib/math/types.hpp"
 #include "agilib/utils/logger.hpp"
 
+namespace agi {
+class MpcRuntimeTestAccess;
+}
+
 namespace agi::acados {
 
 #include "acados_c/external_function_interface.h"
@@ -61,6 +65,7 @@ public:
 	Scalar getDt() const { return _dt; }
 
 private:
+	friend class agi::MpcRuntimeTestAccess;
 	void updateInputConstraints();
 	void updateOnlineParams();
 	void setQuaternionReference(const Vector<4>& attitude, int i);

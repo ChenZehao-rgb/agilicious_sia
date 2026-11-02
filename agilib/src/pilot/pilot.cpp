@@ -40,6 +40,10 @@ Pilot::Pilot(const PilotParams& params, const TimeFunction time_function)
   }
 }
 
+std::shared_ptr<MpcController> Pilot::getMpcController() {
+	return std::dynamic_pointer_cast<MpcController>(getActivePipeline().outer_controller_);
+}
+
 Pilot::~Pilot() {
   if (pipeline_thread_.joinable()) {
     shutdown_ = true;

@@ -6,6 +6,7 @@
   <link rel="stylesheet" href="/leaflet/leaflet.css"><link rel="stylesheet" href="/maplibre/maplibre-gl.css"><link rel="stylesheet" href="/style.css">
   <script defer src="/leaflet/leaflet.js"></script><script defer src="/maplibre/maplibre-gl.js"></script>
   <script defer src="/maplibre/leaflet-maplibre-gl.js"></script><script defer src="/app.js"></script><script defer src="/maps.js"></script>
+  <script defer src="/tuning.js"></script>
 </head>
 <body>
 <header><div class="brand">AGILICIOUS <span>地面站</span></div><div id="connection" class="badge">UI 连接中</div>
@@ -27,6 +28,7 @@
       <p id="map-action" class="detail" role="status"></p><div id="map-storage" class="hint"></div>
     </section>
   </details>
+  <button type="button" id="open-tuning" title="轨迹生成 / MPC 参数">调参</button>
   <button type="button" id="runtime-shutdown" title="关闭板载电脑" aria-label="关闭板载电脑" disabled>
     <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" focusable="false">
       <path d="M12 3v9M6.3 5.7a9 9 0 1 0 11.4 0"/>
@@ -78,5 +80,25 @@
     <section><h2>数据新鲜度</h2><div id="freshness" class="detail">等待遥测</div></section>
   </aside>
 </main>
+<dialog id="tuning-dialog" aria-labelledby="tuning-title">
+  <div class="tuning-heading"><h1 id="tuning-title">运行调参</h1><button id="close-tuning" type="button" autofocus>关闭</button></div>
+  <div id="tuning-identity" class="detail">实际控制器 / 运行模式未知</div>
+  <p id="tuning-read-status" class="detail" role="status">尚未读取</p>
+  <button id="tuning-read" type="button">读取当前值</button>
+  <p class="hint">仅本次运行有效，重启按配置文件加载。读取保留未提交草稿；显式点击对应应用按钮才生效。</p>
+  <section><h2>轨迹生成</h2><div id="tuning-fields-trajectory" class="tuning-grid"></div>
+    <p class="hint">用于后续新生成的在线轨迹；当前轨迹保持原样。速度和加速度为规划参考约束，短距离未必达到最大速度。</p>
+    <button type="button" id="tuning-apply-trajectory" class="primary">应用轨迹参数</button>
+    <button type="button" id="tuning-revert-trajectory">撤销轨迹草稿</button>
+    <p id="tuning-result-trajectory" class="detail" role="status"></p>
+  </section>
+  <section><h2>MPC 权重</h2><div id="tuning-fields-mpc" class="tuning-grid"></div>
+    <p class="hint">这些参数调整各项误差与控制修正的相对权重。实际响应由权重组合、模型和约束共同决定，增大某一项不保证响应一定更快。</p>
+    <p class="hint">应用后用于后续 MPC 求解。悬停参数名称或输入框可查看说明。</p>
+    <button type="button" id="tuning-apply-mpc" class="primary">应用 MPC 参数</button>
+    <button type="button" id="tuning-revert-mpc">撤销 MPC 草稿</button>
+    <p id="tuning-result-mpc" class="detail" role="status"></p>
+  </section>
+</dialog>
 </body>
 </html>

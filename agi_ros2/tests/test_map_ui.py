@@ -48,6 +48,20 @@ def mapping():
 
 
 class DisplayTests(unittest.TestCase):
+    def test_tuning_patch_types_ranges_and_duplicate_keys(self):
+        for group, values in [
+                ('trajectory', {'go_to_pose_max_vel': True}),
+                ('trajectory', {'go_to_pose_max_vel': 0}),
+                ('mpc', {'Q_pos_x': -1}), ('mpc', {'Q_vel': math.nan}),
+                ('mpc', {'R_body_rates': [1, 2]}), ('mpc', {'R_body_rates': [1, True, 3]}),
+                ('mpc', {'R_body_rates_x': 1}), ('mpc', {'exp_decay': 0}),
+                ('trajectory', {'Q_pos_x': 1})]:
+            with self.assertRaises(ValueError): map_ui.tuning_patch({'group': group, 'values': values})
+        values = map_ui.tuning_patch({'group': 'mpc', 'values': {'Q_pos_x': 0, 'exp_decay': 1.01, 'R_body_rates': [1, 2, 3]}})
+        self.assertEqual(values[2].value.double_array_value.tolist(), [1., 2., 3.])
+        with self.assertRaises(ValueError):
+            json.loads('{"values":{"Q_pos_x":1,"Q_pos_x":2}}', object_pairs_hook=map_ui.unique_json)
+
     def test_unavailable_position_reports_recorded_fc_reason(self):
         # User SITL bag 2026-11-01 18:49: GPS fix exists, but disarmed
         # FC reports flags=174, no XY fusion and no valid horizontal origin.
@@ -155,6 +169,74 @@ class DDSTests(unittest.TestCase):
         self.executor.shutdown()
         for node in (self.ui, self.relay, self.source):
             node.destroy_node()
+
+    def test_tuning_http_rejects_invalid_without_sending_and_reports_timeout(self):
+        server = map_ui.make_server(self.ui, map_ui.MBTiles(None), '127.0.0.1', 0)
+        thread = threading.Thread(target=server.serve_forever)
+        thread.start()
+        base = f'http://127.0.0.1:{server.server_port}'
+        def post(body, origin=None):
+            headers = {'Content-Type':'application/json'}
+            if origin: headers['Origin'] = origin
+            return urllib.request.urlopen(urllib.request.Request(base+'/api/tuning', body.encode(), headers))
+        try:
+            with patch.object(self.ui, 'tuning_call') as remote:
+                for body in ['{"group":"mpc","values":{"Q_pos_x":1,"Q_pos_x":2}}',
+                             '{"group":"mpc","values":{"Q_pos_x":true}}',
+                             '{"group":"mpc","values":{"R_body_rates":[1,2]}}',
+                             '{"group":"mpc","values":{"Q_vel":NaN}}',
+                             '{"group":"trajectory","values":{"Q_pos_x":1}}']:
+                    with self.assertRaises(urllib.error.HTTPError) as error: post(body)
+                    self.assertEqual(error.exception.code, 400)
+                remote.assert_not_called()
+            body = '{"group":"trajectory","values":{"go_to_pose_max_vel":1.5}}'
+            with self.assertRaises(urllib.error.HTTPError) as error: post(body, 'http://unrelated.test')
+            self.assertEqual(error.exception.code, 403)
+            with patch.object(self.ui, 'tuning_call', side_effect=TimeoutError('结果未确认')) as remote:
+                with self.assertRaises(urllib.error.HTTPError) as error: post(body)
+                self.assertEqual(error.exception.code, 503)
+                self.assertEqual(json.load(error.exception)['status'], 'unconfirmed')
+                self.assertEqual(remote.call_count, 1)
+        finally:
+            server.shutdown(); server.server_close(); thread.join()
+
+    def test_tuning_service_bridge_confirmation_and_readback_failure(self):
+        from rcl_interfaces.srv import GetParameters, SetParametersAtomically
+        installed = {'go_to_pose_max_vel': 2., 'go_to_pose_max_acc': 1., 'mode': 'sitl',
+                     'controller_type': 'GEO', 'clock_id': 'fixture', 'control_session_start': 10.}
+        calls = []
+        def get(request, response):
+            response.values = [Parameter(name, value=installed.get(name)).get_parameter_value() for name in request.names]
+            return response
+        def set_values(request, response):
+            calls.append(request)
+            if request.parameters[0].name.startswith('Q_'):
+                response.result.reason = 'GEO'; return response
+            for item in request.parameters: installed[item.name] = Parameter.from_parameter_msg(item).value
+            response.result.successful = True
+            return response
+        self.source.create_service(GetParameters, 'flight_control/get_runtime_parameters', get)
+        self.source.create_service(SetParametersAtomically, 'flight_control/set_runtime_parameters', set_values)
+        self.run_for(.5)
+        with ThreadPoolExecutor() as worker:
+            def call(function, *args):
+                future = worker.submit(function, *args)
+                until = time.monotonic() + 4
+                while not future.done() and time.monotonic() < until: self.run_for(.01)
+                return future.result(timeout=1)
+            current = call(self.ui.get_tuning)
+            self.assertEqual(current['controller_type'], 'GEO')
+            self.assertIsNone(current['mpc']['Q_pos_x'])
+            result = call(self.ui.set_tuning, {'group':'trajectory', 'values':{'go_to_pose_max_vel':1.5}})
+            self.assertEqual(result['status'], 'applied')
+            self.assertEqual(result['current']['trajectory'], {'go_to_pose_max_vel':1.5, 'go_to_pose_max_acc':1.})
+            result = call(self.ui.set_tuning, {'group':'mpc', 'values':{'Q_pos_x':2}})
+            self.assertEqual(result['status'], 'rejected')
+            with patch.object(self.ui, 'get_tuning', side_effect=TimeoutError):
+                result = call(self.ui.set_tuning, {'group':'trajectory', 'values':{'go_to_pose_max_acc':.8}})
+                self.assertEqual(result['status'], 'applied')
+                self.assertIn('回读未完成', result['message'])
+            self.assertEqual(len(calls), 3)
 
     def run_for(self, duration, publish=None):
         end, next_source, count = time.monotonic() + duration, time.monotonic(), 0

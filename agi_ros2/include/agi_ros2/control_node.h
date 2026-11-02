@@ -21,6 +21,8 @@
 #include "agilib/pilot/hardware_pilot.hpp"
 #include "geometry_msgs/msg/point_stamped.hpp"
 #include "nav_msgs/msg/odometry.hpp"
+#include "rcl_interfaces/srv/get_parameters.hpp"
+#include "rcl_interfaces/srv/set_parameters_atomically.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/empty.hpp"
 #include "std_msgs/msg/float64_multi_array.hpp"
@@ -34,6 +36,12 @@ public:
 	ControlNode();
 
 private:
+	void getRuntimeParameters(const std::shared_ptr<rcl_interfaces::srv::GetParameters::Request> request,
+	                          std::shared_ptr<rcl_interfaces::srv::GetParameters::Response> response);
+	void setRuntimeParameters(const std::shared_ptr<rcl_interfaces::srv::SetParametersAtomically::Request> request,
+	                          std::shared_ptr<rcl_interfaces::srv::SetParametersAtomically::Response> response);
+	rclcpp::Service<rcl_interfaces::srv::GetParameters>::SharedPtr _get_runtime_parameters;
+	rclcpp::Service<rcl_interfaces::srv::SetParametersAtomically>::SharedPtr _set_runtime_parameters;
 	void onState(msg::FusedState::ConstSharedPtr message);
 	void onOutputStatus(msg::OutputStatus::ConstSharedPtr message);
 	void onGoToPosition(geometry_msgs::msg::PointStamped::ConstSharedPtr message);

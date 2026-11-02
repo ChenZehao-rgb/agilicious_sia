@@ -80,3 +80,12 @@ button:hover { background: #455d70; } button:disabled { opacity: .5; cursor: wai
 #runtime-logs { margin-top: 8px; font-size: 12px; }
 #runtime-logs summary { cursor: pointer; color: #9caebd; }
 .runtime-running { color: #86e1ad; }
+
+#tuning-dialog { width: min(820px, 95vw); max-height: 90dvh; overflow-y: auto; color: #e7edf3; background: #20272f; border: 1px solid #516374; border-radius: 8px; padding: 22px; }
+#tuning-dialog::backdrop { background: #0009; }
+.tuning-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+#tuning-dialog section { margin-top: 20px; border-top: 1px solid #3c4650; padding-top: 18px; }
+.tuning-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+.tuning-grid label { display: block; font-size: 12px; margin-bottom: 6px; overflow-wrap: anywhere; }
+.tuning-grid label[title] { cursor: help; }
+@media (max-width: 620px) { .tuning-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

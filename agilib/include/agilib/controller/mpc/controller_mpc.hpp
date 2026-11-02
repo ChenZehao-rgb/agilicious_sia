@@ -31,6 +31,7 @@ public:
 	void logTiming() const override;
 
 private:
+	friend class MpcRuntimeTestAccess;
 	using Wrapper = acados::MpcWrapper;
 	bool reset(const Vector<Wrapper::NX>& state);
 

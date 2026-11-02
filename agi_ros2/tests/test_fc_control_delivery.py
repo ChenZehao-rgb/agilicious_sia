@@ -39,7 +39,7 @@ def distribution(values):
 
 
 class DeliveryHarness(ShadowHarness):
-    def __init__(self, output=False, shadow=False):
+    def __init__(self, output=False, shadow=False, controller=None):
         super().__init__()
         self.output = output
         self.age = .00374
@@ -58,6 +58,7 @@ class DeliveryHarness(ShadowHarness):
                            ('output_status', OutputStatus), ('output_timing', OutputTiming)]:
             self.subscribe(topic, cls)
         common = dict(runtime_config=str(ROOT/'agi_ros2/config/hardware.yaml'), shadow_only=shadow)
+        if controller: common['controller'] = controller
         if output:
             self.start_node('command_output_node', device=os.ttyname(self.slave), **common,
                             **{f'msp.{name}.enabled':False for name in ('attitude','rc','status','analog','battery','gps')})
@@ -155,6 +156,110 @@ class DeliveryTests(unittest.TestCase):
     def setUpClass(cls): rclpy.init()
     @classmethod
     def tearDownClass(cls): rclpy.shutdown()
+
+    def test_runtime_parameters_geo_without_position(self):
+        from rcl_interfaces.srv import GetParameters, SetParametersAtomically
+        from rclpy.parameter import Parameter
+        h = DeliveryHarness(controller='GEO')
+        self.addCleanup(h.close)
+        h.stopped = True
+        getter = h.node.create_client(GetParameters, 'flight_control/get_runtime_parameters')
+        setter = h.node.create_client(SetParametersAtomically, 'flight_control/set_runtime_parameters')
+        h.run(.5)
+        def call(client, request):
+            future = client.call_async(request)
+            deadline = time.monotonic() + 2
+            while not future.done() and time.monotonic() < deadline: h.run(.01)
+            self.assertTrue(future.done())
+            return future.result()
+        values = call(getter, GetParameters.Request(names=['controller_type', 'Q_pos_x', 'go_to_pose_max_vel'])).values
+        self.assertEqual(values[0].string_value, 'GEO')
+        self.assertEqual(values[1].type, 0)
+        result = call(setter, SetParametersAtomically.Request(parameters=[
+            Parameter('go_to_pose_max_vel', value=1.3).to_parameter_msg()])).result
+        self.assertTrue(result.successful)
+        result = call(setter, SetParametersAtomically.Request(parameters=[
+            Parameter('Q_pos_x', value=60.).to_parameter_msg()])).result
+        self.assertFalse(result.successful)
+        self.assertIn('GEO', result.reason)
+        values = call(getter, GetParameters.Request(names=['go_to_pose_max_vel'])).values
+        self.assertEqual(values[0].double_value, 1.3)
+
+    def test_runtime_parameter_services_install_between_active_cycles(self):
+        from rcl_interfaces.srv import GetParameters, SetParametersAtomically
+        from rcl_interfaces.msg import Parameter as ParameterMsg
+        from rclpy.parameter import Parameter
+        h = DeliveryHarness()
+        self.addCleanup(h.close)
+        get_client = h.node.create_client(GetParameters, 'flight_control/get_runtime_parameters')
+        set_client = h.node.create_client(SetParametersAtomically, 'flight_control/set_runtime_parameters')
+        def call(client, request):
+            future = client.call_async(request)
+            deadline = time.monotonic() + 3
+            while not future.done() and time.monotonic() < deadline: h.run(.005)
+            self.assertTrue(future.done())
+            return future.result()
+        def get(names):
+            response = call(get_client, GetParameters.Request(names=names))
+            return {name: Parameter.from_parameter_msg(
+                ParameterMsg(name=name, value=value)).value
+                for name, value in zip(names, response.values)}
+        def patch(values):
+            return call(set_client, SetParametersAtomically.Request(parameters=[
+                Parameter(name, value=value).to_parameter_msg() for name, value in values])).result
+        h.run(.5)
+        self.assertTrue(get_client.service_is_ready())
+        # Before AUTO and without any hover requirement, installation is allowed.
+        self.assertTrue(patch([('go_to_pose_max_vel', 1.5)]).successful)
+        original = get(['go_to_pose_max_vel', 'go_to_pose_max_acc', 'Q_pos_x', 'Q_pos_y', 'Q_vel',
+                        'R_body_rates', 'exp_decay', 'control_session_start', 'controller_type'])
+        self.assertEqual(original['controller_type'], 'MPC')
+        h.run(1.5)
+        h.auto = True
+        h.run(.2)
+        self.assertTrue(h.received['computation_status'][-1].trajectory_active)
+        warm_resets = h.received['computation_status'][-1].warm_resets
+        h.subscribe('goal_status', GoalStatus)
+        goal = PointStamped()
+        goal.header.frame_id = 'odom'
+        goal.point.x, goal.point.z = 3., 1.
+        h.publisher('go_to_position', PointStamped).publish(goal)
+        h.run(.25)
+        self.assertFalse(h.received['computation_status'][-1].hover_stable)
+        begin = time.monotonic()
+        begin_index = len(h.computations())
+        self.assertTrue(patch([('go_to_pose_max_vel', .8)]).successful)
+        self.assertTrue(patch([('Q_pos_x', original['Q_pos_x']*1.05), ('Q_vel', 5.),
+                               ('R_body_rates', [100., 101., 102.]), ('exp_decay', 1.001)]).successful)
+        current = get(list(original))
+        self.assertEqual(current['go_to_pose_max_vel'], .8)
+        self.assertEqual(current['go_to_pose_max_acc'], original['go_to_pose_max_acc'])
+        self.assertEqual(current['Q_pos_x'], original['Q_pos_x']*1.05)
+        self.assertEqual(current['Q_pos_y'], original['Q_pos_y'])
+        self.assertEqual(current['Q_vel'], 5.)
+        self.assertEqual(list(current['R_body_rates']), [100.,101.,102.])
+        self.assertEqual(current['control_session_start'], original['control_session_start'])
+        for values in [[('go_to_pose_max_vel', 1.), ('go_to_pose_max_acc', -1.)],
+                       [('Q_pos_x', -1.)], [('Q_pos_x', True)], [('Q_pos_x', math.nan)],
+                       [('R_body_rates', [1.,2.])], [('Q_pos_x', 1.), ('Q_pos_x', 2.)],
+                       [('exp_decay', 1e100)], [('go_to_pose_max_vel', 1.), ('Q_pos_x', 1.)],
+                       [('unknown', 1.)]]:
+            self.assertFalse(patch(values).successful, values)
+            self.assertEqual(get(list(original)), current)
+        h.run(.5)
+        window = h.computations()[begin_index:]
+        self.assertTrue(window)
+        self.assertTrue(all(c.controller_success and c.trajectory_active and c.warm_cycles == 50 for c in window))
+        self.assertTrue(all(c.warm_resets == warm_resets for c in window))
+        commands = [c for c in h.received['control_command'] if c.control_start_steady_time >= begin]
+        self.assertTrue(all(c.permit_override for c in commands))
+        stamps = [c.control_start_steady_time for c in commands]
+        evidence = dict(callback_log=''.join(Path(stream.name).read_text() for stream in h.logs),
+                        cycle_seconds=distribution(c.cycle_seconds for c in window),
+                        solve_seconds=distribution(c.solve_seconds for c in window),
+                        cycle_intervals=distribution(b-a for a,b in zip(stamps,stamps[1:])),
+                        session=current['control_session_start'])
+        print('RUNTIME_PARAMETER_EVIDENCE', json.dumps(evidence), flush=True)
 
     def online_goal_scenario(self, shadow, geographic=False):
         h = DeliveryHarness(shadow=shadow)

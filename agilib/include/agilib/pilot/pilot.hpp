@@ -11,6 +11,8 @@
 
 namespace agi {
 
+class MpcController;
+
 class Pilot {
  public:
   Pilot(const PilotParams& params, const TimeFunction time_function);
@@ -47,6 +49,7 @@ class Pilot {
   void imuCallback(const ImuSample& imu);
   void motorSpeedCallback(const Vector<4>& mot);
 
+	std::shared_ptr<MpcController> getMpcController();
   Command getCommand() const;
   /// Reference the controller is tracking, as produced by the sampler.
   /// getOuterSetpoints() returns the controller's own prediction instead,

@@ -152,20 +152,28 @@ bool MpcController::updateParameters(const Quadrotor& quad) {
 bool MpcController::updateParameters(const std::shared_ptr<MpcParameters>& params) {
 	if (!params || !params->valid()) return false;
 	std::lock_guard<std::mutex> guard(_acados_mutex);
-	_params = params;
 	const Matrix<Wrapper::NQ, Wrapper::NQ> Q =
 	        (Vector<Wrapper::NQ>() << params->Q_pos_, params->Q_att_, params->Q_vel_).finished().asDiagonal();
 	Matrix<Wrapper::NY, Wrapper::NY> W = Matrix<Wrapper::NY, Wrapper::NY>::Zero();
 	W.topLeftCorner<Wrapper::NQ, Wrapper::NQ>() = Q;
 	W.bottomRightCorner<Wrapper::NU, Wrapper::NU>() = params->R_.asDiagonal();
-	_wrapper.setCosts(W.replicate(1, Wrapper::N), params->exp_decay_);
-	_wrapper.setCostN(Q, params->exp_decay_);
+	// Preflight the exact matrices before touching any live solver cost.
+	Matrix<Wrapper::NY, Wrapper::NY * Wrapper::N> stages;
+	for (int i = 0; i < Wrapper::N; ++i) {
+		stages.block<Wrapper::NY, Wrapper::NY>(0, i * Wrapper::NY) = std::pow(params->exp_decay_, i) * W;
+	}
+	const Matrix<Wrapper::NQ, Wrapper::NQ> terminal = std::pow(params->exp_decay_, Wrapper::N) * Q;
+	if (!stages.allFinite() || !terminal.allFinite()) return false;
+	auto installed = std::make_shared<MpcParameters>(*params);
+	_wrapper.setCosts(stages);
+	_wrapper.setCostN(terminal);
+	_params = std::move(installed);
 	return true;
 }
 
 std::shared_ptr<MpcParameters> MpcController::getParameters() {
 	std::lock_guard<std::mutex> guard(_acados_mutex);
-	return _params;
+	return std::make_shared<MpcParameters>(*_params);
 }
 
 }  // namespace agi

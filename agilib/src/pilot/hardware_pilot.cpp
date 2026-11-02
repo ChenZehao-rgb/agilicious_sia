@@ -57,6 +57,24 @@ HardwarePilot::HardwarePilot(const PilotParams& params, TimeFunction clock, Time
 	_pilot->enable(false);
 }
 
+std::pair<double, double> HardwarePilot::getTrajectoryParameters() const {
+	checkOwner();
+	return {_go_to_pose_max_vel, _go_to_pose_max_acc};
+}
+
+bool HardwarePilot::setTrajectoryParameters(double max_velocity, double max_acceleration) {
+	checkOwner();
+	if (!std::isfinite(max_velocity) || max_velocity <= 0 || !std::isfinite(max_acceleration) || max_acceleration <= 0) return false;
+	_go_to_pose_max_vel = max_velocity;
+	_go_to_pose_max_acc = max_acceleration;
+	return true;
+}
+
+std::shared_ptr<MpcController> HardwarePilot::getMpcController() {
+	checkOwner();
+	return _pilot->getMpcController();
+}
+
 bool HardwarePilot::setTrajectory(const SetpointVector& points) {
 	checkOwner();
 	if (_reference_active || points.size() < 2 || points.front().state.t != 0) return false;
