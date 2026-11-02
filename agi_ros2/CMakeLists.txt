@@ -87,11 +87,11 @@ install(FILES MAP_UI.zh-CN.md MAVLINK_FC_FUSED.md README.md MAVLINK_SENSORS.md S
   DESTINATION share/${PROJECT_NAME})
 install(DIRECTORY test/results/rate_mpc_20260922 test/results/fc_fused_20261026 test/results/map_ui_20261101
   DESTINATION share/${PROJECT_NAME}/test/results OPTIONAL)
-install(DIRECTORY launch config web DESTINATION share/${PROJECT_NAME})
+install(DIRECTORY launch config web deploy DESTINATION share/${PROJECT_NAME})
 install(DIRECTORY ${AGILIB_ROOT}/params/ DESTINATION share/${PROJECT_NAME}/params)
 install(PROGRAMS scripts/sim_rc.py scripts/gnss_adapter.py scripts/msp_evidence.py scripts/summarize_shadow_bag.py
   scripts/analyze_pipeline_timing.py scripts/wait_for_clock.py scripts/map_ui.py scripts/ground_station_telemetry.py DESTINATION lib/${PROJECT_NAME})
-install(FILES scripts/shadow_support.py scripts/map_store.py DESTINATION lib/${PROJECT_NAME})
+install(FILES scripts/shadow_support.py scripts/map_store.py scripts/runtime_launcher.py DESTINATION lib/${PROJECT_NAME})
 ament_export_dependencies(rosidl_default_runtime)
 ament_package()
 

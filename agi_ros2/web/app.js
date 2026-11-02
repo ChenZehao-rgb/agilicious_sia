@@ -19,6 +19,63 @@ function data(topic) { return snapshot?.topics[topic]?.data; }
 function age(topic) { return (snapshot?.topics[topic]?.age_s ?? Infinity) + (performance.now() - lastHTTP) / 1000; }
 // Display stale annotations only; these are not flight acceptance gates.
 function fresh(topic) { return age(topic) < (topic === 'fused_state' ? 1 : 3); }
+let runtimeBusy = false;
+// Remember only the display selection, never an action or a ROS connection.
+try {
+  const mode = sessionStorage.getItem('runtime-mode');
+  if (['hardware', 'simulation'].includes(mode)) $('runtime-mode').value = mode;
+} catch (_) {}
+const runtimeLabels = {idle: '未启动', starting: '启动中', stopping: '结束中', stopped: '已结束', running: '运行中', failed: '失败', exited: '已退出'};
+function renderRuntime() {
+  const mode = $('runtime-mode').value, topic = `runtime/${mode}/status`;
+  const items = data(topic)?.status || [];
+  const values = item => Object.fromEntries((item?.values || []).map(v => [v.key, v.value]));
+  const summary = values(items.find(item => item.name === 'summary'));
+  const online = !httpFailure && fresh(topic) && summary.mode === mode;
+  $('runtime-start').textContent = '一键启动' + (mode === 'hardware' ? '实机' : '仿真');
+  $('runtime-start').disabled = runtimeBusy || !online || summary.can_start !== 'true';
+  $('runtime-stop').disabled = runtimeBusy || !online || summary.can_stop !== 'true';
+  $('runtime-service').textContent = (online ? '启动服务在线' : '该模式服务未连接 · 未确认') +
+    (summary.hostname ? ` · ${summary.hostname}` : '');
+  $('runtime-service').title = summary.instance || '';
+  $('runtime-state').textContent = (online ? '' : '最后报告 / 未确认：') + (runtimeLabels[summary.state] || '未确认');
+  $('runtime-state').className = 'detail ' + (online && summary.state === 'running' ? 'runtime-running' : '');
+  const names = mode === 'hardware' ? [['launch_realtime', '硬件入口']] : [['sitl', 'SITL'], ['flight', '控制链'], ['sim_rc', 'sim_rc']];
+  $('runtime-processes').textContent = names.map(([name, label]) => {
+    const entry = values(items.find(item => item.name === name));
+    return `${label}：${runtimeLabels[entry.state] || '未知'}` + (entry.pid ? ` · PID ${entry.pid}` : '') +
+      (entry.exit_code ? ` · 退出码 ${entry.exit_code}` : '');
+  }).join('\n');
+  $('runtime-log-paths').textContent = names.map(([name, label]) => {
+    const entry = values(items.find(item => item.name === name));
+    return `${label}：${entry.log || '尚无日志'}`;
+  }).join('\n');
+  $('runtime-reason').textContent = summary.reason || '';
+  $('runtime-reason').className = 'detail ' + (summary.state === 'failed' ? 'runtime-failed' : '');
+}
+$('runtime-mode').onchange = () => {
+  try { sessionStorage.setItem('runtime-mode', $('runtime-mode').value); } catch (_) {}
+  $('runtime-request').textContent = ''; renderRuntime();
+};
+async function requestRuntime(action) {
+  if ($('runtime-' + action).disabled) return;
+  const mode = $('runtime-mode').value, label = action === 'start' ? '启动' : '结束任务';
+  runtimeBusy = true; renderRuntime();
+  $('runtime-request').textContent = `正在发送${label}请求…`;
+  try {
+    const response = await fetch('/api/runtime/' + action, {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({mode}), signal: AbortSignal.timeout(5000)});
+    if (response.status === 404) {
+      $('runtime-request').textContent = '地面后台尚未加载此接口，请重启 map_ui.py 并刷新页面；本次请求未执行';
+      return;
+    }
+    const result = await response.json();
+    $('runtime-request').textContent = response.ok ? result.message : (result.error || `${label}结果未确认`);
+  } catch (_) { $('runtime-request').textContent = `${label}结果未确认；不自动重试，请查看执行端状态`; }
+  finally { runtimeBusy = false; renderRuntime(); }
+}
+$('runtime-start').onclick = () => requestRuntime('start');
+$('runtime-stop').onclick = () => requestRuntime('stop');
 function marker(previous, point, color, label) {
   if (!point) { if (previous) map.removeLayer(previous); return null; }
   if (previous) { previous.setLatLng(latlng(point)); previous.setTooltipContent(label); return previous; }
@@ -99,6 +156,7 @@ $('pause').onclick = async () => {
   finally { $('pause').disabled = false; }
 };
 function renderTelemetry() {
+  renderRuntime();
   const state = data('fused_state'), authority = data('authority'), health = data('health'), output = data('output_status');
   const goal = data('goal_status'), computation = data('computation_status');
   const httpOK = lastHTTP > 0 && !httpFailure && performance.now() - lastHTTP < 1500;

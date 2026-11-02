@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
-"""Run on the control host: latest-only, read-only ground telemetry relay."""
+"""Run on the control host: latest-only telemetry relay and fixed, explicit runtime start/stop listener."""
 import math
 
 import rclpy
 from rclpy.node import Node
+from rclpy.executors import ExternalShutdownException
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
-from rcl_interfaces.msg import SetParametersResult
+from rcl_interfaces.msg import ParameterDescriptor, SetParametersResult
+from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
+from std_msgs.msg import Empty
+from runtime_launcher import RuntimeLauncher
 from agi_ros2.msg import Authority, ComputationStatus, FusedState, GoalStatus, Health, NavigationOrigin, OutputStatus
 
 LATEST = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
 RETAINED = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+RUNTIME_QOS = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.VOLATILE)
 FAST = {'fused_state': FusedState}
 SLOW = {'authority': Authority, 'health': Health, 'output_status': OutputStatus, 'computation_status': ComputationStatus}
 EVENTS = {
@@ -44,6 +49,16 @@ class GroundStationTelemetry(Node):
             self.publishers_by_topic[topic] = self.create_publisher(msg_type, 'ground_station/' + topic, qos)
             self.create_subscription(msg_type, topic,
                                      lambda msg, key=topic: self.receive(key, msg), qos)
+        mode = self.declare_parameter('runtime_mode', 'hardware',
+                                      ParameterDescriptor(read_only=True, description='Startup role: hardware or simulation')).value
+        if mode not in ('hardware', 'simulation'):
+            raise ValueError('runtime_mode must be hardware or simulation')
+        self.runtime_publisher = self.create_publisher(DiagnosticArray, f'ground_station/runtime/{mode}/status', RUNTIME_QOS)
+        self.runtime_guard = self.create_guard_condition(self.publish_runtime)
+        self.runtime = RuntimeLauncher(mode, self.runtime_changed)
+        self.create_subscription(Empty, f'ground_station/runtime/{mode}/start', lambda _: self.runtime.start(), RUNTIME_QOS)
+        self.create_subscription(Empty, f'ground_station/runtime/{mode}/stop', lambda _: self.runtime.stop(), RUNTIME_QOS)
+        self.publish_runtime()
         self.replace_timers(rates)
         self.add_on_set_parameters_callback(self.set_rates)
 
@@ -110,7 +125,37 @@ class GroundStationTelemetry(Node):
             self.publishers_by_topic[topic].publish(self.cache[topic])
             self.sent[topic] = version
 
+    def runtime_changed(self):
+        try:
+            self.runtime_guard.trigger()
+        except Exception:
+            # rclpy may invalidate guards as SIGTERM shuts down the context.
+            if self.context.ok():
+                raise
+
+    def publish_runtime(self):
+        snapshot = self.runtime.snapshot()
+        entries = snapshot.pop('processes')
+        message = DiagnosticArray()
+        message.header.stamp = self.get_clock().now().to_msg()
+        for name, values in [('summary', snapshot), *entries.items()]:
+            status = DiagnosticStatus(name=name, hardware_id=self.runtime.instance,
+                                      level=DiagnosticStatus.ERROR if values['state'] in ('failed', 'exited') else DiagnosticStatus.OK,
+                                      message=values['reason'],
+                                      values=[KeyValue(key=key, value=str(value).lower() if isinstance(value, bool) else str(value))
+                                              for key, value in values.items()])
+            message.status.append(status)
+        self.runtime_publisher.publish(message)
+
+    def destroy_node(self):
+        self.runtime.notify = lambda: None
+        self.runtime.close()
+        return super().destroy_node()
+
     def flush(self, rate):
+        if rate == 'slow_rate_hz':
+            # A listener heartbeat must repeat even when no flight data exists.
+            self.publish_runtime()
         for topic in self.groups[rate]:
             self.send_latest(topic)
 
@@ -120,7 +165,7 @@ def main():
     node = GroundStationTelemetry()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()

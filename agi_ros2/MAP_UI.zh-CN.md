@@ -1,12 +1,242 @@
 # 地图地面站：在线准备与离线使用
 
 地图包、网页、Python HTTP 后台都在**地面电脑**。CM5/实际控制主机只增加普通优先级、
-只读的 `ground_station_telemetry`。浏览器访问本机 `http://127.0.0.1:8080`；
+`ground_station_telemetry`，负责遥测回传和固定入口启动。浏览器访问本机 `http://127.0.0.1:8080`；
 地面电脑的 rclpy 经 ROS 2 / DDS 接收镜像遥测、发布 `GeographicGoal` 与暂停 `Empty` 命令。
 因此地面电脑需要 ROS 2 和匹配的项目消息，不是只需浏览器。
 
-新增“暂停并悬停”；未实现实机启动按钮、ARM、起飞/降落或 AUTO 切换。关闭网页、后台退出、地面网络断开
+支持“运行程序”和“暂停并悬停”；运行按钮只启动进程，不执行 ARM、起飞/降落或 AUTO 切换。关闭网页、后台退出、地面网络断开
 不主动取消目标或撤权；控制主机仍按原保护逻辑运行。不引入地面站心跳门控。
+
+## 一键启动与部署
+
+右侧“运行程序”位于地理目标表单上方。选择实机/仿真，在对应服务在线时点击一次启动。
+“结束任务”停止当前模式下本监听实例一键启动的全部入口及其正常清理范围内的后代；
+硬件退出 launch_realtime 控制链，仿真退出 sim_rc、flight、SITL/Gazebo/传感器链。
+监听服务和地图 UI 保留，以便再次启动；不结束另行手动启动的程序或其他模式/机器的进程。
+实机请先落地并上锁后再结束任务；它是退出控制程序，不是暂停悬停或自动降落。
+启动中也可结束：立即显示“结束中”，后台停止后续启动并清理本次部分进程；完成显示“已结束”。
+结束中的重复启动/停止不会新增进程或清理线程。结束完成后可以再次显式启动。
+HTTP 202 只表示结束请求发送，超时/断网不自动重发，是否结束以执行端状态为准。
+没有飞机位置、GPS 或控制节点时也可显示服务在线、发起启动；地图不可用不影响启动。
+HTTP 202 只表示“启动请求已发送，等待执行端反馈”；真实状态来自执行端 ROS 心跳。
+HTTP 超时显示结果未确认，不自动重发。刷新/关闭网页、退出地面 UI、DDS 失联不停止执行端进程。
+失联显示最后报告/未确认，不能凭旧的“运行中”判断当前进程仍在运行。
+
+固定入口如下，子进程 cwd 均为定位后的**实际仓库根目录**，不是监听进程碰巧所在的终端目录：
+
+| runtime_mode | 本机实际启动命令与顺序 |
+| --- | --- |
+| hardware（默认） | `python3 agi_ros2/scripts/launch_realtime.py mode:=hardware shadow_only:=false` |
+| simulation | `python3 betaflight_sitl/run.py` → 本次日志出现 `Betaflight SITL is ready` 且进程存活 → `./agi_ros2/scripts/launch.sh` → `ros2 run agi_ros2 sim_rc.py --ros-args -p use_sim_time:=false` |
+
+`runtime_mode` 仅 hardware/simulation，启动时只读。自动定位依次检查当前工作目录及其父目录、
+实际加载的 runtime_launcher.py（源码或安装副本）所在目录及其父目录；以 agi_ros2/package.xml
+和本模式固定入口文件确认仓库，不假定安装目录层数，不扫描全盘或其他兄弟仓库。
+例如安装位于 `/home/sia/agilicious_internal-main/install/agi_ros2/`，会找到仿真仓库
+`/home/sia/agilicious_internal-main`；安装位于 `/home/ubuntu/agilicious_sia/install/agi_ros2/`，
+会找到实机仓库 `/home/ubuntu/agilicious_sia`。两机分别构建/source 自己的安装环境，不硬编码这两个路径。
+状态 summary 的 repo_root 返回实际采用路径。若 install 被单独搬出仓库，需先 cd 到实际源码根目录；
+source 安装环境只选择 ROS 包，本身不改变终端目录。更新后须重启监听服务加载代码（会清理其拥有的控制链）。
+systemd 仍填写实际 WorkingDirectory，模板内的相对 source 也依赖此设置。后台继承监听进程环境，并 source `/opt/ros/$ROS_DISTRO/setup.bash` 和
+`install/agi_ros2/local_setup.bash` 给子进程（未设 ROS_DISTRO 时与 launch.sh 一样优先 jazzy，否则 humble）。
+环境 source 单独限时 15 s；构建和 SITL 就绪不设短总超时，使用 run.py 原阶段退出/超时，页面显示最近阶段。
+首次编译可能较久。SITL 日志写文件而非 PIPE，不会因管道无人读取阻塞构建。
+
+**实机参数尚未确认：** 当前 hardware.yaml 为 `state.source: fc_fused`、`bench_fixed_gps: false`。
+用户提及的 `bench_fixed_gps:=true` 与 fc_fused 冲突，runtime_launch.py 会拒绝；本轮没有加入该参数、
+没有切换定位链，严格执行上表固定命令。如果配置被改成冲突组合，错误随入口退出回传 UI。
+硬件“启动中”持续到 launch_realtime 报告四个节点 FIFO 配置；“运行中”仍只表示入口进程存活，
+不代表传感器/导航就绪、ARM/AUTO 已开启或输出已接管。sudo、时钟等待、节点检查失败均保留实际退出原因。
+
+sim_rc 默认会以 **50 Hz** 发布 Authority：armed=false、auto_switch=false、kill=true、throttle=1000、
+roll/pitch/yaw=1500。用户负责后续遥控操作；按钮/启动器不执行 ros2 param set，不解除 KILL，不 ARM/AUTO，
+不改变油门。原有入口退出清理保持，包括仿真的既有 disarm 清理。
+
+### 单连接与 ROS 域
+
+同一 ROS_DOMAIN_ID 只运行一个回传实例和一套活动控制链。两个回传节点即使没有重复控制链，
+也会各自订阅和转发，导致遥测频率叠加；本机锁只防止同用户、同仓库、同角色重复拥有进程，不能解决重复回传。
+CM5 hardware 服务与 PC simulation 服务同时在线时，应分别使用不同 ROS_DOMAIN_ID。
+地面 map_ui.py 要在目标系统对应的域启动，保留原有 RMW/DDS 发现设置。
+下拉框只选择命令 topic，不改变后台域、不跨域路由；对应模式无服务显示“该模式服务未连接”。
+切换独立域需要重新启动地面后台并设置环境，本轮不提供双 context 或热切换。
+
+每个执行端只订阅自身模式的 `ground_station/runtime/{hardware|simulation}/start` 和 `/stop`（std_msgs/Empty），
+并发布相应 `/status`（DiagnosticArray：summary + 固定进程项）。命令和状态均 RELIABLE、VOLATILE、depth=1。
+`POST /api/runtime/start` 与 `POST /api/runtime/stop` 都只接收 {"mode":"hardware"} 或 {"mode":"simulation"}；
+不接收 PID、命令、目录或主机地址。停止只针对本次实际拥有的进程句柄/进程组。
+每次点击发布一次，不保留/重放命令；DDS 对已连接订阅者的可靠重传不等于应用自动重试。
+状态变化立即回传，心跳复用 slow_rate_hz（默认 2 Hz），即使无飞行数据/内容未变也重复发送。
+显示年龄使用地面本地接收时间，3 s 未更新显示失联；很低的 slow_rate_hz 会使显示过期。
+原快慢组 20/2 Hz、GoalStatus 保留即时回传语义保持。
+
+### 仿真桌面终端与地面 UI
+
+两端各自先按下节构建并 source，消息版本须一致。此处为本机实际 Humble 示例；路径换成各机实际仓库。
+在有桌面 DISPLAY/XAUTHORITY、拥有 Betaloop 配置的用户终端中执行：
+
+```bash
+cd <实际仓库根目录>
+source /opt/ros/humble/setup.bash
+source install/agi_ros2/local_setup.bash
+export ROS_DOMAIN_ID=<仿真系统对应的域>
+# 沿用原有 RMW_IMPLEMENTATION / DDS 配置，不在此覆盖它们
+ros2 run agi_ros2 ground_station_telemetry.py --ros-args -p runtime_mode:=simulation
+```
+
+地面终端：cd 自己的仓库，source 相同发行版和自己的 install/agi_ros2/local_setup.bash，
+设置同一目标 ROS_DOMAIN_ID 与兼容 DDS 环境，再 `ros2 run agi_ros2 map_ui.py`。
+打开 http://127.0.0.1:8080，选择“仿真”，确认主机名和在线状态后点击“一键启动仿真”。
+GUI 是 run.py 默认行为，不加 --arm/--no-build/--no-ros2；保持 fc_fused、主机时钟和 use_sim_time:=false。
+默认三个入口都在监听主机同机运行，不把 sim_rc 拆到时钟不同的电脑。
+已有跨主机联合仿真应保留其时钟/设备布局，不能直接用此同机示例覆盖。
+手动已有程序不归本次启动器所有；不要在已手动运行控制链时再点启动。
+
+### 进程所有权与日志
+
+硬件只拥有 launch_realtime；仿真拥有 sitl、flight、sim_rc 三个入口，每项显示 PID、退出码和日志路径。
+日志目录是执行用户的 `~/.local/state/agi_ros2/runtime/<仓库路径哈希>/<mode>/`，每次入口使用独立日志，
+锁文件 listener.lock 保留在该目录；不要求 XDG_RUNTIME_DIR。日志不上传为 20 Hz 遥测，也不提供网页终端。
+只传简要阶段、失败尾部和路径；完整上下文在执行主机文件中。日志需按本机运维方式定期清理。
+
+连续/并发点击在 starting 或仍有本批进程存活时不会起第二组；运行中有入口退出会显示失败/剩余实际状态，
+不会自动重启或补齐。启动期失败不再启动后续项，并清理本次拥有的部分进程。
+原入口自身的重复节点/端口检查保留；锁不能识别所有手动进程，也不会接管或清除它们。
+正常退出先给入口 SIGINT 和 25 s 清理时间，再对本次进程组 TERM（5 s）/KILL（2 s）；
+run.py 在 EEPROM 阶段也安装 SIGTERM 清理，独立 session 后代仍由其 finally 清理，编译后代属于本次外层组。
+
+**停止或重启控制主机的回传服务会清理它启动的控制链。** 不能当作运行中无影响的遥测刷新。
+systemd 使用 control-group 处理剩余后代；监听崩溃恢复只恢复监听，旧 start/目标/RC 动作不持久化或重放。
+本方案不承诺监听崩溃与控制进程完全隔离；已按后续需求增加“结束任务”，没有自动重启或独立运行 unit。
+
+### CM5 开机监听服务
+
+模板：[agi-ground-station.service.in](deploy/agi-ground-station.service.in)。本机生成模板不等于 CM5 已部署，
+不要在地面电脑直接启用硬件 unit。目标机使用普通用户构建，Gazebo OFF：
+
+```bash
+cd <CM5实际仓库根目录>
+source /opt/ros/<实际发行版>/setup.bash
+./agi_ros2/scripts/build.sh -DAGI_ROS2_GAZEBO=OFF
+source install/agi_ros2/local_setup.bash
+cp agi_ros2/deploy/agi-ground-station.service.in /tmp/agi-ground-station.service
+# 编辑 /tmp/agi-ground-station.service：替换 @USER@、@REPO_ROOT@、@ROS_DISTRO@、@ROS_DOMAIN_ID@
+# User 是普通运行用户；WorkingDirectory 是该用户实际仓库绝对路径；不能依赖 .bashrc
+systemd-analyze verify /tmp/agi-ground-station.service
+sudo install -m 644 /tmp/agi-ground-station.service /etc/systemd/system/agi-ground-station.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now agi-ground-station.service
+systemctl status agi-ground-station.service
+journalctl -u agi-ground-station.service -b -f
+```
+
+如需既有 DDS 设置，创建 `/etc/agi-ground-station.env`，使用 systemd 的 `KEY=value` 格式，
+如 `RMW_IMPLEMENTATION=rmw_fastrtps_cpp`、实际 DDS 配置文件路径；不支持 source 或 shell 展开。
+跨机不要误留 ROS_LOCALHOST_ONLY=1。模板只 After=network.target，不等待位置/GPS/控制节点，网络稍后可发现。
+Restart=on-failure、RestartSec=5 只重建监听；KillMode=control-group、TimeoutStopSec=120 给分级清理留时间。
+`systemctl active` 只证明监听 unit 活跃，硬件链状态还须看网页/ROS 状态，飞行授权另看既有状态。
+取消开机启动且**同时停止本服务及其控制链**：`sudo systemctl disable --now agi-ground-station.service`。
+只取消下次开机启动、不影响当前运行：`sudo systemctl disable agi-ground-station.service`。
+
+### 非交互实时权限（目标机核验）
+
+launch_realtime 原样调用 `sudo -n true`，然后 `sudo -n chrt -f -p <priority> <tid>`。
+终端一次 sudo -v 不是开机后台长期权限；不运行 root ROS 服务，不在网页输入密码。
+由管理员在目标机先用 `command -v true; command -v chrt` 和 `type -P true; type -P chrt` 核对
+真实外部可执行文件路径（true 可能是 shell builtin，以 type -P 的路径为准）。
+通过 `sudo visudo -f /etc/sudoers.d/agi-realtime` 配置以下最小固定调用集合，替换运行用户名和实际路径：
+
+```sudoers
+Cmnd_Alias AGI_REALTIME = /usr/bin/true "", /usr/bin/chrt -f -p 5 *, /usr/bin/chrt -f -p 15 *, /usr/bin/chrt -f -p 20 *, /usr/bin/chrt -f -p 25 *, /usr/bin/chrt -f -p 30 *
+<运行用户名> ALL=(root) NOPASSWD: AGI_REALTIME
+```
+
+没有授权任意命令或所有 chrt 形式。PID/TID 动态，因此尾参数为通配符；这授权该用户用列出的调度调用操作
+其他 PID，并不提供“只允许本用户 TID”的隔离。按目标机现有权限策略审查此权限，不能误称 NOPASSWD: ALL。
+核验配置 `sudo visudo -c`；再以实际运行用户测试（清除该终端 sudo 缓存，确保不是靠 sudo -v）：
+
+```bash
+sudo -k
+sudo -n true
+sleep 30 & probe_pid=$!
+sudo -n chrt -f -p 5 "$probe_pid"
+chrt -p "$probe_pid"
+kill "$probe_pid"
+wait "$probe_pid" || true
+```
+
+只能结束上述自己启动的探针。随后从服务运行环境核对 PATH/source/ROS_DOMAIN_ID 与日志。
+权限不足会导致入口非零退出，网页显示 sudo 实际错误及日志；不自动降低优先级、不绕过原检查。
+
+### 后续“结束任务”验证与升级
+
+新增结束按钮后：进程测试 11/11、DDS/HTTP 10/10、Chrome 合成回归通过，构建安装及 Python/JS/空白检查通过。
+覆盖启动中取消、运行后停止、并发起停、停止后再启动、保留无关手动进程、硬件假入口退出，
+以及 stop 模式路由、严格字段、VOLATILE 不保留、单次点击、HTTP 超时/刷新不重发。
+浏览器夹具使用独立临时部署根目录，避免不同测试域之间争抢同一个真实部署锁。
+[验证摘要](test/results/runtime_stop_20261102/validation.json)、[结束截图](test/results/runtime_stop_20261102/stopped.png)。
+初次实现时因用户仿真占用端口未做真实结束验证；后续反馈“结束无效”后已补验：
+实际问题是 map_ui.py 进程仍为 12:08 启动的旧版，结束接口 12:14 才安装，POST /api/runtime/stop 返回 404。
+执行端已有 can_stop=true，但 HTTP 层没有发布 stop。保留原 ROS 域 2、工作目录和完整环境重启地面后台后，
+无动作探测从 404 变成预期的无效输入 400；页面也新增“重启 map_ui.py”的旧接口提示。
+真实隔离 ROS 域 95 的浏览器启动/结束通过：一次 stop，约 1.86 s 后已结束，记录的入口及后代共 17 个进程退出，
+SITL 端口释放；同一监听实例仍在线、启动按钮恢复，刷新不重发。全程默认 KILL、未 ARM/AUTO，无遥控参数操作。
+[诊断证据](test/results/runtime_stop_verified_20261102/diagnosis.json)、
+[真实结束结果](test/results/runtime_stop_verified_20261102/sitl.json)、
+[真实结束截图](test/results/runtime_stop_verified_20261102/stopped.png)。未验证真实硬件退出。
+`test_runtime_launcher.py --smoke` 已补上实际按钮停止、监听保留和结束后刷新检查，可在端口空闲时按下文复现。
+
+升级后要重启两端的 Python 进程（执行主机 ground_station_telemetry.py、地面 map_ui.py），再刷新浏览器。
+旧监听没有 stop 订阅，旧 HTTP 后台也没有 /api/runtime/stop；仅刷新不能更新这些后台代码。
+当前旧版一键启动链可在监听终端按 Ctrl+C 结束（会清理该监听拥有的链），然后启动新版监听。
+systemd 部署通过停止/重启对应 unit 更新，同样会结束它拥有的控制链。没有自动关闭用户已有程序。
+
+### 本轮验证（2026-11-02）
+
+本机 Humble，Gazebo ON 构建与安装通过；真实 smoke 使用安装后的 `ros2 run` 监听和 UI，
+验证同目录模块可导入，cwd 仍是实际源码根目录。未修改 C++、控制配置或 sim_rc 默认行为。
+
+- 固定启动器 8/8：argv/cwd/环境、并发启动、重复监听锁、旧日志不就绪、失败不继续、部分清理、
+  运行后退出、显式重试、真实独立 session 假 EEPROM 的 TERM 清理、编译进程组取消。
+  sudo/硬件配置错误通过假入口验证摘要回传；实际配置组装另确认 bench_fixed_gps 冲突，不执行硬件动作。
+- DDS/HTTP 9/9：模式路由/只读参数、严格请求字段、同源限制、并发 POST、无飞机数据服务在线、
+  VOLATILE 不重放、即时事件、重复心跳和 slow_rate_hz 生效、后台 starting 不阻塞遥测。
+  原 20/2 Hz 实测约 20.00/1.94 Hz，10/1 Hz 约 10.32/0.97 Hz（有限窗口边界误差）。
+- Chrome 合成回归通过：一次启动请求、5 s HTTP 超时不重试、刷新保持模式与状态、断网不停止/重发，
+  既有地图、地理目标、暂停、位置文本刷新和失联样式通过，无页面脚本错误/外部请求。
+- 独立 localhost ROS 域 95 的真实 UI smoke 通过：无飞机状态时在线可点击；一次按钮依次启动三入口，
+  含默认构建/GUI约 26.70 s；Authority 为 ARM=false、AUTO=false、KILL=true、AETR=[1500,1500,1000,1500]。
+  刷新后同一组三个 PID；关闭页面/退出 UI 后仍存活；关闭测试监听后入口及 SITL 端口清理完毕。
+  全程无 ros2 param set、ARM/AUTO/油门操作，不是飞行验证。原入口的退出 disarm 行为保留。
+- Python/JS 语法和 git diff --check 通过。systemd 模板替换本机实际路径后 verify 返回 0，
+  同时有宿主机既有 netplan/snapd/backlight unit 警告；未安装/启用 unit，不能据此声称 CM5 启动验证通过。
+
+尚未验证 CM5 部署/开机及重启恢复、目标机非交互 sudo/FIFO、跨机 DDS 和真实硬件链/飞行。
+`bench_fixed_gps:=true` 尚未获得用户确认，仍保持 fc_fused + bench_fixed_gps=false。
+
+[验证摘要](test/results/runtime_start_20261102/validation.json)、
+[真实 smoke 结果](test/results/runtime_start_20261102/sitl.json)、
+[浏览器结果](test/results/runtime_start_20261102/browser.json)、
+[启动前截图](test/results/runtime_start_20261102/idle.png)、
+[运行截图](test/results/runtime_start_20261102/running.png)。
+结果目录沿用现有 Git 忽略规则；原始文件在 `/tmp/agi_runtime_smoke_final_20261102`、
+`/tmp/agi_runtime_browser_final_20261102`，入口日志路径记录在 sitl.json。
+
+可复现命令（挑选未占用的隔离测试域和全新输出目录；测试 Playwright/Chrome 不属于产品依赖）：
+
+```bash
+python3 agi_ros2/tests/test_runtime_launcher.py -v
+source /opt/ros/humble/setup.bash
+source install/agi_ros2/local_setup.bash
+ROS_DOMAIN_ID=93 ROS_LOCALHOST_ONLY=1 python3 agi_ros2/tests/test_map_ui.py -v
+ROS_DOMAIN_ID=94 ROS_LOCALHOST_ONLY=1 PYTHONPATH=/tmp/agi_pause_qa:$PYTHONPATH \
+  python3 agi_ros2/tests/test_map_ui_browser.py --browser /opt/google/chrome/chrome \
+  --output /tmp/agi_runtime_browser_new
+# 下面实际启动默认 Gazebo GUI/SITL/flight/sim_rc；要求空闲端口和用户桌面环境，不发送遥控参数操作。
+ROS_DOMAIN_ID=95 ROS_LOCALHOST_ONLY=1 GZ_PARTITION=agi_runtime_new PYTHONPATH=/tmp/agi_pause_qa:$PYTHONPATH \
+  python3 agi_ros2/tests/test_runtime_launcher.py --smoke /tmp/agi_runtime_smoke_new
+```
 
 ## 构建与同机 SITL
 
@@ -40,12 +270,13 @@ ros2 run agi_ros2 sim_rc.py --ros-args -p use_sim_time:=false
 只有 `mode:=sitl` / `hardware`，没有 `mode:=simulation`、`autorun` 或 `enable_output`。
 默认 `simulation.yaml` 为 `state.source: fc_fused`、空轨迹；本次未改动这些配置。
 
-新增终端 4，在**实际控制主机**运行（同机 SITL 即本电脑）：
+手动启动控制链时，新增终端 4，在**实际仿真主机**运行（同机 SITL 即本电脑）；
+也可跳过上面三个手动入口，按下节一键启动流程只运行此监听服务：
 
 ```bash
 source /opt/ros/humble/setup.bash
 source install/agi_ros2/local_setup.bash
-ros2 run agi_ros2 ground_station_telemetry.py --ros-args -p fast_rate_hz:=20.0 -p slow_rate_hz:=2.0
+ros2 run agi_ros2 ground_station_telemetry.py --ros-args -p runtime_mode:=simulation -p fast_rate_hz:=20.0 -p slow_rate_hz:=2.0
 ```
 
 新增终端 5，只在**地面电脑**运行：
@@ -180,20 +411,20 @@ ros2 topic echo /ground_station/goal_status --qos-reliability reliable --qos-dur
 
 原始高频 topic 只在控制主机本地检查，地面不要订阅原始流、全 topic 桥或全量录包，
 否则这些订阅仍会使原始高频流跨网。UI 仅订阅 `/ground_station/*`，命令直接发布
-`/go_to_geographic_position`，不会经只读转发器重新入队。均使用相对 ROS 名称，可用正常 ROS namespace/remap。
+`/go_to_geographic_position`，不会经遥测转发器重新入队。均使用相对 ROS 名称，可用正常 ROS namespace/remap。
 
 若 Gazebo 在电脑而 FC 控制链在 CM5，按 README 将控制主机 `mavlink.device` 的 TCP 地址和
 `bridge.host` 指向实际 SITL 主机。`sim_rc` 按当前同机时钟契约部署在控制主机，
 不是为了 UI 拆散核心链。本次不自动更改这些地址或仿真配置。
 
-实机仍由用户在 **CM5 终端**手动运行原命令：
+实机既可用本轮一键启动，也可在 **CM5 终端**手动运行原命令（不要重复启动）：
 
 ```bash
 python3 agi_ros2/scripts/launch_realtime.py mode:=hardware shadow_only:=false
 ```
 
-另开 CM5 终端启动只读转发，电脑启动 UI。后台普通用户运行，不使用 sudo，不新增 systemd、
-远程启动 API 或自动服务。本批开发验证不执行上述硬件命令。
+CM5 按前文部署 hardware 监听服务，地面电脑启动 UI。ROS/监听以普通用户运行，
+仅原实时入口的 true/chrt 使用明确授权的非交互 sudo。本批开发验证不执行真实硬件命令。
 
 ## 外发频率、事件与新鲜度
 

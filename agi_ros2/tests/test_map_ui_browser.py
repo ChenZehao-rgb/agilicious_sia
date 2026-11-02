@@ -13,11 +13,13 @@ import sqlite3
 import sys
 import threading
 import time
+from unittest.mock import patch
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_map_ui import mapping
 import map_ui
 import ground_station_telemetry as relay
+import runtime_launcher
 import rclpy
 from std_msgs.msg import Empty
 from rclpy.executors import SingleThreadedExecutor
@@ -40,7 +42,12 @@ with sqlite3.connect(path) as db:
         for x in range(2**z):
             for y in range(2**z): db.execute('INSERT INTO tiles VALUES (?,?,?,?)',(z,x,y,png))
 rclpy.init()
-node = map_ui.MapUI(); transfer = relay.GroundStationTelemetry(); source = rclpy.create_node('browser_fixture')
+node = map_ui.MapUI()
+# A synthetic browser fixture is its own deployment, even when other test
+# domains or the user's real listener are running on this host.
+with patch.object(relay, 'RuntimeLauncher', side_effect=lambda mode, notify: runtime_launcher.RuntimeLauncher(mode, notify, out)):
+    transfer = relay.GroundStationTelemetry()
+source = rclpy.create_node('browser_fixture')
 executor=SingleThreadedExecutor()
 for n in [node,transfer,source]: executor.add_node(n)
 s,origin=mapping(); origin.altitude=100.
@@ -60,7 +67,7 @@ pauses=[]
 source.create_subscription(Empty,'pause_hover',pauses.append,1)
 commands=[]
 source.create_subscription(GeographicGoal,'go_to_geographic_position',lambda m: commands.append(m),1)
-enabled=[True]; ticks=[0]; moving=[False]; auto_active=[True]; hover_stable=[True]
+enabled=[False]; ticks=[0]; moving=[False]; auto_active=[True]; hover_stable=[True]
 def emit():
     if not enabled[0]: return
     if moving[0]: s.position.x += .002
@@ -77,6 +84,25 @@ def emit():
         opub.publish(origin); gpub.publish(goal)
     ticks[0]+=1
 source.create_timer(.01,emit)
+runtime_requests=[]; runtime_stops=[]
+def fake_runtime_start():
+    runtime_requests.append(time.monotonic())
+    transfer.runtime.update(state='starting', reason='synthetic startup', name='launch_realtime',
+                            pid='12345', log='/synthetic/hardware.log')
+    with transfer.runtime.lock:
+        transfer.runtime.entries['launch_realtime']['state']='running'
+    threading.Timer(.3, lambda: transfer.runtime.update(state='running', reason='synthetic process alive')).start()
+# Browser regression must never invoke the real hardware entry.
+transfer.runtime.start=fake_runtime_start
+def fake_runtime_stop():
+    runtime_stops.append(time.monotonic())
+    transfer.runtime.update(state='stopping', reason='synthetic stopping')
+    def finish():
+        with transfer.runtime.lock:
+            transfer.runtime.entries['launch_realtime'].update(state='exited', exit_code='0')
+        transfer.runtime.update(state='stopped', reason='synthetic stopped')
+    threading.Timer(.3, finish).start()
+transfer.runtime.stop=fake_runtime_stop
 worker=threading.Thread(target=executor.spin);worker.start()
 server=map_ui.make_server(node,map_ui.MBTiles(path),'127.0.0.1',0)
 http_thread=threading.Thread(target=server.serve_forever);http_thread.start()
@@ -88,7 +114,62 @@ try:
         context=browser.new_context(viewport={'width':1440,'height':960})
         context.route('**/*', lambda route: route.continue_() if route.request.url.startswith(url) else route.abort())
         page=context.new_page();page.on('pageerror',lambda e: errors.append(str(e)));page.on('request',lambda r: requests.append(r.url))
-        page.goto(url); expect(page.locator("#phase")).to_have_text("稳定悬停")
+        page.goto(url)
+        expect(page.locator('#runtime-service')).to_contain_text('启动服务在线')
+        expect(page.locator('#position')).to_contain_text('位置未知')
+        expect(page.locator('#runtime-start')).to_be_enabled()
+        page.locator('#runtime-mode').select_option('simulation')
+        expect(page.locator('#runtime-service')).to_contain_text('该模式服务未连接')
+        expect(page.locator('#runtime-start')).to_be_disabled()
+        page.reload()
+        expect(page.locator('#runtime-mode')).to_have_value('simulation')
+        expect(page.locator('#runtime-start')).to_be_disabled()
+        page.locator('#runtime-mode').select_option('hardware')
+        # HTTP timeout is not a remote rejection and must never auto-resend.
+        held_start=[]
+        page.route('**/api/runtime/start', lambda route: held_start.append(route))
+        page.locator('#runtime-start').click()
+        expect(page.locator('#runtime-request')).to_contain_text('启动结果未确认', timeout=7000)
+        assert len(held_start)==1 and runtime_requests==[]
+        for route in held_start: route.abort()
+        page.unroute('**/api/runtime/start')
+        page.locator('#runtime-start').click()
+        expect(page.locator('#runtime-request')).to_have_text('启动请求已发送，等待执行端反馈')
+        expect(page.locator('#runtime-state')).to_have_text('运行中')
+        expect(page.locator('#runtime-start')).to_be_disabled()
+        assert len(runtime_requests)==1
+        page.reload()
+        expect(page.locator('#runtime-state')).to_have_text('运行中')
+        assert len(runtime_requests)==1
+        page.route('**/api/state', lambda route: route.abort())
+        expect(page.locator('#runtime-service')).to_contain_text('未确认')
+        assert len(runtime_requests)==1 and transfer.runtime.snapshot()['state']=='running'
+        page.unroute('**/api/state')
+        expect(page.locator('#runtime-service')).to_contain_text('启动服务在线')
+        expect(page.locator('#runtime-stop')).to_be_enabled()
+        page.route('**/api/runtime/stop', lambda route: route.fulfill(status=404, content_type='application/json',
+                                                                    body='{"error":"not found"}'))
+        page.locator('#runtime-stop').click()
+        expect(page.locator('#runtime-request')).to_contain_text('请重启 map_ui.py')
+        assert runtime_stops==[]
+        page.unroute('**/api/runtime/stop')
+        held_stop=[]
+        page.route('**/api/runtime/stop', lambda route: held_stop.append(route))
+        page.locator('#runtime-stop').click()
+        expect(page.locator('#runtime-request')).to_contain_text('结束任务结果未确认', timeout=7000)
+        assert len(held_stop)==1 and runtime_stops==[]
+        for route in held_stop: route.abort()
+        page.unroute('**/api/runtime/stop')
+        page.locator('#runtime-stop').click()
+        expect(page.locator('#runtime-request')).to_have_text('结束任务请求已发送，等待执行端反馈')
+        expect(page.locator('#runtime-state')).to_have_text('已结束')
+        expect(page.locator('#runtime-stop')).to_be_disabled()
+        expect(page.locator('#runtime-start')).to_be_enabled()
+        page.reload()
+        expect(page.locator('#runtime-state')).to_have_text('已结束')
+        assert len(runtime_stops)==1 and len(runtime_requests)==1
+        enabled[0]=True
+        expect(page.locator("#phase")).to_have_text("稳定悬停")
         assert page.locator('#altitude').input_value()=='102.000'
         expect(page.locator('#position')).to_contain_text('未知 m/s')
         expect(page.locator('#phase')).to_have_class('phase hovering')
@@ -218,9 +299,11 @@ try:
         page.screenshot(path=str(out/'stale.png'),full_page=True)
         page.set_viewport_size({'width':700,'height':900});page.screenshot(path=str(out/'narrow.png'),full_page=True)
         page.close();assert len(commands)==1
+        assert len(runtime_requests)==1 and len(runtime_stops)==1 and transfer.runtime.snapshot()['state']=='stopped'
         assert not errors, errors
         assert all(r.startswith(url) for r in requests),requests
-        (out/'result.json').write_text(json.dumps({'passed':True,'requests':len(requests),'external_requests':0,'commands':len(commands),'pauses':len(pauses),'pause_timeout_no_retry':True,'page_errors':errors,'fixture':'synthetic, not real map',
+        (out/'result.json').write_text(json.dumps({'passed':True,'requests':len(requests),'external_requests':0,'commands':len(commands),'pauses':len(pauses),'pause_timeout_no_retry':True,'runtime_no_aircraft_online':True,'runtime_requests':len(runtime_requests),
+            'runtime_timeout_refresh_disconnect_no_retry':True,'runtime_stop_requests':len(runtime_stops),'runtime_stop_timeout_no_retry':True,'runtime_old_backend_404_guidance':True,'page_errors':errors,'fixture':'synthetic, not real map',
             'position_updates_in_2_4s':len(changes), 'position_min_interval_ms':min(b-a for a,b in zip(changes,changes[1:])),
             'initial_auto_hover':True,'browser_stall_without_false_disconnect':True,'http_failure_and_timeout_recovery':True,
             'origin_refresh_without_invalid_position':True},indent=2))

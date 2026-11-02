@@ -8,6 +8,8 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
+from concurrent.futures import ThreadPoolExecutor
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -272,6 +274,155 @@ class DDSTests(unittest.TestCase):
             self.origin_pub.publish(origin)
             self.run_for(.1)
             self.assertIsNotNone(self.ui.snapshot()['position'], field)
+
+    def test_starting_worker_does_not_block_telemetry(self):
+        gate = threading.Event()
+        heartbeat = []
+        from diagnostic_msgs.msg import DiagnosticArray
+        self.source.create_subscription(DiagnosticArray, 'ground_station/runtime/hardware/status',
+                                        heartbeat.append, relay.RUNTIME_QOS)
+        state, _ = mapping()
+        timer = self.source.create_timer(.01, lambda: self.pubs['fused_state'].publish(state))
+        with patch.object(self.relay.runtime, 'run', side_effect=lambda: gate.wait(5)):
+            try:
+                self.relay.runtime.start()
+                self.run_for(1.2)
+                self.assertEqual(self.relay.runtime.snapshot()['state'], 'starting')
+                self.assertGreaterEqual(len(self.received['fused_state']), 20)
+                self.assertGreaterEqual(len(heartbeat), 2)
+            finally:
+                gate.set()
+                self.relay.runtime.worker.join()
+                self.source.destroy_timer(timer)
+
+    def test_runtime_heartbeat_role_http_and_no_aircraft_dependency(self):
+        from diagnostic_msgs.msg import DiagnosticArray
+        rows, starts = [], []
+        self.source.create_subscription(DiagnosticArray, 'ground_station/runtime/hardware/status',
+                                        lambda m: rows.append((time.monotonic(), m)), relay.RUNTIME_QOS)
+        self.source.create_subscription(Empty, 'ground_station/runtime/hardware/start', starts.append, relay.RUNTIME_QOS)
+        # Never start hardware: this test only exercises dispatch into the fixed launcher.
+        with patch.object(self.relay.runtime, 'start') as start:
+            self.run_for(1.6)
+            self.assertGreaterEqual(len(rows), 3)
+            self.assertIsNone(self.ui.snapshot()['position'])
+            wrong = self.source.create_publisher(Empty, 'ground_station/runtime/simulation/start', relay.RUNTIME_QOS)
+            self.run_for(.15)
+            wrong.publish(Empty())
+            self.run_for(.15)
+            self.assertEqual(start.call_count, 0)
+            self.assertEqual(rows[-1][1].status[0].name, 'summary')
+            result = self.relay.set_parameters([Parameter('runtime_mode', value='simulation')])
+            self.assertFalse(result[0].successful)
+            self.assertEqual(self.relay.get_parameter('runtime_mode').value, 'hardware')
+            before = len(rows)
+            self.relay.set_parameters([Parameter('slow_rate_hz', value=10.)])
+            self.run_for(.55)
+            self.assertGreaterEqual(len(rows) - before, 5)
+            server = map_ui.make_server(self.ui, map_ui.MBTiles(None), '127.0.0.1', 0)
+            thread = threading.Thread(target=server.serve_forever)
+            thread.start()
+            base = f'http://127.0.0.1:{server.server_port}'
+            def post(payload, origin=None):
+                headers = {'Content-Type': 'application/json'}
+                if origin: headers['Origin'] = origin
+                with urllib.request.urlopen(urllib.request.Request(base + '/api/runtime/start',
+                                             json.dumps(payload).encode(), headers)) as response:
+                    return response.status, json.load(response)
+            try:
+                for payload, origin, code in [({'mode':'other'}, None, 400), ({'mode':'simulation'}, None, 400),
+                        ({'mode':'hardware', 'argv':[]}, None, 400), ({'mode':[]}, None, 400),
+                        ({'mode':'hardware'}, 'http://unrelated.example', 403)]:
+                    with self.assertRaises(urllib.error.HTTPError) as error: post(payload, origin)
+                    self.assertEqual(error.exception.code, code)
+                status, result = post({'mode': 'hardware'})
+                self.assertEqual(status, 202)
+                self.assertEqual(result['message'], '启动请求已发送，等待执行端反馈')
+                self.run_for(.15)
+                self.assertEqual(start.call_count, 1)
+                self.assertEqual(len(starts), 1)
+                late = []
+                self.source.create_subscription(Empty, 'ground_station/runtime/hardware/start', late.append, relay.RUNTIME_QOS)
+                self.run_for(.15)
+                self.assertEqual(late, [])
+                with ThreadPoolExecutor(max_workers=8) as pool:
+                    replies = list(pool.map(lambda _: post({'mode':'hardware'}), range(8)))
+                self.assertTrue(all(reply[0] == 202 for reply in replies))
+                self.run_for(.15)
+                count = start.call_count
+                for _ in range(3): urllib.request.urlopen(base + '/api/state').close()
+                self.run_for(.15)
+                self.assertEqual(start.call_count, count)
+                original = self.ui.runtime_publishers['hardware']
+                try:
+                    for exception in (TimeoutError, RuntimeError):
+                        with patch.object(original, 'publish', side_effect=exception('synthetic error')):
+                            with self.assertRaises(urllib.error.HTTPError) as error: post({'mode':'hardware'})
+                            body = json.load(error.exception)
+                            self.assertEqual(error.exception.code, 503)
+                            self.assertIn('启动结果未确认', body['error'])
+                            self.assertNotIn('地图', body['error'])
+                finally:
+                    self.ui.runtime_publishers['hardware'] = original
+                # Immediate event is independent of the heartbeat timer.
+                self.relay.set_parameters([Parameter('slow_rate_hz', value=.01)])
+                self.relay.runtime.update(state='failed', reason='synthetic startup failure')
+                self.run_for(.1)
+                item = self.ui.snapshot()['topics']['runtime/hardware/status']
+                self.assertEqual(item['data']['status'][0]['message'], 'synthetic startup failure')
+                self.ui.latest['runtime/hardware/status']['received'] -= 4
+                with self.assertRaises(urllib.error.HTTPError) as error: post({'mode':'hardware'})
+                self.assertIn('服务未连接', json.load(error.exception)['error'])
+            finally:
+                server.shutdown(); server.server_close(); thread.join()
+
+    def test_runtime_stop_http_role_and_volatile(self):
+        stops = []
+        self.source.create_subscription(Empty, 'ground_station/runtime/hardware/stop', stops.append, relay.RUNTIME_QOS)
+        with patch.object(self.relay.runtime, 'stop') as stop:
+            wrong = self.source.create_publisher(Empty, 'ground_station/runtime/simulation/stop', relay.RUNTIME_QOS)
+            self.run_for(.6)
+            wrong.publish(Empty())
+            self.run_for(.1)
+            self.assertEqual(stop.call_count, 0)
+            server = map_ui.make_server(self.ui, map_ui.MBTiles(None), '127.0.0.1', 0)
+            thread = threading.Thread(target=server.serve_forever)
+            thread.start()
+            base = f'http://127.0.0.1:{server.server_port}'
+            def post(payload, origin=None):
+                headers = {'Content-Type': 'application/json'}
+                if origin: headers['Origin'] = origin
+                with urllib.request.urlopen(urllib.request.Request(base + '/api/runtime/stop',
+                                             json.dumps(payload).encode(), headers)) as response:
+                    return response.status, json.load(response)
+            try:
+                for payload, origin, code in [({'mode':'other'}, None, 400), ({'mode':'simulation'}, None, 400),
+                        ({'mode':'hardware', 'pid':1}, None, 400), ({'mode':'hardware'}, 'http://unrelated.example', 403)]:
+                    with self.assertRaises(urllib.error.HTTPError) as error: post(payload, origin)
+                    self.assertEqual(error.exception.code, code)
+                status, result = post({'mode':'hardware'})
+                self.assertEqual(status, 202)
+                self.assertIn('结束任务请求已发送', result['message'])
+                self.run_for(.15)
+                self.assertEqual(stop.call_count, 1)
+                self.assertEqual(len(stops), 1)
+                late = []
+                self.source.create_subscription(Empty, 'ground_station/runtime/hardware/stop', late.append, relay.RUNTIME_QOS)
+                self.run_for(.15)
+                self.assertEqual(late, [])
+                for exception in (TimeoutError, RuntimeError):
+                    with patch.object(self.ui.runtime_stop_publishers['hardware'], 'publish', side_effect=exception('synthetic')):
+                        with self.assertRaises(urllib.error.HTTPError) as error: post({'mode':'hardware'})
+                        self.assertEqual(error.exception.code, 503)
+                        self.assertIn('结束任务结果未确认', json.load(error.exception)['error'])
+                for _ in range(3): urllib.request.urlopen(base + '/api/state').close()
+                self.run_for(.1)
+                self.assertEqual(stop.call_count, 1)
+                self.ui.latest['runtime/hardware/status']['received'] -= 4
+                with self.assertRaises(urllib.error.HTTPError) as error: post({'mode':'hardware'})
+                self.assertIn('服务未连接', json.load(error.exception)['error'])
+            finally:
+                server.shutdown(); server.server_close(); thread.join()
 
     def test_pause_once_empty_volatile_and_immediate_retained_feedback(self):
         pauses = []

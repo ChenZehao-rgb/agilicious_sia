@@ -18,6 +18,7 @@ from map_store import MapStore, estimate
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Empty
+from diagnostic_msgs.msg import DiagnosticArray
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from rosidl_runtime_py.convert import message_to_ordereddict
 from agi_ros2.msg import Authority, ComputationStatus, FusedState, GeographicGoal, GoalStatus, Health, NavigationOrigin, OutputStatus
@@ -159,6 +160,15 @@ class MapUI(Node):
         self.pause_publisher = self.create_publisher(Empty, 'pause_hover',
                                                      QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                                                                 durability=DurabilityPolicy.VOLATILE))
+        runtime_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.VOLATILE)
+        self.runtime_publishers = {}
+        self.runtime_stop_publishers = {}
+        for mode in ('hardware', 'simulation'):
+            self.runtime_publishers[mode] = self.create_publisher(Empty, f'ground_station/runtime/{mode}/start', runtime_qos)
+            self.runtime_stop_publishers[mode] = self.create_publisher(Empty, f'ground_station/runtime/{mode}/stop', runtime_qos)
+            topic = f'runtime/{mode}/status'
+            self.create_subscription(DiagnosticArray, 'ground_station/' + topic,
+                                     lambda msg, key=topic: self.receive(key, msg), runtime_qos)
         topics = {'fused_state': FusedState, 'authority': Authority, 'health': Health,
                   'output_status': OutputStatus, 'computation_status': ComputationStatus,
                   'navigation/origin': NavigationOrigin, 'goal_status': GoalStatus}
@@ -202,6 +212,25 @@ class MapUI(Node):
         return clean_json({'topics': topics, 'position': position, 'mapping_error': error,
                            'heading_deg': heading_degrees(state['orientation']) if state and state['fc_state_valid'] else None,
                            'active_position': active, 'goal_matches_state': goal_matches, 'identity': identity})
+
+    def start_runtime(self, payload):
+        return self.runtime_request(payload, 'start')
+
+    def stop_runtime(self, payload):
+        return self.runtime_request(payload, 'stop')
+
+    def runtime_request(self, payload, action):
+        label = '启动' if action == 'start' else '结束任务'
+        if not isinstance(payload, dict) or set(payload) != {'mode'} or payload['mode'] not in ('hardware', 'simulation'):
+            raise ValueError(label + '请求只接收 mode: hardware 或 simulation')
+        mode = payload['mode']
+        with self.lock:
+            item = self.latest.get(f'runtime/{mode}/status')
+            if not item or time.monotonic() - item['received'] >= 3:
+                raise ValueError('该模式服务未连接；' + label + '结果未确认')
+            publishers = self.runtime_publishers if action == 'start' else self.runtime_stop_publishers
+            publishers[mode].publish(Empty())
+        return {'status': 'sent', 'message': label + '请求已发送，等待执行端反馈'}
 
     def pause(self, payload):
         if not isinstance(payload, dict) or payload:
@@ -283,7 +312,7 @@ def make_server(node, tiles, host, port, maps=None):
         def do_POST(self):
             map_actions = ('estimate', 'download', 'resume', 'cancel', 'select')
             action = self.path.removeprefix('/api/maps/') if self.path.startswith('/api/maps/') else None
-            if self.path not in ('/api/goal', '/api/pause') and (not maps or action not in map_actions):
+            if self.path not in ('/api/goal', '/api/pause', '/api/runtime/start', '/api/runtime/stop') and (not maps or action not in map_actions):
                 return self.respond(404, {'error': 'not found'})
             # JSON and same-origin only: an unrelated website cannot issue flight goals.
             origin = self.headers.get('Origin')
@@ -303,6 +332,10 @@ def make_server(node, tiles, host, port, maps=None):
                     result = node.submit(data)
                 elif self.path == '/api/pause':
                     result = node.pause(data)
+                elif self.path == '/api/runtime/start':
+                    result = node.start_runtime(data)
+                elif self.path == '/api/runtime/stop':
+                    result = node.stop_runtime(data)
                 elif action == 'estimate':
                     result = estimate(data.get('bounds'), data.get('maxzoom', 14))
                 elif action in ('download', 'resume'):
@@ -313,12 +346,18 @@ def make_server(node, tiles, host, port, maps=None):
                     maps.cancel.set()
                     result = maps.status()
             except TimeoutError as error:
+                if self.path in ('/api/runtime/start', '/api/runtime/stop'):
+                    label = '启动' if self.path.endswith('/start') else '结束任务'
+                    return self.respond(503, {'error': label + '结果未确认；不自动重试'})
                 if self.path == '/api/pause':
                     return self.respond(503, {'error': '暂停结果未确认；不自动重试'})
                 return self.respond(400, {'error': str(error)})
             except (ValueError, UnicodeError) as error:
                 return self.respond(400, {'error': str(error)})
             except Exception:
+                if self.path in ('/api/runtime/start', '/api/runtime/stop'):
+                    label = '启动' if self.path.endswith('/start') else '结束任务'
+                    return self.respond(503, {'error': label + '结果未确认；不自动重试'})
                 return self.respond(503, {'error': '发布结果未确认；不自动重试' if self.path in ('/api/goal', '/api/pause') else '地图操作失败'})
             return self.respond(202, result)
 

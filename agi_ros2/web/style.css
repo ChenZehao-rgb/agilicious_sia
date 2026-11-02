@@ -65,3 +65,14 @@ button:hover { background: #455d70; } button:disabled { opacity: .5; cursor: wai
 
 #pause { background: #b76016; border-color: #ef9c49; margin: 4px 3px; }
 #pause:hover { background: #d47821; }
+
+.runtime-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; }
+#runtime-mode { color: #eaf1f7; background: #151b21; border: 1px solid #4a5865; border-radius: 4px; padding: 9px; }
+#runtime-start { margin: 0; }
+#runtime-stop { background: #853d35; border-color: #bc655c; }
+#runtime-processes { margin-top: 8px; }
+#runtime-reason { margin-top: 6px; }
+.runtime-failed { color: #f4c078; }
+#runtime-logs { margin-top: 8px; font-size: 12px; }
+#runtime-logs summary { cursor: pointer; color: #9caebd; }
+.runtime-running { color: #86e1ad; }

@@ -1,0 +1,20 @@
+# Replace all @...@ values on the target CM5 before installation.
+[Unit]
+Description=Agilicious telemetry and explicit hardware start listener
+After=network.target
+
+[Service]
+Type=simple
+User=@USER@
+WorkingDirectory=@REPO_ROOT@
+Environment="ROS_DOMAIN_ID=@ROS_DOMAIN_ID@"
+# Optional existing DDS/RMW settings; shell syntax/source is not supported here.
+EnvironmentFile=-/etc/agi-ground-station.env
+ExecStart=/bin/bash -c 'source /opt/ros/@ROS_DISTRO@/setup.bash && source ./install/agi_ros2/local_setup.bash && exec ros2 run agi_ros2 ground_station_telemetry.py --ros-args -p runtime_mode:=hardware'
+Restart=on-failure
+RestartSec=5
+KillMode=control-group
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target

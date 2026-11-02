@@ -582,15 +582,16 @@ def prepare_runtime_betaflight(
     # never opened for writing.  AUX1 high now selects ARM, while Acro remains
     # the default flight mode.
     # 以 runtime_dir 为工作目录启动，Betaflight 就只会读写这份 EEPROM 副本。
-    with (runtime_dir / "configure.log").open("w") as config_log:
-        config_process = subprocess.Popen(
-            [str(runtime_elf)],
-            cwd=runtime_dir,
-            stdout=config_log,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
+    config_process = None
     try:
+        with (runtime_dir / "configure.log").open("w") as config_log:
+            config_process = subprocess.Popen(
+                [str(runtime_elf)],
+                cwd=runtime_dir,
+                stdout=config_log,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
         with wait_for_tcp(5761, config_process) as connection:
             enter_betaflight_cli(connection)
             run_cli_command(connection, "aux 0 0 0 1700 2100 0 0")
@@ -645,6 +646,10 @@ def prepare_runtime_betaflight(
 
 def main() -> int:
     """解析参数、准备资源、拉起两个进程并守护到退出；返回进程退出码。"""
+    # Install before EEPROM configuration and compilation, not only the main
+    # monitor. TERM now unwinds prepare_runtime_betaflight's finally too; build
+    # children share the caller-owned group and receive its shutdown signal.
+    signal.signal(signal.SIGTERM, interrupt_for_shutdown)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--betaloop-home", type=Path, default=DEFAULT_BETALOOP_HOME)
     parser.add_argument("--gazebo", action=argparse.BooleanOptionalAction, default=True,
@@ -932,8 +937,6 @@ def main() -> int:
 
     betaloop_process: Optional[subprocess.Popen] = None
     controller_process: Optional[subprocess.Popen] = None
-    # 让 SIGTERM 也走下面的 finally 清理流程。
-    signal.signal(signal.SIGTERM, interrupt_for_shutdown)
     try:
         log("starting Betaloop with the generated model overlay")
         betaloop_process = subprocess.Popen(
@@ -979,6 +982,8 @@ def main() -> int:
         log("stopping; disarm is sent before simulator shutdown")
         return 0
     finally:
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
         # 清理顺序很关键，不要调整下面三步的先后。
         stop_process(controller_process)
         # Keep this after the adapter has stopped and before Betaflight exits:
