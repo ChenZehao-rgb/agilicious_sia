@@ -17,16 +17,6 @@ RETAINED = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
 RUNTIME_QOS = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.VOLATILE)
 FAST = {'fused_state': FusedState}
 SLOW = {'authority': Authority, 'health': Health, 'output_status': OutputStatus, 'computation_status': ComputationStatus}
-EVENTS = {
-    'authority': ('receiver_valid', 'session_id', 'armed', 'auto_switch', 'kill', 'rc_link'),
-    'health': ('fc_imu_ready', 'imu_ready', 'estimator_ready', 'navigation_ready', 'config_verified',
-               'thrust_mapping_ready', 'thrust_calibrated', 'geofence_ok', 'transport_healthy',
-               'state_source', 'state_session', 'state_reset_counter', 'fc_estimator_healthy',
-               'msp_healthy', 'control_output_healthy'),
-    'output_status': ('session_start', 'fault_count', 'override_active', 'transport_healthy', 'thrust_mapping_ready'),
-    'computation_status': ('shadow_only', 'state_valid', 'controller_success', 'trajectory_active', 'hover_stable',
-                           'control_session_start', 'fc_session', 'fc_generation'),
-}
 RETAINED_TOPICS = {'navigation/origin': NavigationOrigin, 'goal_status': GoalStatus}
 
 
@@ -36,12 +26,11 @@ class GroundStationTelemetry(Node):
         self.cache = {}
         self.versions = {}
         self.sent = {}
-        self.events = {}
         self.publishers_by_topic = {}
         self.timers_by_rate = {}
         self.groups = {'fast_rate_hz': FAST, 'slow_rate_hz': SLOW}
         rates = {name: self.declare_parameter(name, default).value
-                 for name, default in [('fast_rate_hz', 20.0), ('slow_rate_hz', 2.0)]}
+                 for name, default in [('fast_rate_hz', 5.0), ('slow_rate_hz', 1.0)]}
         self.validate_rates(rates)
         for topic, msg_type in {**FAST, **SLOW, **RETAINED_TOPICS}.items():
             retained = topic in RETAINED_TOPICS
@@ -115,11 +104,10 @@ class GroundStationTelemetry(Node):
         self.versions[topic] = self.versions.get(topic, 0) + 1
         if topic in RETAINED_TOPICS:
             self.send_latest(topic)
-        elif topic in EVENTS:
-            event = tuple(getattr(message, name) for name in EVENTS[topic])
-            if self.events.get(topic) != event:
-                self.events[topic] = event
-                self.send_latest(topic)
+        # Ordinary display telemetry always waits for its timer, including
+        # fault counters and validity/ARM/AUTO/KILL changes. This bounds relay
+        # traffic during state flapping; onboard control consumes the original
+        # topics and commands do not pass through these display timers.
 
     def send_latest(self, topic):
         version = self.versions.get(topic, 0)

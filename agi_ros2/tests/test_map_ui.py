@@ -18,11 +18,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 import map_ui
 import ground_station_telemetry as relay
 import rclpy
+from diagnostic_msgs.msg import DiagnosticArray
 from std_msgs.msg import Empty
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.parameter import Parameter
+from rclpy.serialization import serialize_message
 from rosidl_runtime_py.convert import message_to_ordereddict
-from agi_ros2.msg import FusedState, GeographicGoal, GoalStatus, NavigationOrigin, Health, Authority, ComputationStatus
+from agi_ros2.msg import FusedState, GeographicGoal, GoalStatus, NavigationOrigin, Health, Authority, ComputationStatus, OutputStatus
 
 
 def mapping():
@@ -147,15 +149,19 @@ class DDSTests(unittest.TestCase):
         rclpy.shutdown()
 
     def setUp(self):
-        self.relay = relay.GroundStationTelemetry()
+        temporary = tempfile.TemporaryDirectory(prefix='agi-map-ui-test-')
+        self.addCleanup(temporary.cleanup)
+        # Keep synthetic listener locks/logs away from the user's deployment.
+        with patch('runtime_launcher.Path.home', return_value=Path(temporary.name)):
+            self.relay = relay.GroundStationTelemetry()
         self.ui = map_ui.MapUI()
         self.source = rclpy.create_node('map_ui_test_source')
         self.executor = SingleThreadedExecutor()
         for node in (self.relay, self.ui, self.source):
             self.executor.add_node(node)
-        self.received = {topic: [] for topic in ('fused_state', 'health', 'authority')}
+        self.received = {topic: [] for topic in (*relay.FAST, *relay.SLOW)}
         self.pubs = {}
-        for topic, cls in [('fused_state', FusedState), ('health', Health), ('authority', Authority)]:
+        for topic, cls in {**relay.FAST, **relay.SLOW}.items():
             self.pubs[topic] = self.source.create_publisher(cls, topic, relay.LATEST)
             self.source.create_subscription(cls, 'ground_station/' + topic,
                                             lambda msg, key=topic: self.received[key].append((time.monotonic(), msg)), relay.LATEST)
@@ -249,7 +255,7 @@ class DDSTests(unittest.TestCase):
             self.executor.spin_once(timeout_sec=.001)
         return count
 
-    def test_rates_atomic_events_stop_and_identity(self):
+    def test_rates_atomic_stop_and_identity(self):
         state, origin = mapping()
         health = Health(battery_voltage=16.)
         authority = Authority(receiver_valid=True, armed=True, auto_switch=True, rc_link=True)
@@ -263,7 +269,9 @@ class DDSTests(unittest.TestCase):
         self.origin_pub.publish(origin)
         self.run_for(.3, publish)
         rates = []
-        for fast, slow in [(20., 2.), (10., 1.)]:
+        self.assertEqual(self.relay.get_parameter('fast_rate_hz').value, 5.)
+        self.assertEqual(self.relay.get_parameter('slow_rate_hz').value, 1.)
+        for fast, slow in [(5., 1.), (20., 2.), (10., 1.)]:
             result = self.relay.set_parameters_atomically([Parameter('fast_rate_hz', value=fast), Parameter('slow_rate_hz', value=slow)])
             self.assertTrue(result.successful)
             self.run_for(.2, publish)
@@ -284,11 +292,13 @@ class DDSTests(unittest.TestCase):
         self.assertEqual(old_timers, self.relay.timers_by_rate)
         self.assertEqual(self.relay.get_parameter('fast_rate_hz').value, 10.)
         authority.kill = True
+        authority.header.stamp.sec = 123
         start = time.monotonic()
         self.pubs['authority'].publish(authority)
-        self.run_for(.1)
+        self.run_for(1.1)
         self.assertTrue(self.received['authority'][-1][1].kill)
-        self.assertLess(self.received['authority'][-1][0] - start, .1)
+        self.assertEqual(self.received['authority'][-1][1].header, authority.header)
+        self.assertLess(self.received['authority'][-1][0] - start, 1.1)
         self.run_for(1.2)  # Drain final latest payloads; then no source means no repeats.
         counts = {key: len(rows) for key, rows in self.received.items()}
         self.run_for(1.2)
@@ -314,14 +324,67 @@ class DDSTests(unittest.TestCase):
         self.assertIsNone(self.ui.snapshot()['position'])
         print('RELAY_RATES ' + json.dumps(rates), flush=True)
 
+    def test_changing_statuses_stay_rate_limited_with_payload_budget(self):
+        state, _ = mapping()
+        state.readiness_reason = 'FC XY/Z/fusion/snapshot unavailable'
+        messages = {
+            'fused_state': state,
+            'authority': Authority(clock_id=state.clock_id, session_id=state.navigation_session, receiver_valid=True),
+            'health': Health(state_source='fc_fused', state_session=state.navigation_session, battery_voltage=16.2),
+            'output_status': OutputStatus(clock_id=state.clock_id, session_start=10., thrust_model='measured_cubic'),
+            'computation_status': ComputationStatus(state_source='fc_fused', controller_type='MPC',
+                                                   control_session_start=10., fc_session=state.navigation_session),
+        }
+        runtime = []
+        self.source.create_subscription(DiagnosticArray, 'ground_station/runtime/hardware/status',
+                                        lambda msg: runtime.append((time.monotonic(), msg)), relay.RUNTIME_QOS)
+
+        def publish(index):
+            state.fc_state_sequence += 1
+            messages['authority'].kill = bool(index % 2)
+            messages['health'].state_reset_counter = index
+            messages['health'].fc_estimator_healthy = bool(index % 2)
+            messages['output_status'].fault_count = index
+            messages['output_status'].override_active = bool(index % 2)
+            messages['computation_status'].fc_generation = index
+            messages['computation_status'].state_valid = bool(index % 2)
+            for topic, message in messages.items():
+                message.header.stamp.nanosec = index
+                self.pubs[topic].publish(message)
+
+        self.run_for(.3, publish)
+        for rows in self.received.values():
+            rows.clear()
+        runtime.clear()
+        before = time.monotonic()
+        count = self.run_for(5.1, publish)
+        elapsed = time.monotonic() - before
+        rows_by_topic = {**self.received, 'runtime/hardware/status': runtime}
+        rates = {topic: len(rows) / elapsed for topic, rows in rows_by_topic.items()}
+        payload_bytes = {topic: sum(len(serialize_message(message)) for _, message in rows)
+                         for topic, rows in rows_by_topic.items()}
+        for topic, rate in rates.items():
+            expected = 5. if topic == 'fused_state' else 1.
+            self.assertAlmostEqual(rate, expected, delta=.25, msg=topic)
+        self.assertAlmostEqual(count / elapsed, 100., delta=1.)
+        payload_bps = sum(payload_bytes.values()) * 8 / elapsed
+        # CDR application payload only: DDS discovery/retries and other
+        # subscribers are outside this synthetic single-listener measurement.
+        self.assertLess(payload_bps, 100000)
+        print('RELAY_BANDWIDTH ' + json.dumps(dict(source_hz=count / elapsed, measured_hz=rates,
+              elapsed_s=elapsed, cdr_bytes=payload_bytes, cdr_bits_per_second=payload_bps)), flush=True)
+        self.run_for(1.1)
+        for topic, message in messages.items():
+            self.assertEqual(self.received[topic][-1][1], message, topic)
+
     def test_unchanged_origin_refresh_does_not_overtake_position(self):
         state, origin = mapping()
         self.origin_pub.publish(origin)
         self.pubs['fused_state'].publish(state)
-        self.run_for(.2)
+        self.run_for(.3)
         initial = self.ui.snapshot()
         self.assertIsNotNone(initial['position'])
-        # A real FC origin refresh arrives before the next 20 Hz position.
+        # A real FC origin refresh arrives before the next 5 Hz position.
         refreshed = copy.deepcopy(origin)
         refreshed.header.stamp.sec += 1
         refreshed.fc_time_usec = state.fc_time_usec + 30000
@@ -370,7 +433,7 @@ class DDSTests(unittest.TestCase):
                 self.relay.runtime.start()
                 self.run_for(1.2)
                 self.assertEqual(self.relay.runtime.snapshot()['state'], 'starting')
-                self.assertGreaterEqual(len(self.received['fused_state']), 20)
+                self.assertGreaterEqual(len(self.received['fused_state']), 5)
                 self.assertGreaterEqual(len(heartbeat), 2)
             finally:
                 gate.set()
@@ -385,8 +448,8 @@ class DDSTests(unittest.TestCase):
         self.source.create_subscription(Empty, 'ground_station/runtime/hardware/start', starts.append, relay.RUNTIME_QOS)
         # Never start hardware: this test only exercises dispatch into the fixed launcher.
         with patch.object(self.relay.runtime, 'start') as start:
-            self.run_for(1.6)
-            self.assertGreaterEqual(len(rows), 3)
+            self.run_for(2.2)
+            self.assertGreaterEqual(len(rows), 2)
             self.assertIsNone(self.ui.snapshot()['position'])
             wrong = self.source.create_publisher(Empty, 'ground_station/runtime/simulation/start', relay.RUNTIME_QOS)
             self.run_for(.15)
@@ -635,7 +698,7 @@ class DDSTests(unittest.TestCase):
         self.run_for(.4)
         self.pubs['fused_state'].publish(state)
         computation_pub.publish(ComputationStatus(control_session_start=25.))
-        self.run_for(.2)
+        self.run_for(1.1)
         snap = self.ui.snapshot()
         self.assertEqual(snap['topics']['goal_status']['data']['request_sequence'], 7)
         self.assertIsNotNone(snap['active_position'])

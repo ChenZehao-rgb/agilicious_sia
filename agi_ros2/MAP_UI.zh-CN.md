@@ -113,9 +113,9 @@ CM5 hardware 服务与 PC simulation 服务同时在线时，应分别使用不�
 `POST /api/runtime/start` 与 `POST /api/runtime/stop` 都只接收 {"mode":"hardware"} 或 {"mode":"simulation"}；
 不接收 PID、命令、目录或主机地址。停止只针对本次实际拥有的进程句柄/进程组。
 每次点击发布一次，不保留/重放命令；DDS 对已连接订阅者的可靠重传不等于应用自动重试。
-状态变化立即回传，心跳复用 slow_rate_hz（默认 2 Hz），即使无飞行数据/内容未变也重复发送。
+启动器状态变化立即回传，心跳复用 slow_rate_hz（默认 1 Hz），即使无飞行数据/内容未变也重复发送。
 显示年龄使用地面本地接收时间，3 s 未更新显示失联；很低的 slow_rate_hz 会使显示过期。
-原快慢组 20/2 Hz、GoalStatus 保留即时回传语义保持。
+位置/普通状态采用 5/1 Hz，GoalStatus 保留即时回传语义。
 
 ### 仿真桌面终端与地面 UI
 
@@ -375,7 +375,7 @@ ros2 run agi_ros2 sim_rc.py --ros-args -p use_sim_time:=false
 ```bash
 source /opt/ros/humble/setup.bash
 source install/agi_ros2/local_setup.bash
-ros2 run agi_ros2 ground_station_telemetry.py --ros-args -p runtime_mode:=simulation -p fast_rate_hz:=20.0 -p slow_rate_hz:=2.0
+ros2 run agi_ros2 ground_station_telemetry.py --ros-args -p runtime_mode:=simulation
 ```
 
 新增终端 5，只在**地面电脑**运行：
@@ -419,7 +419,7 @@ ros2 run agi_ros2 map_ui.py
 证据见 [HTTP / 悬停修复验证](test/results/map_ui_20261101/http_hover_fix/validation.json)。
 
 “UI 状态已收到，位置无效”反复跳动的另一处原因：原点的时间戳刷新立即转发，
-会短暂领先限频到 20 Hz 的位置快照。遥测转发现对内容相同、仅时间戳前进的原点去重，
+会短暂领先限频后的位置快照。遥测转发现对内容相同、仅时间戳前进的原点去重，
 保留原始快照；坐标、参考系、有效性或会话/reset 变化仍立即转发，页面时间匹配检查保持不变。
 2026-11-01 19:48 录包回放的 180 次不匹配中，179 次周期性误报消除；
 剩余 1 次为结束时 reset 3→4、Z 原点失效的真实变化。6 项地图服务测试和浏览器回归通过。
@@ -529,30 +529,45 @@ CM5 按前文部署 hardware 监听服务，地面电脑启动 UI。ROS/监听�
 
 | 输出 topic 前缀 `/ground_station/` | 常规频率 / 语义 |
 | --- | --- |
-| `fused_state` | fast_rate_hz，默认 20 Hz，最新位置/速度/姿态及 FC 有效性 |
-| `authority`, `health`, `output_status`, `computation_status` | slow_rate_hz，默认 2 Hz |
+| `fused_state` | fast_rate_hz，默认 5 Hz，最新位置/速度/姿态及 FC 有效性 |
+| `authority`, `health`, `output_status`, `computation_status` | slow_rate_hz，默认 1 Hz |
 | `navigation/origin`, `goal_status` | 语义更新即时可靠发布，transient_local、depth 1 |
+| `runtime/hardware/status` 或 `runtime/simulation/status` | slow_rate_hz 心跳，启动器状态变化即时发送 |
 
 快慢组 BEST_EFFORT、KEEP_LAST(1)，控制端原 topic 频率和 QoS 不变。
-ARM/AUTO/KILL、链路、输出故障计数和控制有效性等有意义的离散变化即时额外发送，
-不把时间戳、header、age、电压抖动或 reason 文本变化当事件。因此 20/2 是常规上限，非事件流硬上限。
-每路仅发送更新版本，事件发送也标记版本；源停止后不重新发送最后一帧，改频率也不重新标记缓存。
+普通状态的 ARM/AUTO/KILL、链路、输出故障计数和控制有效性变化同样等待慢组定时器，
+不再绕过限频。默认最多约 1 s 才显示一次最新状态；期间的中间变化可能合并，不用于完整故障记录。
+机载控制仍接收原始 topic，目标/暂停命令直达控制节点；显示降频不降低控制、估计或撤权频率。
+每路仅发送更新版本；源停止后不重新发送最后一帧，改频率也不重新标记缓存。
 原 header、frame_id、clock_id、会话/reset、采样时间原样保留。
 
-运行中修改和恢复：
+已有部署可以先在相同 ROS 域下在线降频，无需停止控制链（旧版本仍有状态变化即时发送旁路）：
 
 ```bash
-ros2 param set /ground_station_telemetry fast_rate_hz 10.0
+ros2 param set /ground_station_telemetry fast_rate_hz 5.0
 ros2 param set /ground_station_telemetry slow_rate_hz 1.0
 ros2 param get /ground_station_telemetry fast_rate_hz
 ros2 param get /ground_station_telemetry slow_rate_hz
-# 恢复默认
-ros2 param set /ground_station_telemetry fast_rate_hz 20.0
-ros2 param set /ground_station_telemetry slow_rate_hz 2.0
 ```
 
 参数须为有限正数且周期可由 ROS 纳秒计时器表示。单次原子参数请求先验证全部值再替换计时器；
 不重启飞行程序、不清空目标、不改变机载控制频率。源更新慢于配置时，实际发布随源更新。
+参数修改只对当前监听进程有效。同步新版到 CM5 并按前文构建后，在落地、上锁且控制链停止时
+重启 `ground_station_telemetry.py`（systemd 部署为 `sudo systemctl restart agi-ground-station.service`），
+才会加载新的默认值和取消旁路的逻辑。监听重启会清理它拥有的控制链；仅刷新地面网页不生效。
+检查旧启动命令是否显式覆盖了 fast_rate_hz / slow_rate_hz，删除旧 20/2 覆盖或改成 5/1。
+
+带宽目标是稳态遥测低于 **1 Mb/s = 125 kB/s**，这里没有给整机网卡设置硬限速。
+100 Hz 合成输入、普通状态持续抖动的本机 DDS 回归中，位置约 5.10 Hz，普通状态与运行心跳各约 0.98 Hz，
+CDR 载荷合计约 **0.038 Mb/s**（5.10 s 窗口，计数边界误差约一个样本）。
+这是测试消息的序列化载荷统计，不含 DDS 发现、协议头、可靠重传、其他订阅和原点/目标/启动事件突发。
+2026-11-05 本机 DDS/HTTP 15/15、浏览器合成回归及构建安装通过；
+[验证摘要](test/results/bandwidth_20261105/validation.json)记录实际频率与字节数。尚未在 CM5 部署或测量无线流量。
+因此持续 5 Mb/s 不能仅凭默认镜像频率解释，需测量 CM5 实际网卡流量。
+地面电脑用 `ros2 topic info /fused_state -v` 等查询原始 topic 的订阅节点，确认没有远端原始流录包/桥接；
+此查询不订阅数据，不要在地面用 `ros2 topic hz /fused_state` 来排查，否则会新增原始高频流量。
+还应确认同域没有重复回传实例。若降频后仍高，结合 CM5 抓包区分原始 DDS 数据、发现/重传和其他进程，
+不能用镜像 topic 的载荷估算代替整机上行测量。
 
 浏览器 HTTP 快照名义 20 Hz，每次只保留一个请求；网络/浏览器调度可能使实际刷新变慢。
 低频显示数据只在新 ROS 回调时变更，接收年龄单独增长。浏览器刷新频率不等于无线外发频率；
@@ -591,7 +606,7 @@ VOLATILE 限制晚加入者获取历史，不禁止 DDS 对既有未确认样本
 地面电脑与控制主机均须重新构建并 source **同版本的 agi_ros2 消息**，然后重启各自节点；
 本次 `GoalStatus` 新增 `bool pause_active`，只更新浏览器或 Python 文件不足以升级。
 构建、仿真/接收机、遥测转发和 UI 的准确启动命令见本文开头。跨机沿用同一 domain、兼容 RMW
-和既有网络配置；暂停命令直达控制节点，不经过 20/2 Hz 遥测定时器。
+和既有网络配置；暂停命令直达控制节点，不经过遥测定时器。
 
 在稳定 AUTO 中执行目标，转向、平移、升降、终点收敛或已悬停时均可点击橙色“暂停并悬停”。
 按钮不依赖目标输入、地图、地理原点或 `hover_stable`，只在自己的 HTTP 请求在途时禁用。

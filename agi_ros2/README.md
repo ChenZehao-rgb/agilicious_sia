@@ -349,7 +349,7 @@ hardware 模式拒绝启用此开关。旧独立控制器仍可用 `run.py --no-
 见 [地面站部署与使用说明](MAP_UI.zh-CN.md)：运行 `ros2 run agi_ros2 map_ui.py`，
 打开 `http://127.0.0.1:8080` 即可在线查看地图，页面内选区域下载、切换离线地图。
 无需注册地图 API；默认保存到 `~/.local/share/agi_ros2/maps/`，兼容已有栅格 `--mbtiles`。
-控制主机只读转发默认 20/2 Hz，支持运行中改频率、真实目标反馈和跨机 DDS。
+控制主机显示遥测转发默认位置 5 Hz、普通状态 1 Hz，支持运行中改频率、真实目标反馈和跨机 DDS。
 UI 与转发独立启动，不加入 flight launch。
 
 ### WGS84 + MSL 在线目标（FC 状态源）
