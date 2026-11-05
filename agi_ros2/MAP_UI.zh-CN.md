@@ -93,11 +93,30 @@ systemd 仍填写实际 WorkingDirectory，模板内的相对 source 也依赖�
 用户提及的 `bench_fixed_gps:=true` 与 fc_fused 冲突，runtime_launch.py 会拒绝；本轮没有加入该参数、
 没有切换定位链，严格执行上表固定命令。如果配置被改成冲突组合，错误随入口退出回传 UI。
 硬件“启动中”持续到 launch_realtime 报告四个节点 FIFO 配置；“运行中”仍只表示入口进程存活，
-不代表传感器/导航就绪、ARM/AUTO 已开启或输出已接管。sudo、时钟等待、节点检查失败均保留实际退出原因。
+不代表传感器/导航就绪、ARM/AUTO 已开启或输出已接管。sudo、节点检查失败均保留实际退出原因。
 
 sim_rc 默认会以 **50 Hz** 发布 Authority：armed=false、auto_switch=false、kill=true、throttle=1000、
 roll/pitch/yaw=1500。用户负责后续遥控操作；按钮/启动器不执行 ros2 param set，不解除 KILL，不 ARM/AUTO，
 不改变油门。原有入口退出清理保持，包括仿真的既有 disarm 清理。
+
+### 实机测试前校时
+
+所有 hardware 启动入口（包括一键启动）不再等待 `NTPSynchronized=yes`，未同步或离线不会因此阻止启动；
+无需跳过参数。程序不自动启停校时服务，运行中的时钟跳变检测、消息新鲜度保护和飞控 MAVLink TIMESYNC 保持原样。
+
+采用“开机联网校时，测试期间关闭自动校时”时，在 **CM5 控制程序尚未启动**时执行：
+
+```bash
+sudo timedatectl set-ntp true
+timedatectl show --property=NTPSynchronized --value
+# 确认输出 yes 后再关闭自动网络校时；这不会停止系统时间正常走动。
+sudo timedatectl set-ntp false
+```
+
+随后按原方式启动控制程序。测试期间保持自动校时关闭，不手动设置系统时间；
+控制程序退出后，才用 `sudo timedatectl set-ntp true` 恢复自动校时。
+该命令停止并禁用 systemd 识别的网络校时服务，设置会保留；若另有独立校时进程，需按 CM5 实际部署核实。
+关闭自动校时期间系统时间会自然漂移，这不等于准确 UTC 授时。尚未在 CM5 实测该部署流程。
 
 ### 单连接与 ROS 域
 

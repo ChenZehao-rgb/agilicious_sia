@@ -59,6 +59,11 @@ class HardwareHarness(ShadowHarness):
         profile['flight']['shadow_only'] = shadow
         profile['flight']['thrust_model'] = thrust_model
         profile['flight']['thrust_table'] = str(table)
+        # Keep this existing small-airframe regression independent of the active hardware profile.
+        if thrust_model == 'quadratic':
+            profile['flight']['thrust_quadratic'] = dict(
+                airframe='small', a1_n=3.0411331993565565, a2_n=138.51944503645788, a3_n=-65.93137222790723,
+                reference_voltage_v=24.0, voltage_exponent_p=1.253471255346232)
         path = self.path / 'hardware.yaml'
         path.write_text(dump_profile(profile))
         # Both controllers use the hardware profile with only measured command limits.

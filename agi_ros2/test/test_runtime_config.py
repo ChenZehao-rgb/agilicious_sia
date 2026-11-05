@@ -5,12 +5,11 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import yaml
-from launch import LaunchContext, LaunchDescription, LaunchService
-from launch.actions import ExecuteProcess
+from launch import LaunchContext
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, OpaqueFunction
 from launch.utilities import perform_substitutions
 from launch_ros.actions import Node
 from launch_ros.utilities import evaluate_parameters
@@ -28,49 +27,40 @@ def import_path(name, path):
 
 runtime = import_path('runtime_launch_test', ROOT / 'agi_ros2/launch/runtime_launch.py')
 sitl = import_path('sitl_run_test', ROOT / 'betaflight_sitl/run.py')
+SMALL_THRUST = {'a1_n': 3.0411331993565565, 'a2_n': 138.51944503645788, 'a3_n': -65.93137222790723,
+                'reference_voltage_v': 24.0, 'voltage_exponent_p': 1.253471255346232}
 
 
 class RuntimeProfiles(unittest.TestCase):
-    def test_hardware_waits_for_clock_before_assembling_any_component(self):
-        context = self.context(mode='hardware')
-        with patch.object(runtime, 'assemble', return_value=['assembled']) as assemble:
-            actions = runtime.guarded_assemble(context)
-            assemble.assert_not_called()
-            self.assertEqual(len(actions), 2)
-            self.assertIsInstance(actions[1], ExecuteProcess)
-            self.assertNotIsInstance(actions[1], Node)
-            with self.assertRaisesRegex(RuntimeError, 'clock synchronization'):
-                runtime.after_clock_sync(SimpleNamespace(returncode=1), context)
-            assemble.assert_not_called()
-            self.assertEqual(runtime.after_clock_sync(SimpleNamespace(returncode=0), context), ['assembled'])
-            assemble.assert_called_once_with(context, False, False, False)
-
-    def test_sitl_has_no_system_clock_gate(self):
-        context = self.context()
-        with patch.object(runtime, 'assemble', return_value=['sitl']) as assemble:
-            self.assertEqual(runtime.guarded_assemble(context), ['sitl'])
-            assemble.assert_called_once()
-
-    def test_clock_gate_rejects_invalid_timeout(self):
-        for timeout in ('0', '-1', 'nan', 'inf'):
-            with self.subTest(timeout=timeout), self.assertRaises(ValueError):
-                runtime.guarded_assemble(self.context(mode='hardware', clock_sync_timeout=timeout))
-
-    def test_clock_process_exit_controls_actual_launch_event_flow(self):
-        for exit_code in (0, 1):
-            with self.subTest(exit_code=exit_code), tempfile.TemporaryDirectory() as directory:
-                script = Path(directory) / 'lib/agi_ros2/wait_for_clock.py'
-                script.parent.mkdir(parents=True)
-                script.write_text(f'#!/usr/bin/env python3\nraise SystemExit({exit_code})\n')
-                script.chmod(0o755)
-                context = self.context(mode='hardware')
-                with patch.object(runtime, 'get_package_prefix', return_value=directory), \
-                        patch.object(runtime, 'assemble', return_value=[]) as assemble:
-                    service = LaunchService()
-                    service.include_launch_description(LaunchDescription(runtime.guarded_assemble(context)))
-                    result = service.run()
-                    self.assertEqual(result, exit_code)
-                    self.assertEqual(assemble.call_count, 1 if exit_code == 0 else 0)
+    def test_all_launch_entrypoints_assemble_without_clock_service(self):
+        core = {'mavlink_sensor_node', 'fc_state_adapter_node', 'control_node', 'command_output_node'}
+        cases = [('flight', 'hardware', core | {'msp_evidence.py'}),
+                 ('flight', 'sitl', core),
+                 ('shadow', 'hardware', core | {'msp_evidence.py'}),
+                 ('mavlink_sensors', 'hardware', {'mavlink_sensor_node'}),
+                 ('msp', 'hardware', {'betaflight_msp_node', 'msp_evidence.py'})]
+        for entry, mode, expected in cases:
+            with self.subTest(entry=entry, mode=mode):
+                module = import_path('offline_' + entry, ROOT / 'agi_ros2/launch' / (entry + '.launch.py'))
+                context = self.context(mode=mode, state_source='fc_fused')
+                actions = []
+                # Execute only declarations and assembly, never the returned
+                # device nodes or process actions. No NTP service is required.
+                with patch('subprocess.run', side_effect=AssertionError('Launch must not query or change clock services')):
+                    for entity in module.generate_launch_description().entities:
+                        if isinstance(entity, DeclareLaunchArgument):
+                            entity.execute(context)
+                        else:
+                            self.assertIsInstance(entity, OpaqueFunction)
+                            actions.extend(entity.execute(context))
+                nodes = [action for action in actions if isinstance(action, Node)]
+                self.assertEqual({node.node_executable for node in nodes}, expected)
+                self.assertFalse(any(isinstance(action, ExecuteProcess) and not isinstance(action, Node)
+                                     for action in actions))
+                if entry == 'shadow':
+                    for node in nodes:
+                        if node.node_executable in ('control_node', 'command_output_node'):
+                            self.assertTrue(evaluate_parameters(context, node._Node__parameters)[0]['shadow_only'])
 
     def context(self, **values):
         context = LaunchContext()
@@ -285,16 +275,29 @@ class RuntimeProfiles(unittest.TestCase):
             # This would fail path resolution if an unselected table were inspected.
             profile['flight']['thrust_table'] = {'not': 'a path'}
             path = Path(directory) / 'hardware.yaml'
-            path.write_text(yaml.safe_dump(profile))
-            for shadow in ('true', 'false'):
-                with self.subTest(shadow=shadow):
-                    nodes = self.actions(mode='hardware', runtime_config=str(path), device='/dev/null',
-                                         mavlink_device='/dev/zero', shadow_only=shadow)
-                    output = nodes['command_output_node']
-                    self.assertEqual(output['thrust_model'], 'quadratic')
-                    self.assertEqual(output['thrust_table'], '')
-                    for key, value in profile['flight']['thrust_quadratic'].items():
-                        self.assertEqual(output['thrust_quadratic.' + key], value)
+            for parameters in (profile['flight']['thrust_quadratic'], SMALL_THRUST,
+                               dict(SMALL_THRUST, airframe='small')):
+                profile['flight']['thrust_quadratic'] = parameters
+                path.write_text(yaml.safe_dump(profile))
+                for shadow in ('true', 'false'):
+                    with self.subTest(airframe=parameters.get('airframe', 'default'), shadow=shadow):
+                        nodes = self.actions(mode='hardware', runtime_config=str(path), device='/dev/null',
+                                             mavlink_device='/dev/zero', shadow_only=shadow)
+                        output = nodes['command_output_node']
+                        self.assertEqual(output['thrust_model'], 'quadratic')
+                        self.assertEqual(output['thrust_table'], '')
+                        self.assertEqual(output['thrust_quadratic.airframe'], parameters.get('airframe', 'small'))
+                        for key, value in parameters.items():
+                            self.assertEqual(output['thrust_quadratic.' + key], value)
+                        if parameters.get('airframe') == 'big':
+                            for key in ('a1_n', 'a2_n', 'a3_n'):
+                                self.assertNotIn('thrust_quadratic.' + key, output)
+
+    def test_hardware_big_mapping_has_no_cubic_coefficients(self):
+        _, profile = runtime.load_profile('hardware')
+        self.assertEqual(profile['flight']['thrust_model'], 'quadratic')
+        self.assertEqual(profile['flight']['thrust_quadratic'],
+                         {'airframe': 'big', 'reference_voltage_v': 24.0, 'voltage_exponent_p': 0.0})
 
     def test_thrust_model_launch_override_selects_only_requested_model(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -316,23 +319,25 @@ class RuntimeProfiles(unittest.TestCase):
         path, profile = runtime.load_profile('hardware')
         flight = profile['flight']
         flight['thrust_table'] = 'measured.csv'
-        for key in ('a1_n', 'a2_n', 'a3_n', 'reference_voltage_v', 'voltage_exponent_p'):
-            valid = flight['thrust_quadratic'][key]
-            for invalid in (None, True, '0.5', float('nan'), float('inf'), float('-inf')):
-                with self.subTest(key=key, value=invalid):
-                    flight['thrust_quadratic'][key] = invalid
-                    with self.assertRaisesRegex(ValueError, key):
-                        runtime.checked_thrust_mapping(flight, 'hardware', path, True)
-            del flight['thrust_quadratic'][key]
-            with self.assertRaisesRegex(ValueError, key):
-                runtime.checked_thrust_mapping(flight, 'hardware', path, True)
-            flight['thrust_quadratic'][key] = valid
-        for key, invalid in (('reference_voltage_v', 0), ('reference_voltage_v', -1)):
-            valid = flight['thrust_quadratic'][key]
-            flight['thrust_quadratic'][key] = invalid
-            with self.subTest(key=key, value=invalid), self.assertRaisesRegex(ValueError, key):
-                runtime.checked_thrust_mapping(flight, 'hardware', path, True)
-            flight['thrust_quadratic'][key] = valid
+        for parameters in (flight['thrust_quadratic'], dict(SMALL_THRUST)):
+            flight['thrust_quadratic'] = parameters
+            for key in set(parameters) - {'airframe'}:
+                valid = parameters[key]
+                for invalid in (None, True, '0.5', float('nan'), float('inf'), float('-inf')):
+                    with self.subTest(airframe=parameters.get('airframe', 'default'), key=key, value=invalid):
+                        parameters[key] = invalid
+                        with self.assertRaisesRegex(ValueError, key):
+                            runtime.checked_thrust_mapping(flight, 'hardware', path, True)
+                del parameters[key]
+                with self.assertRaisesRegex(ValueError, key):
+                    runtime.checked_thrust_mapping(flight, 'hardware', path, True)
+                parameters[key] = valid
+            for invalid in (0, -1):
+                valid = parameters['reference_voltage_v']
+                parameters['reference_voltage_v'] = invalid
+                with self.subTest(value=invalid), self.assertRaisesRegex(ValueError, 'reference_voltage_v'):
+                    runtime.checked_thrust_mapping(flight, 'hardware', path, True)
+                parameters['reference_voltage_v'] = valid
         for invalid in (None, [], 'model'):
             flight['thrust_quadratic'] = invalid
             with self.subTest(value=invalid), self.assertRaisesRegex(ValueError, 'flight.thrust_quadratic'):
@@ -344,6 +349,7 @@ class RuntimeProfiles(unittest.TestCase):
     def test_thrust_model_selection_and_finite_cubic_coefficients(self):
         path, profile = runtime.load_profile('hardware')
         flight = profile['flight']
+        flight['thrust_quadratic'] = dict(SMALL_THRUST)
         for coefficient in (-1, 0, 1):
             flight['thrust_quadratic']['a1_n'] = coefficient
             parameters = runtime.checked_thrust_mapping(flight, 'hardware', path, True)
@@ -360,6 +366,18 @@ class RuntimeProfiles(unittest.TestCase):
         self.assertEqual(parameters, {'thrust_model': 'table', 'thrust_table': ''})
         with self.assertRaisesRegex(ValueError, 'measured flight.thrust_table'):
             runtime.checked_thrust_mapping(flight, 'hardware', path, False)
+
+    def test_airframe_selection_and_unused_big_coefficients(self):
+        path, profile = runtime.load_profile('hardware')
+        flight = profile['flight']
+        parameters = runtime.checked_thrust_mapping(flight, 'hardware', path, True)
+        for key in ('a1_n', 'a2_n', 'a3_n'):
+            flight['thrust_quadratic'][key] = 'unused by big'
+        self.assertEqual(runtime.checked_thrust_mapping(flight, 'hardware', path, True), parameters)
+        for invalid in ('', 'SMALL', 'unknown', None, True, 1, [], {}):
+            flight['thrust_quadratic']['airframe'] = invalid
+            with self.subTest(value=invalid), self.assertRaisesRegex(ValueError, 'airframe must be small or big'):
+                runtime.checked_thrust_mapping(flight, 'hardware', path, True)
 
     def test_conflicting_modes_or_legacy_configuration_rejected(self):
         for values in ({'shadow_only': 'true'}, {'diagnostic_only': 'true'}, {'mavlink_enabled': 'true'},

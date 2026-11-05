@@ -4,25 +4,32 @@
 #include <cmath>
 #include <cstdint>
 #include <stdexcept>
+#include <string>
 
 namespace agi::hardware {
 
-// Quadratic is a historical name retained to minimize integration changes; the formula is now cubic.
-// Total vehicle thrust at the reference voltage is u * (a1 + u * (a2 + u * a3)), u in [0, 1].
+// Quadratic is a historical name retained to minimize integration changes.
+// Both reference curves return total four-motor thrust in N, with u in [0, 1].
 class QuadraticThrustModel {
 public:
-	QuadraticThrustModel(double a1_n, double a2_n, double a3_n, double reference_voltage_v, double voltage_exponent_p, int min_check)
+	QuadraticThrustModel(double a1_n, double a2_n, double a3_n, double reference_voltage_v, double voltage_exponent_p, int min_check,
+	                     const std::string& airframe = "small")
 	        : _a1_n(a1_n),
 	          _a2_n(a2_n),
 	          _a3_n(a3_n),
 	          _reference_voltage_v(reference_voltage_v),
 	          _voltage_exponent_p(voltage_exponent_p),
-	          _min_check(min_check) {
-		if (!std::isfinite(a1_n) || !std::isfinite(a2_n) || !std::isfinite(a3_n) || !std::isfinite(reference_voltage_v) ||
-		    reference_voltage_v <= 0.0 || !std::isfinite(voltage_exponent_p) || min_check < 1000 || min_check >= 2000) {
+	          _min_check(min_check),
+	          _airframe(airframe) {
+		if (airframe != "small" && airframe != "big") {
+			throw std::invalid_argument("Thrust model airframe must be small or big");
+		}
+		if ((airframe == "small" && (!std::isfinite(a1_n) || !std::isfinite(a2_n) || !std::isfinite(a3_n))) ||
+		    !std::isfinite(reference_voltage_v) || reference_voltage_v <= 0.0 || !std::isfinite(voltage_exponent_p) ||
+		    min_check < 1000 || min_check >= 2000) {
 			throw std::invalid_argument(
-			        "Invalid measured cubic thrust model: require finite coefficients, positive reference voltage and "
-			        "min_check in [1000, 2000)");
+			        "Invalid thrust model: require finite small-airframe coefficients and voltage exponent, "
+			        "positive reference voltage and min_check in [1000, 2000)");
 		}
 	}
 
@@ -37,16 +44,16 @@ public:
 		const double endpoint_thrust_n = referenceThrust(1.0);
 		if (!std::isfinite(voltage_ratio) || !std::isfinite(scale) || !std::isfinite(lookup_thrust_n) ||
 		    !std::isfinite(endpoint_thrust_n)) {
-			throw std::overflow_error("Nonfinite measured cubic thrust calculation");
+			throw std::overflow_error("Nonfinite thrust model calculation");
 		}
 		if (lookup_thrust_n >= endpoint_thrust_n) return 1.0;
 		double lower = 0.0;
 		double upper = 1.0;
-		// The configured measured cubic is monotonic throughout [0, 1].
+		// Both configured reference curves are monotonic throughout [0, 1].
 		for (int iteration = 0; iteration < 32; ++iteration) {
 			const double middle = (lower + upper) * 0.5;
 			const double thrust_n = referenceThrust(middle);
-			if (!std::isfinite(thrust_n)) throw std::overflow_error("Nonfinite measured cubic thrust calculation");
+			if (!std::isfinite(thrust_n)) throw std::overflow_error("Nonfinite thrust model calculation");
 			if (thrust_n < lookup_thrust_n) {
 				lower = middle;
 			} else {
@@ -62,7 +69,15 @@ public:
 	}
 
 private:
-	double referenceThrust(double normalized) const { return normalized * (_a1_n + normalized * (_a2_n + normalized * _a3_n)); }
+	double referenceThrust(double normalized) const {
+		if (_airframe == "big") {
+			// 大飞机：GEPRC EM3115 900KV + Hoprop MQ10X5，厂家数据拟合；已换算为四电机总推力 N。
+			// Raw data at 23.47-24.08 V, without voltage normalization; the exponent below describes curve shape.
+			return 161.946600121777 * (-std::expm1(-std::pow(normalized / 0.6159720191140124, 3.1165108548961253)));
+		}
+		// 小飞机：保留原实测三次公式。
+		return normalized * (_a1_n + normalized * (_a2_n + normalized * _a3_n));
+	}
 
 	const double _a1_n;
 	const double _a2_n;
@@ -70,6 +85,7 @@ private:
 	const double _reference_voltage_v;
 	const double _voltage_exponent_p;
 	const int _min_check;
+	const std::string _airframe;
 };
 
 }  // namespace agi::hardware

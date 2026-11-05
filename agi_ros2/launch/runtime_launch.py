@@ -5,7 +5,6 @@ from datetime import datetime
 from pathlib import Path
 
 import yaml
-from ament_index_python.packages import get_package_prefix
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, EmitEvent, ExecuteProcess, LogInfo, OpaqueFunction, RegisterEventHandler
 from launch.event_handlers import OnProcessExit
@@ -22,8 +21,7 @@ DEFAULTS = dict(state_source='', mode='sitl', runtime_config='', controller='', 
                 heading_confirmed='', heading_correction_rad='', fc_declination_applied='',
                 aux_low='', aux_high='', params_dir='', pilot_config='', bridge_config='',
                 gps_mode='', imu_rate_hz='', gps_rate_hz='', attitude_rate_hz='', baro_rate_hz='',
-                bench_fixed_gps='', bench_gps_latitude='', bench_gps_longitude='', bench_gps_altitude_msl='',
-                clock_sync_timeout='60')
+                bench_fixed_gps='', bench_gps_latitude='', bench_gps_longitude='', bench_gps_altitude_msl='')
 
 
 def boolean(value):
@@ -149,9 +147,13 @@ def checked_thrust_mapping(flight, mode, path, shadow):
         raise ValueError('flight.thrust_model=quadratic requires mode=hardware')
     quadratic = flight.get('thrust_quadratic')
     if not isinstance(quadratic, dict):
-        raise ValueError('flight.thrust_quadratic must contain a1_n, a2_n, a3_n, reference_voltage_v and voltage_exponent_p')
-    values = {}
-    for key in ('a1_n', 'a2_n', 'a3_n', 'reference_voltage_v', 'voltage_exponent_p'):
+        raise ValueError('flight.thrust_quadratic must be a mapping with the selected airframe parameters')
+    airframe = quadratic.get('airframe', 'small')
+    if airframe not in ('small', 'big'):
+        raise ValueError('flight.thrust_quadratic.airframe must be small or big')
+    values = {'airframe': airframe}
+    keys = ('a1_n', 'a2_n', 'a3_n') if airframe == 'small' else ()
+    for key in keys + ('reference_voltage_v', 'voltage_exponent_p'):
         value = quadratic.get(key)
         if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value):
             raise ValueError('flight.thrust_quadratic.' + key + ' must be finite')
@@ -312,30 +314,9 @@ def assemble(context, forced_shadow=False, sensor_only=False, msp_only=False):
     return actions
 
 
-def after_clock_sync(event, context, forced_shadow=False, sensor_only=False, msp_only=False):
-    if event.returncode != 0:
-        raise RuntimeError('Hardware startup blocked: initial clock synchronization failed; inspect timedatectl/timesync logs')
-    return assemble(context, forced_shadow, sensor_only, msp_only)
-
-
-def guarded_assemble(context, forced_shadow=False, sensor_only=False, msp_only=False):
-    if LaunchConfiguration('mode').perform(context) != 'hardware':
-        return assemble(context, forced_shadow, sensor_only, msp_only)
-    timeout = float(LaunchConfiguration('clock_sync_timeout').perform(context))
-    if not math.isfinite(timeout) or timeout <= 0:
-        raise ValueError('clock_sync_timeout must be finite and positive')
-    script = Path(get_package_prefix('agi_ros2')) / 'lib/agi_ros2/wait_for_clock.py'
-    gate = ExecuteProcess(cmd=[str(script), '--timeout', str(timeout)], output='screen')
-    # Register before starting the gate, including the already-synchronized case.
-    handler = RegisterEventHandler(OnProcessExit(
-        target_action=gate,
-        on_exit=lambda event, ctx: after_clock_sync(event, ctx, forced_shadow, sensor_only, msp_only)))
-    return [handler, gate]
-
-
 def description(*, shadow=False, sensor_only=False, msp_only=False):
     defaults = dict(DEFAULTS)
     if shadow or sensor_only or msp_only:
         defaults['mode'] = 'hardware'
     return LaunchDescription([DeclareLaunchArgument(k, default_value=v) for k, v in defaults.items()] + [
-        OpaqueFunction(function=lambda context: guarded_assemble(context, shadow, sensor_only, msp_only))])
+        OpaqueFunction(function=lambda context: assemble(context, shadow, sensor_only, msp_only))])

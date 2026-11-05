@@ -45,6 +45,7 @@ private:
 	const double _session_start;
 	std::string _mode;
 	std::string _thrust_model;
+	std::string _thrust_model_source;
 	bool _shadow_only = false;
 	bool _simulation_time = false;
 	bool _latched_receiver = false;

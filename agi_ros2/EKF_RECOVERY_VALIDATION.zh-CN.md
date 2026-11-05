@@ -2,6 +2,7 @@
 
 适用日期：2026-10-20。对应日志 `hardware_20261020_151721_924641` 和
 `hardware_20261020_160210_640434` 中已确认的软件阻塞。
+历史验证结果保留；启动流程与回归命令已按 2026-11-05 的离线测试需求更新。
 
 ## 本次修改
 
@@ -11,12 +12,12 @@
 | 本机校时跳变被归类为永久 MSP transport failure | 独立比较本机 ROS 时间与单调时钟；超过 50 ms 的偏移突变使已有证据失效，丢弃跨时钟时期的请求/响应，重新采集证据 |
 | 恢复可能误用旧配置或旧开关 | 必须重新取得完整配置及新鲜 RC/STATUS，并同时确认 ARM 低、FC disarmed、AUTO 低、RC 正常、无 KILL；保留旧配置内容用于检测配置变化 |
 | 真实通信故障与时钟异常混淆 | 真实 `error/timeout/transport_error` 和配置变化继续锁存，时钟恢复不清除这些故障 |
-| 开机还未完成首次校时就启动飞行进程 | 所有 hardware launch 入口先等待 `timedatectl NTPSynchronized=yes`，默认最多 60 秒；失败不启动飞行组件或录包，SITL 不等待系统校时 |
+| 离线测试时 NTP 状态阻止启动 | 2026-11-05 起所有 hardware launch 入口直接组装组件，不再等待系统 NTP 同步；启动前校时和测试期间关闭自动校时由操作者完成 |
 | 只能看到笼统的初始化失败 | 增加最后一次 reset 原因、IMU 断档、迟到消息计数及静止初始化统计，细分 authority、速度、航向、IMU 等阻塞原因 |
 
-硬件启动新增参数 `clock_sync_timeout:=90` 可调整等待时间；不能设为零或非有限值。
-`launch_realtime.py` 的进程发现超时同步延长，避免等待校时时被提前终止。
-直接手工启动单个 node 不经过 launch 校时检查。
+原 NTP 启动等待及其超时参数已移除，`launch_realtime.py` 保留 15 秒节点发现等待。
+程序不自动启停校时服务；运行中的时钟跳变检测、消息新鲜度保护和飞控 MAVLink TIMESYNC 保持不变。
+具体操作见[实机测试前校时](MAP_UI.zh-CN.md#实机测试前校时)。
 
 以下策略保持原值：IMU 25 ms 断档 reset、飞行中禁止静止初始化、导航精度门限、NIS 门限、
 IMU 噪声和 Q/R、观测重排延迟。**本次没有解决产生 291 ms IMU 断档的底层原因，
@@ -63,12 +64,9 @@ export ROS_DOMAIN_ID=87
 export ROS_LOCALHOST_ONLY=1
 export PYTHONPATH="$PWD/agi_ros2/test:$PYTHONPATH"
 
-python3 -m unittest -v test_msp_evidence test_shadow_support test_wait_for_clock
+python3 -m unittest -v test_msp_evidence test_shadow_support
 python3 -m unittest -v \
-  test_runtime_config.RuntimeProfiles.test_hardware_waits_for_clock_before_assembling_any_component \
-  test_runtime_config.RuntimeProfiles.test_sitl_has_no_system_clock_gate \
-  test_runtime_config.RuntimeProfiles.test_clock_gate_rejects_invalid_timeout \
-  test_runtime_config.RuntimeProfiles.test_clock_process_exit_controls_actual_launch_event_flow
+  test_runtime_config.RuntimeProfiles.test_all_launch_entrypoints_assemble_without_clock_service
 python3 -m unittest -v test_baro_fusion
 python3 -m unittest -v \
   test_shadow_pipeline.ShadowTests.test_output_interlock_telemetry_and_readonly_parameter
@@ -89,9 +87,9 @@ g++ -std=c++17 -O1 -fno-finite-math-only \
 3. 注入本机时钟前跳 3295.33 秒或后跳，旧请求不能恢复 authority；新配置、新 RC/STATUS、
    disarmed 和 AUTO 低全部满足后，`receiver_valid` 恢复；没有自动取得控制权。
 4. 真实 transport failure、跨校时配置变化仍锁存。仅输入未来/错误时钟消息，不能伪装成本机校时恢复。
-5. 启动时同步成功才装配后续组件；失败以非零状态结束。测试用假的校时子进程检查真实 launch 退出事件链。
+5. hardware/SITL 及各硬件诊断入口直接组装组件，不启动校时等待子进程；不会自动调整主机时间。
 
-`test_runtime_config` 全量测试另有 5 个既有失败，修改前 HEAD 与本次修改均已复现：
+2026-10-20 验证时，`test_runtime_config` 全量测试另有 5 个既有失败，当时修改前 HEAD 与修改后均已复现：
 它们假定旧的质量、角速度限制、零推力占位配置或空轨迹。
 本次没有修改实际配置来满足这些旧断言。
 
@@ -104,7 +102,7 @@ g++ -std=c++17 -O1 -fno-finite-math-only \
 若连带降低气压频率，会超过原有 250 ms 气压接收门限，混淆导航重排测试。
 虚拟串口测试也改为等待实际读回完成，避免将 Python 启动/DDS 发现时间算入固定启动等待。
 
-### 本次执行结果
+### 2026-10-20 执行结果（历史）
 
 | 检查 | 结果 |
 | --- | --- |
@@ -122,19 +120,21 @@ g++ -std=c++17 -O1 -fno-finite-math-only \
 
 ## 拆桨台架与真实 GNSS 验证
 
-1. 冷启动至少三次，记录首次校时和启动顺序：
+1. 冷启动至少三次，在控制程序启动前完成联网校时，再关闭自动校时，记录操作和启动顺序：
 
    ```bash
+   sudo timedatectl set-ntp true
    timedatectl show --property=NTPSynchronized --value
    journalctl -b -u systemd-timesyncd --no-pager
+   # 确认 NTPSynchronized 输出 yes 后执行；按实际部署核对使用的校时服务。
+   sudo timedatectl set-ntp false
    agi_ros2/scripts/launch.sh mode:=hardware shadow_only:=true \
-     bench_fixed_gps:=false record_bag:=true clock_sync_timeout:=90
+     bench_fixed_gps:=false record_bag:=true
    ```
 
-   预期：校时确认之前没有飞行组件启动；超时会明确退出。
-   若机器离线且未同步，先解决时间源问题。门禁只检查同步状态，不会主动改时钟。
-   为检查“未同步时拒绝启动”，使用上面的自动测试，或在专用台架冷启动时观察；
-   不要在运行中的飞行系统上执行改时命令。
+   预期：关闭自动校时后，即使离线或同步标志为 no，程序仍可启动；原有传感器和控制准入检查保持不变。
+   测试期间不重新启用自动校时，也不手动改时；控制程序退出后才用 `sudo timedatectl set-ntp true` 恢复。
+   软件不会自动执行上述校时命令。取消启动等待不保证其他校时进程不会修改系统时间，需核对目标机实际部署。
 
 2. ARM 和 AUTO 保持低位，真实 GNSS 天线置于适合接收的位置，静置至少五分钟并录包。
    如需逐条创新诊断，在一份位于原 config 目录的验证配置副本中设置

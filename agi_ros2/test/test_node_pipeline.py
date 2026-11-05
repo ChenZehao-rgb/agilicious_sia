@@ -318,27 +318,61 @@ class NodePipelineTest(unittest.TestCase):
         self.h = Harness()
         self.addCleanup(self.h.close)
 
-    def start_quadratic_output(self, shadow=False):
+    def start_quadratic_output(self, shadow=False, airframe=None):
         h = self.h
         h.thrust_calibrated = False
         h.total_thrust = 7.7472535
         h.battery_voltage = 24.0
         h.subscribe('output_status', OutputStatus)
-        h.start('command_output_node', hardware=True, parameters={
-            'thrust_model': 'quadratic', 'thrust_quadratic.a1_n': 3.0411331993565565,
-            'thrust_quadratic.a2_n': 138.51944503645788, 'thrust_quadratic.a3_n': -65.93137222790723,
-            'thrust_quadratic.reference_voltage_v': 24.0, 'thrust_quadratic.voltage_exponent_p': 1.253471255346232,
-            'thrust_table': '/unused/nonexistent.csv', 'shadow_only': shadow})
+        parameters = {
+            'thrust_model': 'quadratic', 'thrust_quadratic.reference_voltage_v': 24.0,
+            'thrust_quadratic.voltage_exponent_p': 0.0 if airframe == 'big' else 1.253471255346232,
+            'thrust_table': '/unused/nonexistent.csv', 'shadow_only': shadow}
+        if airframe is not None:
+            parameters['thrust_quadratic.airframe'] = airframe
+        if airframe != 'big':
+            parameters.update({'thrust_quadratic.a1_n': 3.0411331993565565,
+                               'thrust_quadratic.a2_n': 138.51944503645788,
+                               'thrust_quadratic.a3_n': -65.93137222790723})
+        h.start('command_output_node', hardware=True, parameters=parameters)
         h.run(.8, commands=True)
         status = h.received['output_status'][-1]
         self.assertTrue(status.thrust_mapping_ready)
         self.assertFalse(status.thrust_calibrated)
         self.assertEqual(status.thrust_model, 'quadratic')
-        self.assertEqual(status.thrust_model_source, 'measured_cubic')
+        self.assertEqual(status.thrust_model_source, 'manufacturer_fit' if airframe == 'big' else 'measured_cubic')
         return h
 
     def rc_frames(self):
         return [struct.unpack('<4H', frame[5:-1]) for frame in self.h.serial_frames if frame[4] == 200]
+
+    def test_explicit_small_mapping_matches_default(self):
+        h = self.start_quadratic_output(airframe='small')
+        h.auto = True
+        h.run(.15, commands=True)
+        self.assertTrue(h.received['output_status'][-1].override_active)
+        self.assertEqual(self.rc_frames()[-1][2], 1277)
+
+    def test_big_mapping_without_cubic_coefficients_and_voltage_compensation(self):
+        h = self.start_quadratic_output(airframe='big')
+        h.auto = True
+        for voltage in (20., 24.):
+            for thrust, expected_rc in ((0., 1050), (10., 1292), (20., 1355), (40., 1441),
+                                       (80., 1567), (120., 1694), (160.1959166931985, 2000), (200., 2000)):
+                with self.subTest(voltage=voltage, thrust=thrust):
+                    h.battery_voltage = voltage
+                    h.total_thrust = thrust
+                    # Let Health and command samples settle before checking the output.
+                    h.run(.1, commands=True)
+                    h.clear()
+                    h.run(.08, commands=True)
+                    self.assertTrue(h.received['output_status'][-1].override_active)
+                    frames = self.rc_frames()
+                    self.assertTrue(frames)
+                    self.assertTrue(all(frame[2] == expected_rc for frame in frames), frames)
+        h.kill = True
+        h.run(.1, commands=True)
+        self.assertFalse(h.received['output_status'][-1].override_active)
 
     def test_hardware_authority_session_and_validity_require_new_auto_edge(self):
         h = self.start_quadratic_output()
@@ -466,7 +500,9 @@ class NodePipelineTest(unittest.TestCase):
         self.addCleanup(h.node.destroy_client, client)
         self.assertTrue(client.wait_for_service(timeout_sec=2.))
         parameters = [Parameter(name='thrust_model', value=ParameterValue(
-            type=ParameterType.PARAMETER_STRING, string_value='table'))]
+            type=ParameterType.PARAMETER_STRING, string_value='table')),
+            Parameter(name='thrust_quadratic.airframe', value=ParameterValue(
+                type=ParameterType.PARAMETER_STRING, string_value='big'))]
         for name, value in (('a1_n', 4.), ('a2_n', 140.), ('a3_n', -60.),
                             ('reference_voltage_v', 23.), ('voltage_exponent_p', 1.)):
             parameters.append(Parameter(name='thrust_quadratic.' + name, value=ParameterValue(
@@ -484,11 +520,12 @@ class NodePipelineTest(unittest.TestCase):
                 '-p', 'mode:=hardware', '-p', 'bridge_config:=' + str(self.h.bridge),
                 '-p', 'device:=' + str(self.h.path / 'no-physical-device')]
         cases = [({'thrust_model': 'unknown'}, 'thrust_model must'),
-                 ({'thrust_model': 'quadratic'}, 'measured cubic'),
+                 ({'thrust_model': 'quadratic'}, 'invalid thrust model'),
                  ({'thrust_model': 'quadratic', 'thrust_quadratic.a1_n': 3.0411331993565565,
                    'thrust_quadratic.a2_n': 138.51944503645788, 'thrust_quadratic.a3_n': -65.93137222790723,
                    'thrust_quadratic.reference_voltage_v': 0.,
-                   'thrust_quadratic.voltage_exponent_p': 1.253471255346232}, 'measured cubic'),
+                   'thrust_quadratic.voltage_exponent_p': 1.253471255346232}, 'invalid thrust model'),
+                 ({'thrust_model': 'quadratic', 'thrust_quadratic.airframe': 'unknown'}, 'airframe'),
                  ({'thrust_model': 'quadratic', 'mode': 'sitl'}, 'requires hardware')]
         for params, reason in cases:
             with self.subTest(params=params):

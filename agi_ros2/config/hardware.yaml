@@ -11,16 +11,23 @@ flight:
   trajectory: ''
   thrust_model: quadratic
   thrust_table: ''
+  # 小飞机：切换时启用本块，并注释下面的大飞机块。
+  # 原实测三次公式；完整油门范围统一采用该模型，超出原实测支持区间的部分属于模型外推。
+  # thrust_quadratic:
+  #   airframe: small
+  #   a1_n: 3.0411331993565565
+  #   a2_n: 138.51944503645788
+  #   a3_n: -65.93137222790723
+  #   reference_voltage_v: 24.0
+  #   voltage_exponent_p: 1.253471255346232
+  # 大飞机：GEPRC EM3115 900KV + Hoprop MQ10X5，厂家数据拟合，单位为四电机总推力 N。
+  # 直接拟合 23.47～24.08 V 原始推力，未做电压归一化；厂家油门百分比/100 近似对应 u。
+  # 这是静态映射；0～20% 无厂家数据，沿公式自然延伸，u=0 不是物理解锁怠速实测值。
   thrust_quadratic:
-    # 这条三次曲线来自已有实测参考点；完整油门范围统一采用该模型，超出原实测支持区间的部分属于模型外推。
-    a1_n: 3.0411331993565565
-    a2_n: 138.51944503645788
-    a3_n: -65.93137222790723
+    airframe: big
     reference_voltage_v: 24.0
-    # 关闭电压补偿
-    # voltage_exponent_p: 0.0
-    # 开启电压补偿：改回以下值
-    voltage_exponent_p: 1.253471255346232
+    # 大飞机这组厂家数据不足以独立辨识电压指数，当前 p=0 表示关闭电压补偿；24 V 只是名义参考值。补偿计算接口保留。
+    voltage_exponent_p: 0.0
   sitl_delay_test: false
   shadow_only: true
   diagnostic_only: false

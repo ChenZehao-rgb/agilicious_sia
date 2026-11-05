@@ -115,6 +115,15 @@ CommandOutputNode::CommandOutputNode()
 	}
 	_mapper = std::make_unique<agi::BetaflightRcMapper>(_bridge_params);
 	if (_thrust_model == "quadratic") {
+		const auto airframe = declare_parameter<std::string>(
+		        "thrust_quadratic.airframe",
+		        profile && profile->section("flight")["thrust_quadratic"]["airframe"].isDefined()
+		                ? profile->section("flight")["thrust_quadratic"]["airframe"].as<std::string>()
+		                : "small",
+		        shadow_descriptor);
+		if (airframe != "small" && airframe != "big") {
+			throw std::invalid_argument("thrust_quadratic.airframe must be small or big");
+		}
 		const auto model_parameter = [&](const std::string& name) {
 			double value = std::numeric_limits<double>::quiet_NaN();
 			if (profile && profile->section("flight")["thrust_quadratic"][name].isDefined()) {
@@ -129,17 +138,26 @@ CommandOutputNode::CommandOutputNode()
 			}
 			return declare_parameter<double>("thrust_quadratic." + name, value, shadow_descriptor);
 		};
-		const double a1_n = model_parameter("a1_n");
-		const double a2_n = model_parameter("a2_n");
-		const double a3_n = model_parameter("a3_n");
+		const double a1_n = airframe == "small" ? model_parameter("a1_n") : 0.0;
+		const double a2_n = airframe == "small" ? model_parameter("a2_n") : 0.0;
+		const double a3_n = airframe == "small" ? model_parameter("a3_n") : 0.0;
 		const double reference_voltage_v = model_parameter("reference_voltage_v");
 		const double voltage_exponent_p = model_parameter("voltage_exponent_p");
-		_quadratic_thrust = std::make_unique<agi::hardware::QuadraticThrustModel>(a1_n, a2_n, a3_n, reference_voltage_v,
-		                                                                          voltage_exponent_p, _bridge_params.min_check);
-		RCLCPP_WARN(get_logger(),
-		            "Thrust model: quadratic (measured_cubic), a1_n=%.12g, a2_n=%.12g, a3_n=%.12g, "
-		            "reference_voltage_v=%.12g, voltage_exponent_p=%.12g; full-range cubic with voltage compensation",
-		            a1_n, a2_n, a3_n, reference_voltage_v, voltage_exponent_p);
+		_quadratic_thrust = std::make_unique<agi::hardware::QuadraticThrustModel>(
+		        a1_n, a2_n, a3_n, reference_voltage_v, voltage_exponent_p, _bridge_params.min_check, airframe);
+		_thrust_model_source = airframe == "big" ? "manufacturer_fit" : "measured_cubic";
+		if (airframe == "big") {
+			RCLCPP_WARN(get_logger(),
+			            "Thrust model: quadratic, airframe=big (manufacturer_fit), reference_voltage_v=%.12g, "
+			            "voltage_exponent_p=%.12g; raw manufacturer fit without voltage normalization; "
+			            "voltage exponent unidentified (p=0 disables compensation; 24 V is nominal)",
+			            reference_voltage_v, voltage_exponent_p);
+		} else {
+			RCLCPP_WARN(get_logger(),
+			            "Thrust model: quadratic, airframe=small (measured_cubic), a1_n=%.12g, a2_n=%.12g, a3_n=%.12g, "
+			            "reference_voltage_v=%.12g, voltage_exponent_p=%.12g; full-range cubic with voltage compensation",
+			            a1_n, a2_n, a3_n, reference_voltage_v, voltage_exponent_p);
+		}
 	} else if (!thrust_file.empty()) {
 		loadThrustTable(thrust_file);
 	}
@@ -526,7 +544,7 @@ void CommandOutputNode::publishStatus() {
 	status.thrust_mapping_ready = _mode == "sitl" || _thrust || _quadratic_thrust;
 	status.thrust_model = _mode == "sitl" ? "sitl" : _thrust_model;
 	status.thrust_model_source = _mode == "sitl"     ? "simulation"
-	                             : _quadratic_thrust ? "measured_cubic"
+	                             : _quadratic_thrust ? _thrust_model_source
 	                             : _thrust           ? "measured_table"
 	                                                 : "unavailable";
 	status.fault_count = _fault_count;
