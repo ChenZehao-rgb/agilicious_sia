@@ -83,14 +83,7 @@ public:
 			}
 			if (!fresh(e.now, e.rtk_time, accepted_max_age, e.timing_checks)) return "navigation stale/future";
 		}
-		if (receiver_policy == ReceiverPolicy::LatchedSwitches) {
-			if (!e.receiver_valid) return "receiver mode unavailable";
-			if (!fresh(e.now, e.rc_time, kReceiverEvidenceMaxAge, e.timing_checks)) return "RC request stale/future";
-			if (!fresh(e.now, e.status_time, kReceiverEvidenceMaxAge, e.timing_checks)) return "STATUS request stale/future";
-			if (!e.rc_link) return "receiver reports RX failsafe";
-		} else if (!fresh(e.now, e.rc_time, .100, e.timing_checks) || !e.rc_link) {
-			return "RC timeout/future/link unavailable";
-		}
+		if (const char* failure = receiverFailure(e, receiver_policy)) return failure;
 		if (policy != NavigationPolicy::FcFused && !e.heading_valid) return "heading unavailable";
 		if (!e.accuracy_ok) return "navigation accuracy rejected";
 		if (policy == NavigationPolicy::Gnss) {
@@ -109,22 +102,33 @@ public:
 		if (!e.msp_healthy) return "output transport unavailable";
 		return nullptr;
 	}
+	// Shared by control admission, current authority checks and the output gate.
+	static const char* receiverFailure(const Evidence& e, ReceiverPolicy receiver_policy = ReceiverPolicy::FreshSamples) {
+		if (receiver_policy == ReceiverPolicy::LatchedSwitches) {
+			if (!e.receiver_valid) return "receiver mode unavailable";
+			if (!fresh(e.now, e.rc_time, kReceiverEvidenceMaxAge, e.timing_checks)) return "RC request stale/future";
+			if (!fresh(e.now, e.status_time, kReceiverEvidenceMaxAge, e.timing_checks)) return "STATUS request stale/future";
+			if (!e.rc_link) return "receiver reports RX failsafe";
+		} else if (!fresh(e.now, e.rc_time, .100, e.timing_checks) || !e.rc_link) {
+			return "RC timeout/future/link unavailable";
+		}
+		return nullptr;
+	}
 	static const char* fcFailure(const Evidence& e, FcStateCheck check = FcStateCheck::Input) {
 		// Timing cannot be disabled for FC fused state, including in shadow mode.
 		if (!e.fc_valid || e.fc_session.empty()) return "FC state invalid/session unavailable";
 		if (!e.clock_aligned) return "FC clock not aligned";
 		const double max_age = check == FcStateCheck::Input ? kStateMaxAge : kFcHoldMaxAge;
 		if (!fresh(e.now, e.fc_sample_time, max_age)) return "FC state sample stale/future";
-		if (!fresh(e.now, e.fc_receive_time, max_age)) return "FC state receive stale/future";
-		if (!fresh(e.now, e.fc_publish_time, max_age)) return "FC state publish stale/future";
+		// With sample <= receive <= publish <= now, the sample bounds all three ages.
+		if (!std::isfinite(e.fc_receive_time) || !std::isfinite(e.fc_publish_time) || e.fc_receive_time < e.fc_sample_time ||
+		    e.fc_publish_time < e.fc_receive_time || e.fc_publish_time > e.now)
+			return "FC timestamp ordering invalid";
 		if (check == FcStateCheck::CommandHold) {
 			if (!fresh(e.now, e.command_time, .025)) return "FC command time stale/future";
-			if (!fresh(e.command_time, e.fc_sample_time, kStateMaxAge) ||
-			    !fresh(e.command_time, e.fc_receive_time, kStateMaxAge) ||
-			    !fresh(e.command_time, e.fc_publish_time, kStateMaxAge))
+			if (!fresh(e.command_time, e.fc_sample_time, kStateMaxAge) || e.fc_publish_time > e.command_time)
 				return "FC state stale/future at command creation";
 		}
-		if (e.fc_receive_time < e.fc_sample_time || e.fc_publish_time < e.fc_receive_time) return "FC timestamp ordering invalid";
 		if (!fresh(e.now, e.fc_health_sample_time, .060) || !fresh(e.now, e.fc_health_receive_time, .060))
 			return "FC estimator health stale/future";
 		// FC heading validity/freshness is diagnostic; retain XY, Z, fusion and snapshot requirements.

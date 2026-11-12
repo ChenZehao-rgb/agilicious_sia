@@ -230,7 +230,9 @@ initialized、imu_ready、rtk_fixed、synchronized 为 false。FC 的有效性�
   ODOMETRY 低 8 位必须与健康消息匹配。两种消息不要求逐帧时间戳相等。
 - 健康观测年龄属于健康消息的 FC epoch；安全门使用
   `health_sample_steady_time - observation_age`，因此持续发送同一个健康快照不会刷新观测年龄。
-- 采样、接收、发布各自最多 15 ms；健康采样和接收各自最多 60 ms；
+- 新计算的状态采样年龄最多 15 ms，保持命令时最多 25 ms（从原始采样时间起算）。
+  同时要求有限的 `sample <= receive <= publish <= now`，因此接收、发布时间无需重复检查相同年龄上限。
+  命令创建时仍要求采样年龄不超过 15 ms，且状态已经发布；健康采样和接收各自最多 60 ms；
   XY 观测最多 300 ms、Z 最多 250 ms。FcFused 即使 timing_checks=false 也不能跳过这些检查。
 - 平移各轴位置方差上限 1 m²、速度方差上限 0.09 m²/s²，沿用当前硬件就绪标准
   （1 m、0.3 m/s），仅为初始工程限值，未经新固件实机精度验证。
@@ -239,6 +241,10 @@ initialized、imu_ready、rtk_fixed、synchronized 为 false。FC 的有效性�
   mag_heading_fresh 保留为单独证据，不冒充 GPS/PPS 或标定结果。
 - RC/STATUS、ARM/AUTO/KILL、接收链路、配置回读、地理围栏、推力映射、电池、输出传输、
   25 ms 命令租约、8 ms 求解预算和原 MSP 写入截止时间仍有效。
+- 输出阶段以最新 Authority 的真实 RC/STATUS 请求时间检查 100 ms 新鲜度，
+  不再同时要求命令内的旧遥控请求快照保持新鲜；Authority 接收新鲜度、会话及 ARM/AUTO 一致性仍须通过。
+  此更新仅替换遥控证据，不刷新命令生成时间或任何 FC 状态时间；KILL、失联、切换会话仍立即撤权。
+  RC/STATUS 的规则统一在 `SafetyGate::receiverFailure()`；Health 消息新鲜度统一通过输出传输健康门控。
 - ControlCommand → SafetyEvidence 编解码 → output → MSP bridge 均保留 FC 原始证据。
   输出端独立读取最新 FusedState 检查有效性、会话、重置和时效；fc_imu_ready 无法代替这些检查。
   Health 分别记录 fc_estimator_healthy、msp_healthy、control_output_healthy；较慢的汇总消息不刷新状态租约。

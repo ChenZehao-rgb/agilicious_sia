@@ -591,12 +591,10 @@ void ControlNode::runCycle(bool computation_requested) {
 		evidence.accuracy_ok = navigation_valid;
 	}
 	const bool healthy_idle = _fc_event_control && !computation_requested && !fault && navigation_valid && state.valid() &&
-	                          timely(_control_time, state.t, state_max_age) && evidence.receiver_valid && evidence.rc_link &&
-	                          evidence.armed && !evidence.kill &&
-	                          timely(safety_now, evidence.rc_time, SafetyGate::kReceiverEvidenceMaxAge) &&
-	                          timely(safety_now, evidence.status_time, SafetyGate::kReceiverEvidenceMaxAge) &&
-	                          (_shadow_only || SafetyGate::inputsHealthy(evidence, _navigation_policy, _observation_delay,
-	                                                                     agi::hardware::ReceiverPolicy::LatchedSwitches, fc_check));
+	                          timely(_control_time, state.t, state_max_age) && evidence.armed && !evidence.kill &&
+	                          (_shadow_only ? !SafetyGate::receiverFailure(evidence, agi::hardware::ReceiverPolicy::LatchedSwitches)
+	                                        : SafetyGate::inputsHealthy(evidence, _navigation_policy, _observation_delay,
+	                                                                    agi::hardware::ReceiverPolicy::LatchedSwitches, fc_check));
 	if (healthy_idle) {
 		_fc_fault_reported = false;
 		return;

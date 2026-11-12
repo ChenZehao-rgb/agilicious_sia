@@ -43,6 +43,8 @@ class DeliveryHarness(ShadowHarness):
         super().__init__()
         self.output = output
         self.age = .00374
+        self.command_request_age = 0.
+        self.commands_stopped = False
         self.duplicate = self.stopped = self.invalid = False
         self.generation = 1
         self.fc_session = 'synthetic-source'
@@ -113,7 +115,7 @@ class DeliveryHarness(ShadowHarness):
             self.last_state = state
         self.publisher('fused_state', FusedState).publish(state)
         self.input_states.append(state)
-        if self.output:
+        if self.output and not self.commands_stopped:
             command = ControlCommand()
             command.header.stamp = self.stamp()
             command.header.frame_id = 'base_link'
@@ -127,7 +129,7 @@ class DeliveryHarness(ShadowHarness):
             e = command.evidence
             # Command creation follows state publication, as in the real pipeline.
             e.now = e.command_time = command.published_steady_time
-            e.rc_time = e.status_time = now
+            e.rc_time = e.status_time = now - self.command_request_age
             e.solve_seconds = .001
             for field in ('command_valid','controller_warm','receiver_valid','rc_link','armed',
                           'heading_valid','accuracy_ok','clock_aligned','config_verified','thrust_mapping_ready',
@@ -663,6 +665,56 @@ class DeliveryTests(unittest.TestCase):
         finally:
             Path(os.environ.get('FC_DELIVERY_REPORT','/tmp/fc-delivery.json')).write_text(json.dumps(reports,indent=2))
             h.close()
+
+    def test_output_uses_current_authority_and_retains_revocation(self):
+        h = DeliveryHarness(output=True)
+        self.addCleanup(h.close)
+        h.run(1.)
+        h.auto = True
+        h.run(.15)
+        self.assertTrue(h.received['output_status'][-1].override_active)
+        # Receiver freshness belongs to current Authority, not the frozen
+        # receiver timestamps carried alongside a still-current command.
+        h.command_request_age = .150
+        begin = time.monotonic()
+        h.run(.15)
+        self.assertTrue(h.received['output_status'][-1].override_active)
+        self.assertTrue(any(t >= begin and code == 200 for t, code, _ in h.codes))
+
+        def recover():
+            h.run(.08)
+            self.assertFalse(h.received['output_status'][-1].override_active)
+            h.auto = False
+            h.run(.08)
+            h.auto = True
+            h.run(.08)
+            self.assertTrue(h.received['output_status'][-1].override_active)
+
+        for ages in ((.150, 0.), (0., .150), (-1., 0.)):
+            h.authority_request_ages = ages
+            h.run(.08)
+            self.assertFalse(h.received['output_status'][-1].override_active)
+            h.authority_request_ages = (0., 0.)
+            recover()
+        h.authority_session = 'replacement-authority'
+        h.run(.08)
+        self.assertFalse(h.received['output_status'][-1].override_active)
+        recover()
+        h.kill = True
+        h.run(.05)
+        self.assertFalse(h.received['output_status'][-1].override_active)
+        h.kill = False
+        recover()
+        # Consolidating Health freshness must still revoke stale healthy flags.
+        h.health_enabled = False
+        h.run(.25)
+        self.assertFalse(h.received['output_status'][-1].override_active)
+        h.health_enabled = True
+        recover()
+        # Fresh Authority and FC samples cannot extend the cached command.
+        h.commands_stopped = True
+        h.run(.04)
+        self.assertFalse(h.received['output_status'][-1].override_active)
 
     def test_output_pty_independently_expires_without_invalid_message(self):
         h = DeliveryHarness(output=True)

@@ -364,13 +364,20 @@ void CommandOutputNode::processOutput(bool new_command) {
 	        timely(evidence.now, _command.evidence.now, 0.025) && timely(ros_time, stampSeconds(_command.header.stamp), 0.025);
 	const bool receiver_valid = _authority.receiver_valid && !_authority.session_id.empty() && !_authority_session_changed &&
 	                            (!_latched_receiver || _authority.clock_id == _clock_id);
-	const bool rc_fresh =
-	        _authority.rc_link &&
-	        (_latched_receiver ? receiver_valid && timely(wall, _authority_receive_time, SafetyGate::kReceiverEvidenceMaxAge) &&
-		                             timely(wall, _authority.rc_request_steady_time, SafetyGate::kReceiverEvidenceMaxAge) &&
-		                             timely(wall, _authority.status_request_steady_time, SafetyGate::kReceiverEvidenceMaxAge)
-		                   : timely(wall, _authority_receive_time, _simulation_time ? kSitlWallTimeout : 0.1) &&
-		                             timely(ros_time, stampSeconds(_authority.header.stamp), 0.1));
+	// Current physical authority replaces the command's receiver snapshot, not
+	// its command/state epochs. Session and ARM/AUTO matching still apply below.
+	agi::hardware::Evidence receiver;
+	receiver.now = evidence.now;
+	receiver.timing_checks = _timing_checks;
+	receiver.receiver_valid = receiver_valid;
+	receiver.rc_link = _authority.rc_link &&
+	                   timely(wall, _authority_receive_time, _simulation_time ? kSitlWallTimeout : SafetyGate::kReceiverEvidenceMaxAge);
+	receiver.rc_time = _latched_receiver ? _authority.rc_request_steady_time : stampSeconds(_authority.header.stamp);
+	receiver.status_time = _authority.status_request_steady_time;
+	// FreshSamples uses ROS time for the Authority header, including non-clock SITL.
+	if (!_latched_receiver) receiver.now = ros_time;
+	const bool rc_fresh = !SafetyGate::receiverFailure(
+	        receiver, _latched_receiver ? agi::hardware::ReceiverPolicy::LatchedSwitches : agi::hardware::ReceiverPolicy::FreshSamples);
 	const bool health_fresh = timely(wall, _health_receive_time, _simulation_time ? kSitlWallTimeout : 0.2) &&
 	                          timely(ros_time, stampSeconds(_health.header.stamp), 0.2);
 	// New authority can revoke old commands immediately, but never authorize a
@@ -387,6 +394,10 @@ void CommandOutputNode::processOutput(bool new_command) {
 	evidence.receiver_valid = evidence.receiver_valid && receiver_valid;
 	_authority_session_changed = false;
 	evidence.rc_link = evidence.rc_link && rc_fresh;
+	if (_latched_receiver) {
+		evidence.rc_time = receiver.rc_time;
+		evidence.status_time = receiver.status_time;
+	}
 	evidence.kill = evidence.kill || _authority.kill;
 	evidence.armed = evidence.armed && _authority.armed;
 	evidence.auto_switch = _authority.auto_switch;
@@ -394,17 +405,18 @@ void CommandOutputNode::processOutput(bool new_command) {
 	const bool battery_valid = _mode != "hardware" || (std::isfinite(_health.battery_voltage) && _health.battery_voltage > 0);
 	evidence.command_valid = evidence.command_valid && command_fresh && authority_matches && battery_valid &&
 	                         (!_authority.auto_switch || _command.permit_override);
+	// Health freshness is a single interlock for all fields below.
 	evidence.msp_healthy = evidence.msp_healthy && _transport_healthy && health_fresh && _health.transport_healthy;
-	evidence.config_verified = evidence.config_verified && health_fresh && _health.config_verified;
-	evidence.geofence_ok = evidence.geofence_ok && health_fresh && (_mode == "hardware" || _health.geofence_ok);
-	evidence.thrust_calibrated = evidence.thrust_calibrated && health_fresh && _health.thrust_calibrated;
-	evidence.thrust_mapping_ready = evidence.thrust_mapping_ready && health_fresh && _health.thrust_mapping_ready &&
-	                                (_mode == "sitl" || _thrust || _quadratic_thrust);
-	evidence.imu_calibrated = evidence.imu_calibrated && health_fresh && _health.imu_calibrated;
-	evidence.converged = evidence.converged && health_fresh && _health.converged;
-	evidence.imu_ready = evidence.imu_ready && health_fresh && (_mode == "hardware" ? _health.fc_imu_ready : _health.imu_ready);
-	evidence.estimator_ready = evidence.estimator_ready && health_fresh && (_mode == "hardware" || _health.estimator_ready);
-	evidence.navigation_ready = evidence.navigation_ready && health_fresh && (_mode == "hardware" || _health.navigation_ready);
+	evidence.config_verified = evidence.config_verified && _health.config_verified;
+	evidence.geofence_ok = evidence.geofence_ok && (_mode == "hardware" || _health.geofence_ok);
+	evidence.thrust_calibrated = evidence.thrust_calibrated && _health.thrust_calibrated;
+	evidence.thrust_mapping_ready =
+	        evidence.thrust_mapping_ready && _health.thrust_mapping_ready && (_mode == "sitl" || _thrust || _quadratic_thrust);
+	evidence.imu_calibrated = evidence.imu_calibrated && _health.imu_calibrated;
+	evidence.converged = evidence.converged && _health.converged;
+	evidence.imu_ready = evidence.imu_ready && (_mode == "hardware" ? _health.fc_imu_ready : _health.imu_ready);
+	evidence.estimator_ready = evidence.estimator_ready && (_mode == "hardware" || _health.estimator_ready);
+	evidence.navigation_ready = evidence.navigation_ready && (_mode == "hardware" || _health.navigation_ready);
 	if (_navigation_policy == agi::hardware::NavigationPolicy::FcFused) {
 		agi::hardware::Evidence latest;
 		latest.now = wall;

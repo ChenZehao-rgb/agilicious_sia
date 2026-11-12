@@ -227,6 +227,30 @@ TEST(FcOutputSafety, HoldDoesNotAdmitStaleInputOrFreezeOtherEvidence) {
 	EXPECT_NE(SafetyGate::fcFailure(e, FcStateCheck::CommandHold), nullptr);
 }
 
+TEST(FcOutputSafety, OrderedTimestampsStillRejectInvalidOrFutureEvidence) {
+	using agi::hardware::FcStateCheck;
+	for (auto check : {FcStateCheck::Input, FcStateCheck::Hold, FcStateCheck::CommandHold}) {
+		auto original = health(10.);
+		original.command_time = 10.;
+		ASSERT_EQ(SafetyGate::fcFailure(original, check), nullptr);
+		for (auto field : {&Evidence::fc_sample_time, &Evidence::fc_receive_time, &Evidence::fc_publish_time}) {
+			for (double value : {double(NAN), double(INFINITY), 10.001, 9.970}) {
+				auto e = original;
+				e.*field = value;
+				EXPECT_NE(SafetyGate::fcFailure(e, check), nullptr);
+			}
+		}
+		auto e = original;
+		e.fc_receive_time = 9.999;
+		e.fc_publish_time = 9.998;
+		EXPECT_NE(SafetyGate::fcFailure(e, check), nullptr);
+	}
+	// A current sample does not allow publication after command creation.
+	auto e = health(10.);
+	e.command_time = 9.999;
+	EXPECT_NE(SafetyGate::fcFailure(e, FcStateCheck::CommandHold), nullptr);
+}
+
 TEST(FcOutputSafety, IndependentExpiryAndHiddenInvalidNotification) {
 	SafetyGate gate(NavigationPolicy::FcFused, 0., ReceiverPolicy::LatchedSwitches);
 	auto e = health(10.);
