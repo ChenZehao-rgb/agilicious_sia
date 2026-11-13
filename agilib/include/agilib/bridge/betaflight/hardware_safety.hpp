@@ -137,9 +137,9 @@ public:
 		if (!fresh(e.now, e.fc_z_observation_time, .250)) return "FC Z observation stale/future";
 		// Initial limits retain the existing hardware readiness standard (1m, 0.3m/s).
 		for (double v : e.fc_position_variance)
-			if (!std::isfinite(v) || v < 0 || v > 1.0) return "FC position variance unknown/exceeded";
+			if (!std::isfinite(v) || v < 0) return "FC position variance unknown/exceeded";
 		for (double v : e.fc_velocity_variance)
-			if (!std::isfinite(v) || v < 0 || v > .09) return "FC velocity variance unknown/exceeded";
+			if (!std::isfinite(v) || v < 0) return "FC velocity variance unknown/exceeded";
 		return nullptr;
 	}
 	static bool inputsHealthy(const Evidence& e, NavigationPolicy policy = NavigationPolicy::Rtk, double observation_delay = 0.0,

@@ -46,9 +46,9 @@ pilot:
         MPC:
           # Ideal rate/thrust model: no motor or inner-loop response prediction.
           timing: true
-          Q_pos_x: 50
-          Q_pos_y: 50
-          Q_pos_z: 100
+          Q_pos_x: 100
+          Q_pos_y: 100
+          Q_pos_z: 200
           Q_att_x: 10
           Q_att_y: 10
           Q_att_z: 50
@@ -79,10 +79,10 @@ pilot:
   # not this ideal outer-loop predictor. No unmeasured dynamics are filled with defaults.
   quadrotor:
     # Operator-reported takeoff mass including battery/payload, 2026-09-24: 734 g.
-    mass: 0.790
+    mass: 2.4 #大飞机重量2.4kg，小飞机0.790kg
     omega_max: [1.0, 1.0, 0.5]
     thrust_min: 0.0
-    thrust_max: 7.84
+    thrust_max: 19.6 #大飞机最大推力19.6N，小飞机最大推力7.84N
   dt_min: 0.01
   outerloop_divisor: 1
   dt_telemetry: 0.1
