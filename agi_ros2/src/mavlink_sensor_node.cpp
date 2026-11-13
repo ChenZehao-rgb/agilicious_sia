@@ -34,6 +34,7 @@
 #include "agi_ros2/msg/barometer.hpp"
 #include "agi_ros2/msg/fc_estimated_state.hpp"
 #include "agi_ros2/msg/fc_estimator_status.hpp"
+#include "agi_ros2/msg/global_position_int.hpp"
 #include "agi_ros2/msg/heading.hpp"
 #include "agi_ros2/msg/imu_timing.hpp"
 #include "agi_ros2/msg/navigation.hpp"
@@ -88,6 +89,7 @@ public:
 		};
 		_imu_hz = rate("imu_rate_hz", 500, 500);
 		_gps_hz = rate("gps_rate_hz", 10, 50);
+		_global_position_hz = _gps_hz;
 		_attitude_hz = rate("attitude_rate_hz", 0, 100);
 		_baro_hz = rate("baro_rate_hz", 40, 500);
 		_bench_fixed_gps = declare_parameter<bool>("bench_fixed_gps", false, desc);
@@ -115,7 +117,9 @@ public:
 		if (_fc_fused) {
 			if (_bench_fixed_gps || odometry_hz != 100 || status_hz != 50)
 				throw std::invalid_argument("fc_fused requires real 100 Hz state / 50 Hz health");
-			_rate_requests = {{MAVLINK_MSG_ID_ODOMETRY, odometry_hz}, {MAVLINK_MSG_ID_V2_EXTENSION, status_hz}};
+			_rate_requests = {{MAVLINK_MSG_ID_ODOMETRY, odometry_hz},
+			                  {MAVLINK_MSG_ID_V2_EXTENSION, status_hz},
+			                  {MAVLINK_MSG_ID_GLOBAL_POSITION_INT, _global_position_hz}};
 			_imu_hz = _gps_hz = _attitude_hz = _baro_hz = 0;
 		}
 		_baro_max_age_s = declare_parameter<double>("baro_max_age_s", .25, desc);
@@ -142,6 +146,7 @@ public:
 		_imu_pub = create_publisher<sensor_msgs::msg::Imu>("sensors/imu", qos);
 		_imu_timing_pub = create_publisher<agi_ros2::msg::ImuTiming>("sensors/imu/timing", 100);
 		_fix_pub = create_publisher<sensor_msgs::msg::NavSatFix>("sensors/gps/fix", qos);
+		_global_position_pub = create_publisher<agi_ros2::msg::GlobalPositionInt>("sensors/gps/global_position", qos);
 		_velocity_pub = create_publisher<geometry_msgs::msg::TwistStamped>("sensors/gps/velocity", qos);
 		_attitude_pub = create_publisher<geometry_msgs::msg::QuaternionStamped>("sensors/fc_attitude", qos);
 		_navigation_pub = create_publisher<agi_ros2::msg::Navigation>("sensors/navigation", qos);
@@ -719,6 +724,26 @@ private:
 			return;
 		}
 		if (_sync_count < 5 || _publisher_conflict) return;
+		if (m.msgid == MAVLINK_MSG_ID_GLOBAL_POSITION_INT && _global_position_hz && !_bench_fixed_gps) {
+			mavlink_global_position_int_t value{};
+			mavlink_msg_global_position_int_decode(&m, &value);
+			agi_ros2::msg::GlobalPositionInt out;
+			// Independent dedup key: legacy velocity and heading also consume message 33.
+			if (stamp(0x20000 + MAVLINK_MSG_ID_GLOBAL_POSITION_INT, bootMs(value.time_boot_ms), out.header.stamp)) {
+				out.header.frame_id = "gps_link";
+				out.source_session = _source_session;
+				out.time_boot_ms = value.time_boot_ms;
+				out.lat = value.lat;
+				out.lon = value.lon;
+				out.alt = value.alt;
+				out.relative_alt = value.relative_alt;
+				out.vx = value.vx;
+				out.vy = value.vy;
+				out.vz = value.vz;
+				out.hdg = value.hdg;
+				_global_position_pub->publish(out);
+			}
+		}
 		if (_fc_fused) {
 			handleFc(m, received);
 			return;
@@ -1088,6 +1113,8 @@ private:
 	unsigned _fc_count{0}, _fc_health_count{0};
 	rclcpp::Publisher<agi_ros2::msg::FcEstimatedState>::SharedPtr _fc_state_pub;
 	rclcpp::Publisher<agi_ros2::msg::FcEstimatorStatus>::SharedPtr _fc_status_pub;
+	rclcpp::Publisher<agi_ros2::msg::GlobalPositionInt>::SharedPtr _global_position_pub;
+	int _global_position_hz{0};
 	bool _heading_valid{false};
 	bool _bench_fixed_gps{false};
 	double _bench_gps_latitude, _bench_gps_longitude, _bench_gps_altitude_msl;

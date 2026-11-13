@@ -18,7 +18,11 @@ function badge(id, text, fresh) { $(id).textContent = text; $(id).className = 'b
 function data(topic) { return snapshot?.topics[topic]?.data; }
 function age(topic) { return (snapshot?.topics[topic]?.age_s ?? Infinity) + (performance.now() - lastHTTP) / 1000; }
 // Display stale annotations only; these are not flight acceptance gates.
-function fresh(topic) { return age(topic) < (topic === 'fused_state' ? 1 : 3); }
+function fresh(topic) { return age(topic) < (['fused_state', 'sensors/gps/global_position'].includes(topic) ? 1 : 3); }
+function positionTopic() { return snapshot?.position_source === 'gps_global' ? 'sensors/gps/global_position' : 'fused_state'; }
+function positionFresh() {
+  return !!snapshot?.position && fresh(positionTopic()) && (snapshot.position_source !== 'gps_global' || fresh('fused_state'));
+}
 let runtimeBusy = false;
 // Remember only the display selection, never an action or a ROS connection.
 try {
@@ -106,7 +110,7 @@ function updateDraft() {
     if (num(target.altitude_msl)) delta = target.altitude_msl - position.altitude_msl;
   }
   $('target-metrics').textContent = `相对原点高度 ${fmt(relative)} m\n水平距离 ${fmt(distance)} m · 高度差 ${fmt(delta)} m` +
-    (position && !fresh('fused_state') ? '\n依据最后位置（已过期）' : '');
+    (position && !positionFresh() ? '\n依据最后位置（已过期）' : '');
 }
 for (const id of ['latitude', 'longitude', 'altitude']) $(id).addEventListener('input', () => {
   if (id === 'altitude') altitudeInitialized = true;
@@ -125,7 +129,7 @@ $('clear').onclick = () => {
   updateDraft();
 };
 $('current-altitude').onclick = () => {
-  if (snapshot?.position && fresh('fused_state')) {
+  if (positionFresh()) {
     $('altitude').value = snapshot.position.altitude_msl.toFixed(3);
     altitudeInitialized = true;
     updateDraft();
@@ -171,12 +175,14 @@ function renderTelemetry() {
   const httpOK = lastHTTP > 0 && !httpFailure && performance.now() - lastHTTP < 1500;
   // A late browser timer is not evidence of a broken HTTP connection. Keep
   // transport failures separate from delayed rendering and stale ROS topics.
-  badge('connection', httpFailure || (!lastHTTP ? 'UI 连接中' : !httpOK ? 'UI 在线 · 更新延迟' : !fresh('fused_state') ? 'UI 在线 · 位置未连接 / 过期' :
-    snapshot?.position ? 'UI 在线 · 位置更新中' : 'UI 在线 · 状态已收到，位置无效'), httpOK && fresh('fused_state') && !!snapshot?.position);
+  badge('connection', httpFailure || (!lastHTTP ? 'UI 连接中' : !httpOK ? 'UI 在线 · 更新延迟' :
+    positionFresh() ? 'UI 在线 · 位置更新中' : snapshot?.position ? 'UI 在线 · 位置未连接 / 过期' : 'UI 在线 · 状态已收到，位置无效'), httpOK && positionFresh());
   const prefix = topic => fresh(topic) ? '' : '过期 · ';
   badge('authority', authority ? `${prefix('authority')}ARM ${authority.armed ? 'ON' : 'OFF'} / AUTO ${authority.auto_switch ? 'ON' : 'OFF'} / KILL ${authority.kill ? 'ON' : 'OFF'} / RC ${authority.rc_link ? 'OK' : '丢失'}` : 'ARM / AUTO 未知', !!authority && fresh('authority'));
   badge('output', output ? `${prefix('output_status')}输出 ${output.override_active ? '接管中' : '未接管'}` : '输出 未知', !!output && fresh('output_status') && output.transport_healthy);
-  badge('navigation', !snapshot?.mapping_error && snapshot?.position ? `${prefix('fused_state')}FC 导航 / 原点有效` : '导航未知 · ' + (snapshot?.mapping_error || '位置无效'), !!snapshot?.position && fresh('fused_state'));
+  badge('navigation', snapshot?.position_source === 'gps_global' ? 'GPS 位置 · 融合导航不可用' :
+    !snapshot?.mapping_error && snapshot?.position ? `${prefix('fused_state')}FC 导航 / 原点有效` :
+    '导航未知 · ' + (snapshot?.position_error || snapshot?.mapping_error || '位置无效'), positionFresh());
   $('navigation').title = snapshot?.mapping_error || '';
   badge('battery', health ? `${prefix('health')}电压 ${fmt(health.battery_voltage)} V` : '电压 未知', !!health && num(health.battery_voltage) && fresh('health'));
   const connected = fresh('fused_state') && fresh('computation_status') && httpOK;
@@ -207,10 +213,10 @@ function renderTelemetry() {
       const item = document.createElement('li'); item.textContent = `${label}：${text}`; return item;
     }));
   }
-  const labels = {'fused_state': '位置 / 姿态', authority: '授权', health: '电池 / 健康', output_status: '输出', computation_status: '控制', 'navigation/origin': '原点快照', goal_status: '目标快照'};
+  const labels = {'fused_state': '融合位置 / 姿态', 'sensors/gps/global_position': 'GPS 全局位置', authority: '授权', health: '电池 / 健康', output_status: '输出', computation_status: '控制', 'navigation/origin': '原点快照', goal_status: '目标快照'};
   $('freshness').textContent = Object.entries(labels).map(([key, label]) => `${label}：${fmt(Number.isFinite(age(key)) ? age(key) : null, 1)} s` +
     (key === 'navigation/origin' || key === 'goal_status' ? ' · 保留型' : fresh(key) ? '' : ' · 未更新')).join('\n');
-  if (airplane) airplane.getElement()?.classList.toggle('old', !fresh('fused_state') || !httpOK || !snapshot?.position);
+  if (airplane) airplane.getElement()?.classList.toggle('old', !positionFresh() || !httpOK);
 }
 function renderState() {
   checkTuningSession(snapshot);
@@ -228,14 +234,14 @@ function renderState() {
     airplane.setLatLng(latlng(point));
     const arrow = airplane.getElement()?.querySelector('span');
     if (arrow) { arrow.style.transform = `rotate(${snapshot.heading_deg ?? 0}deg)`; arrow.textContent = num(snapshot.heading_deg) ? '▲' : '●'; }
-    const version = snapshot.topics.fused_state.version;
+    const version = snapshot.topics[positionTopic()].version;
     if (version !== lastStateVersion) {
       lastStateVersion = version;
       track.push(latlng(point)); if (track.length > 2400) track.shift(); trail.setLatLngs(track);
       if (!centered) { map.setView(latlng(point), 17, {animate: false}); centered = true; }
-      else if ($('follow').checked && fresh('fused_state')) map.panTo(latlng(point), {animate: false});
+      else if ($('follow').checked && positionFresh()) map.panTo(latlng(point), {animate: false});
     }
-    if (!altitudeInitialized && fresh('fused_state')) { $('altitude').value = point.altitude_msl.toFixed(3); altitudeInitialized = true; }
+    if (!altitudeInitialized && positionFresh()) { $('altitude').value = point.altitude_msl.toFixed(3); altitudeInitialized = true; }
   }
   if (!positionRendered) { renderPosition(); positionRendered = true; }
   updateDraft(); renderTelemetry();
@@ -243,12 +249,11 @@ function renderState() {
 function renderPosition() {
   if (!snapshot) return;
   const point = snapshot.position;
-  let text = '位置未知 · ' + (snapshot.mapping_error || '非有限位置');
+  let text = '位置未知 · ' + (snapshot.position_error || snapshot.mapping_error || '非有限位置');
   if (point) {
-    const velocity = data('fused_state')?.velocity;
-    const speed = velocity && [velocity.x, velocity.y, velocity.z].every(num) ? Math.hypot(velocity.x, velocity.y, velocity.z) : null;
-    text = `${fmt(point.latitude, 7)}, ${fmt(point.longitude, 7)} · MSL ${fmt(point.altitude_msl)} m · 相对原点 ${fmt(point.relative_height)} m · ${fmt(speed)} m/s · 航向 ${fmt(snapshot.heading_deg, 1)}°` +
-      (fresh('fused_state') && !httpFailure && performance.now() - lastHTTP < 1500 ? '' : ' · 位置过期');
+    const source = snapshot.position_source === 'gps_global' ? 'GPS' : 'FC 融合';
+    text = `${source} · ${fmt(point.latitude, 7)}, ${fmt(point.longitude, 7)} · MSL ${fmt(point.altitude_msl)} m · 相对原点 ${fmt(point.relative_height)} m · ${fmt(snapshot.speed_m_s)} m/s · 航向 ${fmt(snapshot.heading_deg, 1)}°` +
+      (positionFresh() && !httpFailure && performance.now() - lastHTTP < 1500 ? '' : ' · 位置过期');
   }
   // Only the bottom-left text is throttled; markers and the trail stay live.
   if ($('position').textContent !== text) $('position').textContent = text;

@@ -24,7 +24,7 @@ from std_msgs.msg import Empty
 from diagnostic_msgs.msg import DiagnosticArray
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from rosidl_runtime_py.convert import message_to_ordereddict
-from agi_ros2.msg import Authority, ComputationStatus, FusedState, GeographicGoal, GoalStatus, Health, NavigationOrigin, OutputStatus
+from agi_ros2.msg import Authority, ComputationStatus, FusedState, GeographicGoal, GlobalPositionInt, GoalStatus, Health, NavigationOrigin, OutputStatus
 
 
 def f32(value):
@@ -142,6 +142,35 @@ def geographic_position(position, origin):
     return {'latitude': latitude, 'longitude': longitude, 'altitude_msl': altitude, 'relative_height': position['z']}
 
 
+def gps_position_error(topics):
+    """Display-only validity: message 33 itself carries no fix status."""
+    packet = topics.get('sensors/gps/global_position')
+    state_packet = topics.get('fused_state')
+    if not packet:
+        return '未收到 GPS 全局位置'
+    if packet['age_s'] >= 1:
+        return 'GPS 全局位置已过期'
+    if not state_packet or state_packet['age_s'] >= 1:
+        return 'GPS 定位状态未确认或已过期'
+    gps, state = packet['data'], state_packet['data']
+    if state['state_source'] != 'fc_fused' or not gps['source_session'] or \
+            gps['source_session'] != state['navigation_session']:
+        return 'GPS 定位状态会话不匹配'
+    # Failure notifications can repeat old flags. Compare sender-side ROS sample
+    # epochs, never steady clocks or wall clocks from different computers.
+    stamp = lambda value: value['sec'] + value['nanosec'] * 1e-9
+    health_time = stamp(state['covariance_stamp'])
+    if not health_time or abs(stamp(gps['header']['stamp']) - health_time) >= 1:
+        return 'GPS 定位状态未确认或已过期'
+    if not state['fc_flags'] & 0x80:
+        return 'GPS 定位状态未确认'
+    if not state['fc_flags'] & 0x20:
+        return 'GPS 未定位'
+    if abs(gps['lat']) > 900000000 or abs(gps['lon']) > 1800000000:
+        return 'GPS 经纬度越界'
+    return None
+
+
 def heading_degrees(q):
     if not finite(*q.values()):
         return None
@@ -217,7 +246,8 @@ class MapUI(Node):
             self.create_subscription(DiagnosticArray, 'ground_station/' + topic,
                                      lambda msg, key=topic: self.receive(key, msg), runtime_qos)
         self.runtime_shutdown_publisher = self.create_publisher(Empty, 'ground_station/runtime/hardware/shutdown', runtime_qos)
-        topics = {'fused_state': FusedState, 'authority': Authority, 'health': Health,
+        topics = {'fused_state': FusedState, 'sensors/gps/global_position': GlobalPositionInt,
+                  'authority': Authority, 'health': Health,
                   'output_status': OutputStatus, 'computation_status': ComputationStatus,
                   'navigation/origin': NavigationOrigin, 'goal_status': GoalStatus}
         for topic, msg_type in topics.items():
@@ -242,6 +272,19 @@ class MapUI(Node):
         origin = topics.get('navigation/origin', {}).get('data')
         error = mapping_error(state, origin)
         position = geographic_position(state['position'], origin) if not error else None
+        position_source = 'fc_fused' if position else None
+        heading = heading_degrees(state['orientation']) if position else None
+        velocity = state['velocity'].values() if position else ()
+        speed = math.hypot(*velocity) if position and finite(*velocity) else None
+        gps_error = gps_position_error(topics)
+        if (not position or topics['fused_state']['age_s'] >= 1) and not gps_error:
+            gps = topics['sensors/gps/global_position']['data']
+            position = {'latitude': gps['lat'] * 1e-7, 'longitude': gps['lon'] * 1e-7,
+                        'altitude_msl': gps['alt'] * .001, 'relative_height': None}
+            position_source = 'gps_global'
+            heading = gps['hdg'] * .01 if gps['hdg'] < 36000 else None
+            speed = math.hypot(gps['vx'], gps['vy'], gps['vz']) * .01 \
+                if all(value != 32767 for value in (gps['vx'], gps['vy'], gps['vz'])) else None
         goal = topics.get('goal_status', {}).get('data')
         computation = topics.get('computation_status', {}).get('data')
         active = None
@@ -257,8 +300,14 @@ class MapUI(Node):
                      origin['session_id'], origin['fc_reset_counter'],
                      origin['latitude'], origin['longitude'], origin['altitude'], origin['longitude_scale']]
                     if state and origin else None)
+        if position_source == 'gps_global':
+            identity = ['gps_global', gps['source_session']]
+        elif identity:
+            identity = ['fc_fused', identity]
+        position_error = None if position else gps_error if 'sensors/gps/global_position' in topics else error
         return clean_json({'topics': topics, 'position': position, 'mapping_error': error,
-                           'heading_deg': heading_degrees(state['orientation']) if state and state['fc_state_valid'] else None,
+                           'position_source': position_source, 'position_error': position_error,
+                           'heading_deg': heading, 'speed_m_s': speed,
                            'active_position': active, 'goal_matches_state': goal_matches, 'identity': identity})
 
     def tuning_call(self, client, request):

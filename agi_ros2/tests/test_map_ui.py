@@ -24,7 +24,7 @@ from rclpy.executors import SingleThreadedExecutor
 from rclpy.parameter import Parameter
 from rclpy.serialization import serialize_message
 from rosidl_runtime_py.convert import message_to_ordereddict
-from agi_ros2.msg import FusedState, GeographicGoal, GoalStatus, NavigationOrigin, Health, Authority, ComputationStatus, OutputStatus
+from agi_ros2.msg import FusedState, GeographicGoal, GlobalPositionInt, GoalStatus, NavigationOrigin, Health, Authority, ComputationStatus, OutputStatus
 
 
 def mapping():
@@ -324,11 +324,108 @@ class DDSTests(unittest.TestCase):
         self.assertIsNone(self.ui.snapshot()['position'])
         print('RELAY_RATES ' + json.dumps(rates), flush=True)
 
+    def test_gps_disarmed_without_origin_and_fused_priority(self):
+        state, origin = mapping()
+        state.fc_state_valid = False
+        state.fc_flags = 0xa0  # Snapshot and GPS fix, without ARM or XY fusion.
+        state.covariance_stamp.sec = 100
+        state.readiness_reason = 'FC XY/Z/fusion/snapshot unavailable'
+        gps = GlobalPositionInt(source_session=state.navigation_session, time_boot_ms=100000,
+                                lat=310000001, lon=1210000001, alt=20123, relative_alt=98765,
+                                vx=100, vy=200, vz=-300, hdg=9000)
+        gps.header.stamp.sec = 100
+        def publish(_):
+            self.pubs['fused_state'].publish(state)
+            self.pubs['sensors/gps/global_position'].publish(gps)
+        self.run_for(.7, publish)
+        snap = self.ui.snapshot()
+        self.assertEqual(snap['position_source'], 'gps_global')
+        self.assertIsNone(snap['position_error'])
+        self.assertAlmostEqual(snap['position']['latitude'], 31.0000001)
+        self.assertAlmostEqual(snap['position']['longitude'], 121.0000001)
+        self.assertAlmostEqual(snap['position']['altitude_msl'], 20.123)
+        self.assertIsNone(snap['position']['relative_height'])  # Not GLOBAL_POSITION_INT.relative_alt.
+        self.assertEqual(snap['heading_deg'], 90.)
+        self.assertAlmostEqual(snap['speed_m_s'], math.sqrt(14))
+        self.assertIn('FC 未解锁', snap['mapping_error'])
+        self.assertIsNone(snap['active_position'])
+        self.assertFalse(self.commands)
+        self.assertEqual(self.received['sensors/gps/global_position'][-1][1], gps)
+        raw_identity = snap['identity']
+        # Even valid (0, 0) is a possible position; no special coordinate blacklist.
+        gps.lat = gps.lon = 0
+        gps.hdg = 65535
+        gps.vx = 32767
+        self.run_for(.3, publish)
+        snap = self.ui.snapshot()
+        self.assertEqual((snap['position']['latitude'], snap['position']['longitude']), (0., 0.))
+        self.assertIsNone(snap['heading_deg'])
+        self.assertIsNone(snap['speed_m_s'])
+        state.fc_state_valid = True
+        self.origin_pub.publish(origin)
+        self.run_for(.3, publish)
+        snap = self.ui.snapshot()
+        self.assertEqual(snap['position_source'], 'fc_fused')
+        self.assertIsNone(snap['mapping_error'])
+        self.assertNotEqual(snap['identity'], raw_identity)
+        # Preserve the last fused position as stale when GPS fix confirmation also expires.
+        with self.ui.lock:
+            self.ui.latest['fused_state']['received'] -= 2
+        self.assertEqual(self.ui.snapshot()['position_source'], 'fc_fused')
+        # Health confirmation must also be fresh; refresh the sample separately.
+        state.fc_state_valid = False
+        self.run_for(.3, publish)
+        self.assertEqual(self.ui.snapshot()['position_source'], 'gps_global')
+
+    def test_gps_fix_freshness_bounds_and_sessions(self):
+        state, _ = mapping()
+        state.fc_state_valid = False
+        state.fc_flags = 0xa0
+        state.covariance_stamp.sec = 100
+        gps = GlobalPositionInt(source_session=state.navigation_session, lat=0, lon=0, alt=0)
+        gps.header.stamp.sec = 100
+        def refresh():
+            self.ui.receive('fused_state', state)
+            self.ui.receive('sensors/gps/global_position', gps)
+        refresh()
+        identity = self.ui.snapshot()['identity']
+        for attribute, value, expected in [('fc_flags', 0x80, '未定位'), ('fc_flags', 0, '未确认'),
+                                            ('navigation_session', 'old', '会话不匹配')]:
+            old = getattr(state, attribute)
+            setattr(state, attribute, value)
+            refresh()
+            self.assertIsNone(self.ui.snapshot()['position'])
+            self.assertIn(expected, self.ui.snapshot()['position_error'])
+            setattr(state, attribute, old)
+        for lat, lon in [(900000001, 0), (0, -1800000001)]:
+            gps.lat, gps.lon = lat, lon
+            refresh()
+            self.assertIn('越界', self.ui.snapshot()['position_error'])
+        gps.lat = gps.lon = 0
+        refresh()
+        for topic in ('fused_state', 'sensors/gps/global_position'):
+            with self.ui.lock:
+                self.ui.latest[topic]['received'] -= 2
+            self.assertIsNone(self.ui.snapshot()['position'])
+            self.assertIn('过期', self.ui.snapshot()['position_error'])
+            refresh()
+        # Repeated failure notifications must not renew old GPS-fix evidence.
+        state.covariance_stamp.sec = 98
+        refresh()
+        self.assertIsNone(self.ui.snapshot()['position'])
+        self.assertIn('过期', self.ui.snapshot()['position_error'])
+        state.covariance_stamp.sec = 100
+        state.navigation_session = gps.source_session = 'new-session'
+        refresh()
+        self.assertEqual(self.ui.snapshot()['position_source'], 'gps_global')
+        self.assertNotEqual(self.ui.snapshot()['identity'], identity)
+
     def test_changing_statuses_stay_rate_limited_with_payload_budget(self):
         state, _ = mapping()
         state.readiness_reason = 'FC XY/Z/fusion/snapshot unavailable'
         messages = {
             'fused_state': state,
+            'sensors/gps/global_position': GlobalPositionInt(source_session=state.navigation_session),
             'authority': Authority(clock_id=state.clock_id, session_id=state.navigation_session, receiver_valid=True),
             'health': Health(state_source='fc_fused', state_session=state.navigation_session, battery_voltage=16.2),
             'output_status': OutputStatus(clock_id=state.clock_id, session_start=10., thrust_model='measured_cubic'),
@@ -364,7 +461,7 @@ class DDSTests(unittest.TestCase):
         payload_bytes = {topic: sum(len(serialize_message(message)) for _, message in rows)
                          for topic, rows in rows_by_topic.items()}
         for topic, rate in rates.items():
-            expected = 5. if topic == 'fused_state' else 1.
+            expected = 5. if topic in relay.FAST else 1.
             self.assertAlmostEqual(rate, expected, delta=.25, msg=topic)
         self.assertAlmostEqual(count / elapsed, 100., delta=1.)
         payload_bps = sum(payload_bytes.values()) * 8 / elapsed

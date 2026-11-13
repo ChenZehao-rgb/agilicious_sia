@@ -7,6 +7,7 @@ import importlib.util
 import os
 from pathlib import Path
 import pty
+import signal
 import socket
 import subprocess
 import tempfile
@@ -22,7 +23,7 @@ from pymavlink.dialects.v20 import common as mav
 from sensor_msgs.msg import FluidPressure, Imu, NavSatFix, Temperature
 from geometry_msgs.msg import TwistStamped, QuaternionStamped
 from diagnostic_msgs.msg import DiagnosticArray
-from agi_ros2.msg import Barometer, Heading, ImuTiming, Navigation
+from agi_ros2.msg import Barometer, GlobalPositionInt, Heading, ImuTiming, Navigation
 
 
 class Harness:
@@ -60,11 +61,12 @@ class Harness:
         self.commands = []
         self.ack_result_by_id = {}
         self.next_imu = self.next_gps = self.next_attitude = self.next_baro = 0
-        self.values = {k: [] for k in ('imu', 'imu_timing', 'fix', 'velocity', 'attitude', 'heading', 'navigation',
+        self.values = {k: [] for k in ('imu', 'imu_timing', 'fix', 'global_position', 'velocity', 'attitude', 'heading', 'navigation',
                                      'pressure', 'temperature', 'barometer', 'status')}
         self.node = rclpy.create_node('test_' + uuid.uuid4().hex)
         self.namespace = '/mavtest_' + uuid.uuid4().hex
         topics = [('imu', Imu, 'sensors/imu'), ('fix', NavSatFix, 'sensors/gps/fix'),
+                  ('global_position', GlobalPositionInt, 'sensors/gps/global_position'),
                   ('imu_timing', ImuTiming, 'sensors/imu/timing'),
                   ('velocity', TwistStamped, 'sensors/gps/velocity'),
                   ('attitude', QuaternionStamped, 'sensors/fc_attitude'),
@@ -190,6 +192,97 @@ class SensorTests(unittest.TestCase):
     def setUp(self): self.h = Harness()
     def tearDown(self): self.h.close()
 
+    def test_fc_global_position_fields_sync_duplicates_and_reconnect(self):
+        self.h.close()
+        self.h = Harness(state_source='fc_fused')
+        h = self.h
+        h.fix_type = 1  # No GPS fix or valid fused state is needed to record message 33.
+        h.sync = False
+        h.drive(.8)
+        self.assertFalse(h.values['global_position'])
+        h.sync = True
+        h.drive(1.6)
+        self.assertTrue(h.values['global_position'])
+        self.assertEqual({int(c[1]) for c in h.commands}, {33, 248, 331})
+        self.assertEqual({int(c[1]): c[2] for c in h.commands}, {33: 100000., 248: 20000., 331: 10000.})
+        self.assertFalse(h.values['fix'] or h.values['velocity'] or h.values['heading'])
+        self.assertFalse(h.values['imu'] or h.values['attitude'] or h.values['pressure'])
+        self.assertFalse(any(n.clock_aligned for n in h.values['navigation']))
+        h.streaming_gps = False
+        h.drive(.1)
+        before = len(h.values['global_position'])
+        stamp_ms = h.remote() // 1000
+        fields = (stamp_ms, -310000001, -1210000001, -20001, -1234, -100, 200, -300, 65535)
+        h.peer.global_position_int_send(*fields)
+        h.peer.global_position_int_send(*fields)
+        h.drive(.1)
+        self.assertEqual(len(h.values['global_position']), before + 1)
+        sample = h.values['global_position'][-1]
+        self.assertEqual(tuple(getattr(sample, name) for name in
+                              ('time_boot_ms', 'lat', 'lon', 'alt', 'relative_alt', 'vx', 'vy', 'vz', 'hdg')), fields)
+        self.assertEqual(sample.header.frame_id, 'gps_link')
+        self.assertLess(abs(time.time() - sample.header.stamp.sec - sample.header.stamp.nanosec * 1e-9), .3)
+        h.peer.global_position_int_send(stamp_ms - 1000, *fields[1:])
+        h.drive(.1)
+        self.assertEqual(len(h.values['global_position']), before + 1)
+        session = sample.source_session
+        self.assertTrue(session)
+        os.close(h.master); os.close(h.slave); h.new_port()
+        h.streaming_gps = True
+        h.drive(3)
+        self.assertNotEqual(h.values['global_position'][-1].source_session, session)
+        # Lift the wrapped uint32 millisecond epoch using the synchronized FC clock.
+        h.epoch = time.monotonic() - 4294968.5
+        h.drive(2)
+        sample = h.values['global_position'][-1]
+        self.assertLess(sample.time_boot_ms, 10000)
+        self.assertLess(abs(time.time() - sample.header.stamp.sec - sample.header.stamp.nanosec * 1e-9), .3)
+
+    def test_fc_global_position_default_all_topic_recording_without_fix(self):
+        import rosbag2_py
+        from rclpy.serialization import deserialize_message
+        self.h.close()
+        self.h = Harness(state_source='fc_fused')
+        h = self.h
+        h.fix_type = 1
+        h.drive(1.5)
+        bag = Path(h.tmp.name) / 'all_topics'
+        with open(Path(h.tmp.name) / 'recorder.log', 'w+') as log:
+            recorder = subprocess.Popen(['ros2', 'bag', 'record', '--all', '--include-hidden-topics', '--output', str(bag)],
+                                        stdout=log, stderr=log)
+            try:
+                h.drive(2.5)
+                self.assertIsNone(recorder.poll())
+            finally:
+                recorder.send_signal(signal.SIGINT)
+                recorder.wait(timeout=10)
+            log.seek(0)
+            self.assertEqual(recorder.returncode, 0, log.read())
+        reader = rosbag2_py.SequentialReader()
+        metadata = yaml.safe_load((bag / 'metadata.yaml').read_text())['rosbag2_bagfile_information']
+        reader.open(rosbag2_py.StorageOptions(uri=str(bag), storage_id=metadata['storage_identifier']),
+                    rosbag2_py.ConverterOptions('', ''))
+        topic = h.namespace + '/sensors/gps/global_position'
+        self.assertIn((topic, 'agi_ros2/msg/GlobalPositionInt'), [(t.name, t.type) for t in reader.get_all_topics_and_types()])
+        recorded = []
+        while reader.has_next():
+            name, payload, _ = reader.read_next()
+            if name == topic:
+                recorded.append(deserialize_message(payload, GlobalPositionInt))
+        self.assertGreater(len(recorded), 5)
+        self.assertTrue(all((m.lat, m.lon, m.alt) == (310000000, 1210000000, 20000) for m in recorded))
+        self.assertTrue(all(m.source_session == h.values['global_position'][-1].source_session for m in recorded))
+        print('GLOBAL_POSITION_BAG ' + str(dict(topic=topic, samples=len(recorded), storage=metadata['storage_identifier'],
+                                               first_time_boot_ms=recorded[0].time_boot_ms)), flush=True)
+
+    def test_fc_global_position_can_be_disabled_without_legacy_streams(self):
+        self.h.close()
+        self.h = Harness(state_source='fc_fused', gps_rate_hz=0)
+        h = self.h
+        h.drive(1.6)
+        self.assertEqual({int(c[1]): c[2] for c in h.commands}, {33: -1., 248: 20000., 331: 10000.})
+        self.assertFalse(h.values['global_position'] or h.values['fix'] or h.values['velocity'])
+
     def test_decode_sources_duplicates_and_units(self):
         h = self.h
         h.drive(2)
@@ -214,6 +307,7 @@ class SensorTests(unittest.TestCase):
         self.assertAlmostEqual(gps.latitude, 31)
         self.assertTrue(math.isnan(gps.altitude))  # explicit unknown is default
         vel = h.values['velocity'][-1]
+        self.assertTrue(h.values['global_position'])  # Raw publication cannot consume legacy velocity/heading dedup keys.
         self.assertEqual((vel.twist.linear.x, vel.twist.linear.y, vel.twist.linear.z), (2., 1., 3.))
         q = h.values['attitude'][-1].quaternion
         self.assertAlmostEqual(q.w, math.sqrt(.5), places=6)

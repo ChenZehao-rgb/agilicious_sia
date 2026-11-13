@@ -12,7 +12,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/ComputationStatus.msg" "msg/MspState.msg"
   "msg/Heading.msg" "msg/FusedState.msg" "msg/SafetyEvidence.msg" "msg/NavigationUpdate.msg"
   "msg/ControlCommand.msg" "msg/OutputStatus.msg" "msg/MspEvent.msg"
-  "msg/FcEstimatedState.msg" "msg/FcEstimatorStatus.msg"
+  "msg/FcEstimatedState.msg" "msg/FcEstimatorStatus.msg" "msg/GlobalPositionInt.msg"
   "msg/ImuTiming.msg" "msg/OutputTiming.msg" "msg/MspWriteTiming.msg"
   DEPENDENCIES std_msgs geometry_msgs builtin_interfaces)
 rosidl_get_typesupport_target(typesupport ${PROJECT_NAME} rosidl_typesupport_cpp)

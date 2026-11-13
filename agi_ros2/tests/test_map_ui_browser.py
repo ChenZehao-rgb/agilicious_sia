@@ -23,7 +23,7 @@ import runtime_launcher
 import rclpy
 from std_msgs.msg import Empty
 from rclpy.executors import SingleThreadedExecutor
-from agi_ros2.msg import FusedState, NavigationOrigin, GoalStatus, ComputationStatus, Health, GeographicGoal, Authority
+from agi_ros2.msg import FusedState, GlobalPositionInt, NavigationOrigin, GoalStatus, ComputationStatus, Health, GeographicGoal, Authority
 from playwright.sync_api import sync_playwright, expect
 
 parser = argparse.ArgumentParser(description=__doc__)
@@ -51,6 +51,7 @@ source = rclpy.create_node('browser_fixture')
 executor=SingleThreadedExecutor()
 for n in [node,transfer,source]: executor.add_node(n)
 s,origin=mapping(); origin.altitude=100.
+s.fc_flags=0xff
 s.position.z=2.
 s.velocity.x=math.nan
 pub=source.create_publisher(FusedState,'fused_state',relay.LATEST)
@@ -59,6 +60,15 @@ gpub=source.create_publisher(GoalStatus,'goal_status',relay.RETAINED)
 cpub=source.create_publisher(ComputationStatus,'computation_status',relay.LATEST)
 hpub=source.create_publisher(Health,'health',relay.LATEST)
 apub=source.create_publisher(Authority,'authority',relay.LATEST)
+gps_pub=source.create_publisher(GlobalPositionInt,'sensors/gps/global_position',relay.LATEST)
+gps=GlobalPositionInt(source_session=s.navigation_session, lat=310000001, lon=1210000001,
+                      alt=20123, relative_alt=98765, vx=100, vy=200, vz=-300, hdg=9000)
+gps_enabled=[False]
+def emit_gps():
+    if gps_enabled[0]:
+        gps.header.stamp=source.get_clock().now().to_msg()
+        gps_pub.publish(gps)
+source.create_timer(.05,emit_gps)
 goal=GoalStatus(clock_id=s.clock_id,control_session_start=10.,active_valid=True,request_sequence=1,active_request_sequence=1,
                 active_fc_session=s.navigation_session,active_fc_reset_counter=s.fc_reset_counter,active_generation=s.reset_counter,
                 active_phase=GoalStatus.STABLE,request_state=GoalStatus.ACCEPTED)
@@ -71,12 +81,13 @@ enabled=[False]; ticks=[0]; moving=[False]; auto_active=[True]; hover_stable=[Tr
 def emit():
     if not enabled[0]: return
     if moving[0]: s.position.x += .002
+    s.covariance_stamp=source.get_clock().now().to_msg()
     s.fc_time_usec += 10000
     s.fc_state_sequence+=1;pub.publish(s)
     cpub.publish(ComputationStatus(control_session_start=10.,state_valid=True,controller_success=True,
                                    trajectory_active=auto_active[0],hover_stable=hover_stable[0]))
     hpub.publish(Health(battery_voltage=16.2))
-    apub.publish(Authority(armed=True,auto_switch=True,receiver_valid=True,rc_link=True))
+    apub.publish(Authority(armed=bool(s.fc_flags & 0x10),auto_switch=True,receiver_valid=True,rc_link=True))
     if ticks[0]%100==0:
         # Real FC metadata refreshes its time even when its mapping is unchanged.
         origin.fc_time_usec=s.fc_time_usec
@@ -355,11 +366,13 @@ try:
         page.wait_for_timeout(2100)
         assert page.evaluate('positionChanges.length')==0
         before_version=page.evaluate('lastStateVersion')
+        before_track=page.evaluate('track.length')
         moving[0]=True;page.wait_for_timeout(2400);moving[0]=False
         changes=page.evaluate('positionChanges')
         assert 10 <= len(changes) <= 13, changes
         assert all(b-a>=150 for a,b in zip(changes,changes[1:])),changes
-        assert page.evaluate('lastStateVersion')-before_version>20
+        assert page.evaluate('lastStateVersion')>before_version
+        assert page.evaluate('track.length')-before_track>=10  # 5 Hz relay, independent of other topic versions.
         assert page.evaluate('invalidPositionChanges')==[]
         # Main-thread stalls used to flash HTTP disconnected despite successful
         # requests. Distinguish them from actual transport failures and timeouts.
@@ -428,6 +441,41 @@ try:
         for route in held_routes: route.abort()
         page.unroute('**/api/pause')
         assert [page.locator('#'+field).input_value() for field in ['latitude','longitude','altitude']]==['1.23','2.34','110']
+        # Message 33 supplies a map point before ARM/XY fusion, without granting navigation readiness.
+        s.fc_state_valid=False;s.fc_flags=0xa0
+        s.readiness_reason='FC XY/Z/fusion/snapshot unavailable'
+        gps_enabled[0]=True
+        expect(page.locator('#position')).to_contain_text('GPS · 31.0000001, 121.0000001')
+        expect(page.locator('#position')).to_contain_text('MSL 20.12 m · 相对原点 未知 m · 3.74 m/s · 航向 90.0°')
+        expect(page.locator('#navigation')).to_contain_text('GPS 位置 · 融合导航不可用')
+        expect(page.locator('#authority')).to_contain_text('ARM OFF')
+        assert page.evaluate('snapshot.position_source')=='gps_global'
+        assert page.evaluate('snapshot.mapping_error')
+        assert abs(page.evaluate('airplane.getLatLng().lat')-31.0000001)<1e-10
+        assert page.evaluate('identity')=='["gps_global","remote-receiver"]'
+        assert page.evaluate('track.every(p => Math.abs(p[0]-31.0000001)<1e-8)')
+        page.screenshot(path=str(out/'gps-disarmed.png'),full_page=True)
+        gps.hdg=65535;gps.vx=32767
+        expect(page.locator('#position')).to_contain_text('未知 m/s · 航向 未知°')
+        assert page.evaluate("airplane.getElement().querySelector('span').textContent")=='●'
+        # Fresh fused coordinates win even while GPS continues to arrive.
+        s.fc_state_valid=True;s.fc_flags=0xff
+        expect(page.locator('#position')).to_contain_text('FC 融合 ·')
+        assert page.evaluate('track.every(p => Math.abs(p[0])<1e-6)')
+        s.fc_state_valid=False;s.fc_flags=0x80
+        expect(page.locator('#position')).to_contain_text('GPS 未定位')
+        s.fc_flags=0xa0;gps.lat=900000001
+        expect(page.locator('#position')).to_contain_text('GPS 经纬度越界')
+        gps.lat=310000001;gps.source_session='old-session'
+        expect(page.locator('#position')).to_contain_text('会话不匹配')
+        gps.source_session=s.navigation_session
+        expect(page.locator('#position')).to_contain_text('GPS ·')
+        gps_enabled[0]=False
+        expect(page.locator('#position')).to_contain_text('GPS 全局位置已过期')
+        # Restore the pre-existing fused/stale and command-count checks.
+        s.fc_state_valid=True;s.fc_flags=0xff
+        expect(page.locator('#position')).to_contain_text('FC 融合 ·')
+        assert len(commands)==1 and len(pauses)==1
         page.wait_for_timeout(400)
         page.screenshot(path=str(out/'desktop.png'),full_page=True)
         enabled[0]=False;page.wait_for_timeout(3500)
@@ -449,7 +497,7 @@ try:
             'shutdown_hardware_only_permission_error_timeout_and_refresh':True,'page_errors':errors,'fixture':'synthetic, not real map',
             'position_updates_in_2_4s':len(changes), 'position_min_interval_ms':min(b-a for a,b in zip(changes,changes[1:])),
             'initial_auto_hover':True,'browser_stall_without_false_disconnect':True,'http_failure_and_timeout_recovery':True,
-            'origin_refresh_without_invalid_position':True},indent=2))
+            'origin_refresh_without_invalid_position':True,'gps_disarmed_fused_priority_and_invalidity':True},indent=2))
         browser.close()
 finally:
     server.shutdown();server.server_close();http_thread.join()

@@ -10,12 +10,12 @@ from rcl_interfaces.msg import ParameterDescriptor, SetParametersResult
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from std_msgs.msg import Empty
 from runtime_launcher import RuntimeLauncher
-from agi_ros2.msg import Authority, ComputationStatus, FusedState, GoalStatus, Health, NavigationOrigin, OutputStatus
+from agi_ros2.msg import Authority, ComputationStatus, FusedState, GlobalPositionInt, GoalStatus, Health, NavigationOrigin, OutputStatus
 
 LATEST = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
 RETAINED = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
 RUNTIME_QOS = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.VOLATILE)
-FAST = {'fused_state': FusedState}
+FAST = {'fused_state': FusedState, 'sensors/gps/global_position': GlobalPositionInt}
 SLOW = {'authority': Authority, 'health': Health, 'output_status': OutputStatus, 'computation_status': ComputationStatus}
 RETAINED_TOPICS = {'navigation/origin': NavigationOrigin, 'goal_status': GoalStatus}
 

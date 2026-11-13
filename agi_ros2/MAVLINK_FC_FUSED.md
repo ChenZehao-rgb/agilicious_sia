@@ -38,8 +38,15 @@ OutputStatus 独立提供控制输出、映射与传输证据。
 
 `hardware.yaml` 默认 `state.source: fc_fused`，仍为 `shadow_only: true`。
 `mavlink.device: /dev/ttyAMA2`、921600、`odometry_rate_hz: 100`、
-`estimator_status_rate_hz: 50`。新模式只请求两个消息间隔，不请求旧 IMU/GPS/气压/姿态消息，
-也不消费它们。旧配置项保留，供 `state.source: ros_ekf` 使用。
+`estimator_status_rate_hz: 50`。另按 `gps_rate_hz`（默认 10 Hz，0 禁用）请求
+`GLOBAL_POSITION_INT`，仅用于原始录包和地图显示，不输入控制状态估计。
+不请求旧 IMU、GPS_RAW_INT、气压或姿态消息；其余旧配置项供 `state.source: ros_ekf` 使用。
+
+`/sensors/gps/global_position : agi_ros2/msg/GlobalPositionInt` 保留消息 33 全部字段和原单位，
+附带映射后的 ROS 时间戳与接收会话。时间为 FC `time_boot_ms`，不是接收机 PVT 采样时间。
+GPS 未定位也发布原始数据；默认 `ros2 bag record --all --include-hidden-topics` 自动记录。
+消息 33 本身没有 fix 标志；地图借助同会话的新鲜 FC flags 确认定位，参见
+[地图说明](MAP_UI.zh-CN.md#未解锁时的-gps-位置)。
 
 完整新模式只有五个业务节点：mavlink_sensor_node、fc_state_adapter_node、control_node、
 command_output_node、msp_evidence.py。启动图不包含 state_fusion_node、gnss_adapter.py 或旧气压 TF。
