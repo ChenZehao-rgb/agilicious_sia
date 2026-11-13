@@ -3,7 +3,7 @@
 标准入口只维护两份完整配置：[simulation.yaml](config/simulation.yaml) 和
 [hardware.yaml](config/hardware.yaml)。仿真保留已经使用的分层部署方式：开发机运行
 Gazebo、Betaflight SITL 和传感器适配器，CM5、Jetson 或开发机运行融合、控制、输出三节点。
-实机使用两条独立 UART：MAVLink 接收 IMU/GPS/绝对气压，MSP 查询实体授权、配置和电池并发送 AETR Override。
+实机使用两条独立 UART：MAVLink 接收状态估计、遥控、实际解锁、系统健康和电池；MSP 仅发送四通道 AETR Override，并非阻塞排空 ACK。
 
 ```text
 仿真：Gazebo → gazebo_sensors → IMU / RTK ────────────────────┐
@@ -20,13 +20,13 @@ Gazebo、Betaflight SITL 和传感器适配器，CM5、Jetson 或开发机运行
                                                            ↓
                                                   Betaflight 角速度内环
 
-实体接收机 → FC → MSP 遥测 → msp_evidence.py → /authority、/health
-                             ↑ 配置/模式/电池       ↓ 同时供控制与输出独立复查
+实体接收机 → FC → MAVLink 遥测 → msp_evidence.py → /authority、/health
+                             ↑ RC/实际 armed/健康/电池       ↓ 同时供控制与输出独立复查
 ```
 
 本次软件适配的目标是**先人工起飞，再通过实体 AUTO 开关捕获当前位置和航向、执行 MPC 或 GEO 悬停**。
 入口不自动 ARM、不自动起飞或降落。空轨迹时捕获悬停；`hardware.yaml` 默认 `shadow_only: true`，
-只计算与录包、不发送控制帧。实机机体、精度门限、围栏和推力数据需要填入实测值，
+只计算与录包、不发送控制帧，也不发送 MSP 查询。实机机体、精度门限、围栏和推力数据需要填入实测值，
 仓库中的零值是未配置标记，不是飞行参数。历史 SITL/伪串口结果不代表当前固件已刷入飞控，
 也不代表已经完成 CM5 时延验收或真实飞行验证。
 
@@ -68,11 +68,11 @@ ARM64 默认不构建 Gazebo 适配器，核心三节点和 MAVLink/MSP 节点�
 |---|---|
 | `flight` | 轨迹、推力模型及参数、shadow/diagnostic 开关、SITL 延迟实验、录包；launch 和输出节点读取 |
 | `pilot` | 内嵌 `quadrotor` 和 `pipeline.controller.parameter_sets`；按 type 选 MPC/GEO 参数，输出端采用相同模型校验 |
-| `bridge` | ACTUAL rates/deadband/min_check；输出端映射、MSP 配置回读和 SITL EEPROM 共用 |
+| `bridge` | ACTUAL rates/deadband/min_check；本地输出映射和 SITL EEPROM 使用，硬件不回读核验 |
 | `fusion` | IMU 噪声、初始化、导航质量门限及独立气压融合；launch 传给融合节点 |
-| `output` | MSP UART 和查询周期；控制输出/只读 MSP 节点 |
+| `output` | MSP UART；硬件仅发 override，诊断节点只排空接收 |
 | `mavlink`、`navigation` | 传感器 UART/消息频率、高度/航向声明、原点和精度门限 |
-| `evidence` | 实体 AUX/RX map、PID/rate profile、围栏和电池时效 |
+| `evidence` | CH5/CH8 开关有效区间、围栏和电池时效；无 RX map/profile/override 读回依赖 |
 
 数组请写为 `[x, y, z]`；Agilib 的现有 YAML 读取器不支持 PyYAML 默认的无额外缩进多行数组。
 
@@ -126,7 +126,7 @@ quadratic 模式的满输入推力是曲线尺度，也不自动成为控制器�
 惯量、力臂、kappa、电机转速/时间常数/推力多项式在这两种 ROS2 外环模型中均不加载，可以省略；
 内部将未使用项标记为未知。Gazebo 的物理机体和旧内置动力学估计器仍需要自己的完整模型。
 
-GEO 仍要求真实质量、可用的 RC 推力映射、飞控 rates 回读、导航/融合质量、围栏及实体授权。
+GEO 仍要求真实质量、可用的本地 RC/推力映射、导航/融合质量、围栏及实体授权。
 配置里的 GEO 增益是调试起点，未通过本机体飞行验收；当前 rates 输出没有 jerk/角速度前馈和位置积分。
 零/向下推力方向、无效四元数和姿态计算奇点会拒绝本周期并撤权。
 MPC 参数保留在 `parameter_sets.MPC`，具体模型与权重见下一节。
@@ -415,7 +415,7 @@ MSL 对齐是 FC 坐标定义的一致性，不是对 GNSS 海拔/融合绝对�
    ```
 
    启动 MAVLink、GNSS adapter、融合、MSP monitor、证据节点，不构造控制器、不启动输出节点，
-   不发送 MSP code 200。原始 IMU/GPS/MSP 可先读；航向、高度、配置或静止初始化条件未满足时，
+   不发送任何 MSP 帧。MAVLink 状态/遥控/电池可先读；航向、高度或静止初始化条件未满足时，
    本地导航/融合会继续报告等待原因。此时没有 output_status，health 不会假装整条飞行链已就绪。
 
 2. **所选控制器的真实模型填完后运行影子计算：**
@@ -426,12 +426,12 @@ MSL 对齐是 FC 坐标定义的一致性，不是对 GNSS 海拔/融合绝对�
    # ros2 launch agi_ros2 shadow.launch.py
    ```
 
-   hardware 默认 shadow。核心三节点与 MAVLink/GNSS/evidence 合共六个节点，另有气压静态 TF；输出节点只查询 MSP。
+   hardware 默认 shadow。核心三节点与 MAVLink/GNSS/evidence 合共六个节点，另有气压静态 TF；输出节点仅排空 MSP 接收，不发送任何查询。
    `shadow.launch.py` 即使接到 `shadow_only:=false` 也拒绝，运行中不能切换只读参数。
    table 模式推力表可暂缺；quadratic 模式仍检查其参数。真实机体模型不可缺；
    详见 [SHADOW_EVALUATION.md](SHADOW_EVALUATION.md)。
 
-3. **机体模型、所选推力映射、质量门限和飞控回读全部就绪后，显式启用输出入口：**
+3. **机体模型、所选推力映射、质量门限和遥测全部就绪后，显式启用输出入口：**
 
    ```bash
    ./agi_ros2/scripts/launch.sh mode:=hardware shadow_only:=false
@@ -455,7 +455,7 @@ MSL 对齐是 FC 坐标定义的一致性，不是对 GNSS 海拔/融合绝对�
    这仅允许程序在证据满足时发送四通道 AETR，不会 ARM。静止、未解锁时先完成原点和 IMU 初始化；
    观察导航/估计/配置/推力/围栏就绪以及 50 个健康控制预热周期；人工起飞到目标高度，
    在实体 AUTO low 状态确认 AUTO_STANDBY 后切 high。空轨迹捕获当前三维位置和 yaw 悬停。
-   退出 AUTO、KILL、失联、导航/控制/输出故障时停止 Override；恢复需新的健康 low→high。
+   退出 AUTO、CH5 请求降低、FC 实际解除解锁、遥测失效或导航/控制/输出故障时停止 Override；恢复需新的健康 low→high。
    实体接收机的当前 AETR、飞控模式及 failsafe 决定停止 Override 后的真实行为。
 
 单独检查时可用 `msp.launch.py`（只读 monitor）或 `mavlink_sensors.launch.py`，均读同一 hardware 配置。
@@ -473,8 +473,8 @@ MSL 对齐是 FC 坐标定义的一致性，不是对 GNSS 海拔/融合绝对�
 | `pilot.quadrotor.mass` | 含电池/负载的起飞总质量，kg |
 | `thrust_min/max` | **每电机等效**推力界限（N）；总推力范围为四倍，需落在所选映射范围和实际允许工作范围内 |
 | `omega_max` | MPC 约束/GEO 输出限幅的机体角速度上限，rad/s；不能超过实际 rate/profile/机体能力 |
-| `bridge.center_rate_deg_s/max_rate_deg_s/expo_percent` | FC ACTUAL rate 三轴参数，deg/s、deg/s、%；必须与当前回读 profile 一致 |
-| `bridge.deadband/yaw_deadband/min_check` | FC RC deadband/min_check 原始设置；readback 精确匹配 |
+| `bridge.center_rate_deg_s/max_rate_deg_s/expo_percent` | FC ACTUAL rate 三轴参数，deg/s、deg/s、%；用于本地角速度→RC 转换，硬件不核验 FC profile |
+| `bridge.deadband/yaw_deadband/min_check` | 本地 RC 转换参数；硬件不执行 readback 核验 |
 | `flight.thrust_model` | `table` 或 `quadratic`；旧配置省略时为 `table`，当前 hardware 配置选 `quadratic` |
 | `flight.thrust_table` | `table` 模式实测电压—RC 油门—**全机总推力 N** 表的路径，格式见下 |
 | `flight.thrust_quadratic.thrust_factor` | `quadratic` 模式的无量纲系数 k，有限且在 `[0,1]` |
@@ -485,10 +485,7 @@ MSL 对齐是 FC 坐标定义的一致性，不是对 GNSS 海拔/融合绝对�
 | `navigation.max_horizontal_accuracy/max_vertical_accuracy/max_velocity_accuracy` | 允许的接收机报告精度，m/m/(m/s)；任一为 0 表示未配置，不授权 |
 | `fusion.max_horizontal_position_stddev/max_vertical_position_stddev/max_velocity_stddev/max_heading_stddev` | 与当前状态同历元的预测标准差上限，m/m/(m/s)/rad；0 表示未配置，不授权 |
 | `evidence.geofence_min/geofence_max` | 本地 ENU 包围盒，m；每轴 min<max，包含原点和预定悬停范围 |
-| `evidence.expected_pid_profile/expected_rate_profile` | 当前期望 FC profile 的零基编号；飞行中改变 profile 撤销授权 |
-| `evidence.expected_override_timeout_ms` | ms；本轮硬件策略固定为 50，不能通过参数放宽，必须与固件回读相等 |
-| `evidence.arm_aux/auto_aux/kill_aux` | 零基 AUX 序号，0～13 对应 AUX1～AUX14，三者须不同；默认 0/1/2 |
-| `evidence.aux_low/aux_high/rx_map` | 实体 ARM/AUTO/KILL 范围及接收机映射，与飞控回读一致 |
+| `evidence.aux_low/aux_high` | 固定 CH5 解锁请求、CH8 AUTO 的有效区间，当前 `[1875,2100)`；不读取 CH9 |
 
 硬件 `bridge.host/port/hover_throttle/motor_idle` 仅为既有映射类型的兼容字段；
 硬件油门使用所选 table 或 quadratic 模型；SITL 继续使用原有平方根/悬停油门模型。
@@ -563,84 +560,34 @@ RC 输入到全机总推力关系。以克力记录时用 `N = gf × 0.00980665`
 在实验记录中保存电机、桨、电调/固件、电池与负载、测量电压、测量对象和夹具、FC 版本/profile、
 油门曲线/限幅/怠速/混控设置及单位换算。CSV 不添加文字元数据行；配置变更后重新确认表是否仍适用。
 
-## 飞控超时与授权回读
+## 硬件遥测、授权与输出故障
 
-本地 `/home/sia/betaflight` 的配套修改增加 `msp_override_timeout_ms`：固件保留默认 **300 ms**，
-本轮 ROS 硬件策略要求操作员显式设置为 **50 ms**。接收机刷新时动态检查最近完整 AETR MSP 帧，
-超时退回实体接收机。修改源码不会让已安装固件自动更新。
-构建/刷写由操作员单独完成；ROS2 launch 和诊断程序**不自动刷写、不执行 CLI 写配置、不修改实体 EEPROM**。
-只有 SITL `run.py` 会写它自己的隔离 EEPROM。
+硬件 MAVLink 同时请求 `RC_CHANNELS_RAW`、`HEARTBEAT`、`SYS_STATUS` 各 25 Hz，
+`BATTERY_STATUS` 2 Hz；`fc_fused` 和 `ros_ekf` 都处理这些消息。
+`/sensors/fc/telemetry` 保存八通道 RC、实际 armed、系统传感器位和原始电池单位，
+各分量独立保留 FC 时间（仅 RC）、本地接收时间及会话。此主题随全话题录包保存。
 
-固件升级与配置按以下顺序由操作员执行；这里提供操作步骤，本次软件修改没有执行刷写：
+`msp_evidence.py` 保留可执行文件名，节点名为 `hardware_evidence`，仅由 MAVLink 提供硬件
+`/authority` 和 `/health` 遥测来源。CH5 是解锁请求，实际 armed 由 HEARTBEAT 确认，CH8 是 AUTO；
+开关高区间由 `evidence.aux_low/aux_high` 指定，当前 `[1875,2100)`，不读取 CH9。
+输出同时要求 CH5 请求和实际 armed。SYS_STATUS 传感器位不证明校准完成；
+HEARTBEAT 的 CRITICAL 可报告已解锁 failsafe，但现有消息不能完整判断未解锁时 RXLOSS。
 
-1. 拆桨、退出 ROS 串口占用，在 FC CLI 保存 `version`、`status`、`diff all` 和 `dump all` 输出；
-   记录实际板卡 target、接收机/串口/传感器配置、profile、模式和电机方向，保留原固件及可恢复的备份。
-2. 在 `/home/sia/betaflight` 使用该板卡对应的工具链和 target 构建。下面的 target 是占位符，
-   必须替换成刚记录的实际值，不能拿 `SITL` 或其他 H7/F4 板卡代替：
+RC、HEARTBEAT、SYS_STATUS 各自 500 ms 超时；电池 1.5 s。RC 使用 TIMESYNC 映射的 FC 时间，
+其余消息没有 FC 发送时间，使用本地接收时间。快照发布、健康汇总和地面站转发均不刷新旧数据年龄。
+故障、FC 重启或会话变化后，需要新的有效 AUTO 低→高；不能把失效消息当成物理低边沿。
+主电池 BATTERY_STATUS 的有效新鲜电压优先，否则使用 SYS_STATUS 的有效电压；
+默认剩余量 100% 不证明电池存在，未知电压保持 NaN 并阻止输出。
 
-   ```bash
-   cd /home/sia/betaflight
-   make TARGET=实际板卡TARGET -j4
-   make GEPRC_TAKER_H743 EXTRA_FLAGS="-DUSE_MAG" //把磁力计编译进固件中
-   ```
+硬件不查询配置、通道映射、模式范围、profile 或 override 参数；`Health.config_verified=false`
+明确表示未核验，本地硬件策略不依赖它。保留本地角速度/推力映射检查、估计器、围栏及命令时效保护。
+飞控配置由操作员管理，本次修改不写 CLI、EEPROM 或固件。
 
-   核对该构建包含本次 Override 超时/只读回读和磁航向有效性修改，以及
-   `USE_TELEMETRY_MAVLINK`、`USE_ACC`、`USE_GPS`、实际磁罗盘所需的 `USE_MAG`/驱动。
-   使用该板卡的刷写方式或 Configurator 的本地固件入口选择对应构建产物；不调用 ROS launch 代刷。
-3. 刷后先核对 `version` 和板卡标识，再逐项恢复所需配置；参数组升级可能重置 RX/telemetry，
-   不把旧 `dump` 当作已验证的新配置。选择与 `hardware.yaml` 一致的 `profile`、`rateprofile`，
-   核对 `map`、`aux`、ACTUAL rates、deadband/min_check、UART、传感器、安装方向及电机方向。
-   `aux` 的 ARM/MSP OVERRIDE/FAILSAFE 通道和范围要与 `evidence` 对应。
-4. 在 CLI 明确写入以下三项，再 `save` 重启；以下是操作员执行的配置命令，不是 ROS 自动写入：
-
-   ```text
-   serial 1 512 115200 115200 921600 115200 //设置921600 mavlink回传，其中1是端口号，代表uart2
-   set msp_override_channels_mask = 15
-   set msp_override_failsafe = OFF
-   set msp_override_timeout_ms = 50
-   save
-   ```
-
-   重连 CLI 后读取 `profile`、`rateprofile`、`map`、`aux`、`get rates_type`、各轴 ACTUAL rates/deadband，
-   并逐项 `get msp_override_channels_mask`、`get msp_override_failsafe`、`get msp_override_timeout_ms`。
-   确认是 15/OFF/50 后退出 CLI，让 ROS diagnostic/shadow 从 MSP 重新回读；以
-   `/msp/decoded_state` 和 `/health/status` 的实际结果核对，不把 CLI 截图替代程序回读。
-
-实机配置回读必须同时确认：
-
-- 已支持的 BTFL API 1.48；`MSP_FC_VERSION` 接受旧三字节及带长度前缀版本字符串的回复；
-  `MSP_STATUS_EX` 布局、当前 PID/rate profile 与预期一致。
-- `msp_override_channels_mask=15`、`msp_override_failsafe=OFF`、`msp_override_timeout_ms=50`。
-  三项通过 MSP v2 `0x3010` **只读**查询；旧固件不支持 timeout 时保持未就绪，不绕过检查。
-- `map AETR1234`，内部 RX map `[0,1,3,2,4,5,6,7]`；AUX1 ARM、AUX2 MSP OVERRIDE、AUX3 FAILSAFE；
-  通过 `evidence.arm_aux/auto_aux/kill_aux` 可选其他三条 AUX。默认范围 `[1700,2100)`，
-  每模式单个直接 OR 范围，不接受链接/AND 模式。
-- ACTUAL rates/deadband/min_check 与配置一致；AUTO 时拒绝 ANGLE/HORIZON 等会改变控制解释的模式。
-- 已确认有效的实体 AUX 与 FC ARM/AUTO/FAILSAFE 模式，FC IMU 状态可用。
-
-MSP RC/STATUS_EX 默认 25 Hz、电池 2 Hz、配置 1 Hz。`MSP_RC` 的 AETR 可能已被 Override，
-程序只把确认不在覆盖 mask 内的 AUX 当作实体开关证据。`config_verified` 表示回读匹配，
-不是对未知接收机失效行为或真实动力学的替代验收。
-
-MSP 查询在同一串口上最多等待一个响应，收到响应后再发送下一条。已到期的查询按下一更新期限排序，
-使 RC/STATUS 的高频读取优先于启动时积压的配置读取；错过的周期直接跳过，不集中补发。
-实际频率取决于飞控响应速度。硬件保留最后确认的实体开关值，但 RC/STATUS 各自最后成功匹配的请求
-只有 100 ms 授权有效期；新收到旧回复、其他消息及心跳不能刷新它。预算对应两个 25 Hz 周期（80 ms）、
-已记录的最大回复约 8.35 ms 和约 10 ms 调度余量，未满足期限时撤权。
-RC/STATUS 查询超过 100 ms 记为 `mode_timeout`，停止该消息码在本会话内的查询。MSP 没有事务 ID，
-迟到模式回复标为 `mode_rx_unmatched`，请求时间和延迟保持未知，不解码为新的物理低边沿或授权证据。
-超时需要重启查询会话；普通证据年龄超限可在同会话恢复。两者都须重新收到新鲜 RC/STATUS、真实 AUTO 低→高。
-其他查询的超时仍停止同消息码查询，关键配置/电池查询失败及串口传输故障仍要求重启会话。
-`msp_evidence` 订阅独立的 `msp/rc`、`msp/status`、`msp/battery` 和低流量 `msp/evidence_events`；
-模式主题使用深度 10 的可靠小队列，完整 `msp/events` 继续记录。`Authority.receiver_valid` 表示当前授权证据是否有效，
-`rc_stamp/status_stamp` 分别保留成功请求时间，header 取两者较早值；`session_id` 改变清除旧授权，不伪造实体 AUTO 低。
-`clock_id` 与 `rc_request_steady_time/status_request_steady_time` 保留匹配请求的原始主机单调时间；
-控制、输出使用原始单调时间检查期限，不能按当前 ROS 时钟偏移重新映射并刷新旧请求年龄。
-硬件在明确 AUTO 低时结束当前 AUTO 并返回手动预热；KILL、ARM 低或明确 RX failsafe 停止求解与接管，
-恢复后需要 AUTO 低→高重新授权。启动未确认模式或 AUTO 已高不自动接管；ARM 高且 AUTO 低时预热至少 50 周期。
-IMU/导航、控制指令、健康节点存活及写入期限继续执行原保护。SITL 保留原 RC 实时输入检查。
-只读 monitor 的单次写入预算为 10 ms，为主机启动调度留出余量；bench 和控制输出路径的
-2 ms 写入预算及控制指令期限保持原策略。写入预算限制内核接受数据的等待，不保证线上发送完成。
+MSP 硬件只发送四通道 `MSP_SET_RAW_RC`，持续非阻塞排空 ACK。AUTO 退出、CH5 降低、实际解除解锁、
+遥测失效或控制故障会停止发送，飞控侧既有 override watchdog 负责回退；这里不读回确认其参数。
+写入期限、部分写入、负 ACK 和串口故障诊断保留；发送故障锁存，AUTO 切换不能清除故障。
+正常 ACK 不新增“必须应答”门控。`msp.launch.py` 只排空接收，不发送查询或授予控制权限。
+显式 bench 工具保留独立的查询和拆桨参数要求。
 
 ## 融合、时效与故障定位
 
@@ -741,14 +688,10 @@ RC年龄、计算耗时、预热数、授权位、状态机枚举；新分析优
 所有入口默认录制全部及隐藏话题到 `~/agi_bags/hardware_*` 或 `sitl_*`；可用
 `record_bag:=false` 或 `bag_output:=路径` 覆盖。任一业务组件或 recorder 退出会关闭整组。
 
-MSP 遥测写入按实际发送结果处理：未发送任何字节的预算超时延期到后续轮询，
-完整发送后才发现超时的只读请求继续等待原回复，不重复发送；分别在 `/msp/events` 记录
-`write_deferred` 和 `write_late`。请求时间不刷新，原有回复超时和迟到回复隔离仍生效。
-控制帧保留严格截止时间；部分写入或真实串口 I/O 故障仍锁定通信为不健康并撤销接管。
-遥测传输故障会停止轮询、保留节点及诊断运行，日志记录请求代码、写入字节数、`errno`、
-写入耗时和截止时间超限量。故障锁定后需人工检查链路并在手动状态下重启；AUTO 切换不解除锁定。
-复测可先运行 `./agi_ros2/scripts/launch.sh mode:=hardware shadow_only:=true` 并录包至少 5 分钟，
-检查无 `transport_error`/关键请求 `timeout`，以及 RC/STATUS、导航和控制时效是否持续满足门限。
+硬件 MSP 控制帧保留严格写入截止时间；部分写入或真实串口 I/O 故障锁存为不健康并撤销接管。
+`/msp/events`、`/msp/write_timing` 继续记录 code 200、ACK、错误及实际写入耗时；
+`/sensors/fc/telemetry` 保留遥测分量的原始时间，摘要区分源更新次数与快照发布次数。
+故障后检查链路并在手动状态重启；AUTO 切换不清除传输锁存。
 节点持续运行本身不代表通信或飞行就绪。
 
 ## 室内拆桨台架：10 Hz 固定 GPS

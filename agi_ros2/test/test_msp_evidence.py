@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Deterministic health freshness checks with real messages and MSP decoding."""
-import json
+import math
 import struct
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,10 +9,37 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
-from agi_ros2.msg import FusedState, MspEvent, OutputStatus
+from agi_ros2.msg import FcTelemetry, FusedState, MspEvent, OutputStatus
 from builtin_interfaces.msg import Time
-from msp_evidence import ClockEpoch, EvidenceNode, output_freshness, stamp
-from test_shadow_support import ready_decoder, config_frames, status_frame
+from msp_evidence import ClockEpoch, EvidenceNode, TelemetryEvidence, output_freshness, stamp
+
+
+def telemetry(now=10., steady=100., **changes):
+    m = FcTelemetry()
+    m.header.stamp = stamp(now)
+    m.clock_id, m.source_session = 'test-boot', 'session-one'
+    m.clock_aligned = m.transport_healthy = True
+    m.rc_stamp = m.heartbeat_stamp = m.system_stamp = m.battery_stamp = stamp(now)
+    m.rc_sample_steady_time = m.rc_receive_steady_time = steady
+    m.heartbeat_receive_steady_time = m.system_receive_steady_time = m.battery_receive_steady_time = steady
+    m.channels = [1500, 1500, 1000, 1500, 1000, 1000, 1000, 1000]
+    m.base_mode, m.system_status = 0, 3
+    m.sensors_present = m.sensors_enabled = m.sensors_health = 3
+    m.battery_voltages_mv = [4000]*4 + [65535]*6
+    m.battery_current_ca, m.battery_consumed_mah = 123, 456
+    m.battery_remaining_percent, m.battery_temperature_cdeg = 75, 2534
+    m.system_voltage_mv = 15000
+    for key, value in changes.items():
+        setattr(m, key, value)
+    return m
+
+
+def ready_decoder():
+    decoder = TelemetryEvidence('test-boot')
+    decoder.accept(telemetry())
+    assert decoder.snapshot(10., steady_now=100.)['receiver_valid']
+    return decoder
+
 
 
 class CapturedPublisher:
@@ -40,7 +67,7 @@ class HealthFreshnessTest(unittest.TestCase):
         output.transport_healthy = True
         output.thrust_mapping_ready = output_mapping
         node = SimpleNamespace(
-            decoder=ready_decoder(10.0, request_steady=100.), battery_timeout=1.5, clock_id='test-boot',
+            decoder=ready_decoder(), battery_timeout=1.5, clock_id='test-boot',
             minimum=[-1.0]*3, maximum=[1.0]*3, fused=fused, output=output,
             get_clock=lambda: SimpleNamespace(now=lambda: SimpleNamespace(nanoseconds=round((10.0+sample_age)*1e9))))
         node.decoder.failed = decoder_failed
@@ -131,229 +158,116 @@ class OutputFreshnessTest(unittest.TestCase):
 
 
 
-class ModeEventTest(unittest.TestCase):
-    def test_angle_to_auto_publishes_healthy_manual_until_pair_is_confirmed(self):
-        high = struct.pack('<7H', 1500, 1500, 1000, 1500, 1800, 1800, 1000)
-        for rc_first in (True, False):
-            with self.subTest(rc_first=rc_first):
-                wall_now = [10.01]
-                node = SimpleNamespace(
-                    decoder=ready_decoder(10., request_steady=100., angle=True),
-                    battery_timeout=1.5, clock_id='test-boot', minimum=[0.]*3, maximum=[0.]*3,
-                    fused=None, output=None,
-                    get_clock=lambda: SimpleNamespace(now=lambda: SimpleNamespace(nanoseconds=round(wall_now[0]*1e9))))
-                node.decoder.session = 'test-boot:1'
-                for name in ('decoded_pub', 'authority_pub', 'health_pub', 'status_pub'):
-                    setattr(node, name, CapturedPublisher())
-                node.publish = lambda: EvidenceNode.publish(node)
-                events = [(105, high), (150, status_frame(auto=True))]
-                if not rc_first:
-                    events.reverse()
-                with patch('msp_evidence.time.monotonic', side_effect=lambda: wall_now[0]+90.):
-                    node.publish()
-                    for i, (code, payload) in enumerate(events):
-                        request = 10.02 + .02*i
-                        wall_now[0] = request + .001
-                        message = MspEvent(code=code, payload=list(payload), event='rx',
-                                           session_id='test-boot:1', steady_time=wall_now[0]+90.,
-                                           request_stamp=stamp(request), request_steady_time=request+90.)
-                        message.header.stamp = stamp(wall_now[0])
-                        EvidenceNode.on_event(node, message)
-                        node.publish()  # Includes a timer publication during the pending interval.
-                        self.assertTrue(all(h.config_verified for h in node.health_pub.messages))
-                        authority = node.authority_pub.messages[-1]
-                        self.assertTrue(authority.receiver_valid and authority.armed)
-                        self.assertEqual(authority.auto_switch, i == 1)
-                        self.assertFalse(authority.kill)
-                    # A real conflict remains visible through the published Health,
-                    # and cannot turn the physical high into a new low edge.
-                    wall_now[0] = 10.061
-                    message = MspEvent(code=150, payload=list(status_frame(auto=True, angle=True)),
-                                       event='rx', session_id='test-boot:1', steady_time=100.061,
-                                       request_stamp=stamp(10.06), request_steady_time=100.06)
-                    message.header.stamp = stamp(10.061)
-                    EvidenceNode.on_event(node, message)
-                    self.assertFalse(node.health_pub.messages[-1].config_verified)
-                    self.assertTrue(node.authority_pub.messages[-1].auto_switch)
+class TelemetryEvidenceTest(unittest.TestCase):
+    def test_channel_edges_and_actual_armed_are_independent(self):
+        for index, field in ((4, 'arm_switch'), (7, 'auto_switch')):
+            for value, high in ((1874, False), (1875, True), (2099, True), (2100, False)):
+                with self.subTest(index=index, value=value):
+                    d = ready_decoder()
+                    m = telemetry(10.04, 100.04)
+                    m.channels[index] = value
+                    d.accept(m)
+                    data = d.snapshot(10.04, steady_now=100.04)
+                    self.assertTrue(data['receiver_valid'])
+                    self.assertEqual(data[field], high)
+                    self.assertFalse(data['armed'])
+        d = ready_decoder()
+        d.accept(telemetry(10.04, 100.04, base_mode=128))
+        data = d.snapshot(10.04, steady_now=100.04)
+        self.assertTrue(data['armed'])
+        self.assertFalse(data['arm_switch'])
+        self.assertFalse(data['config_verified'] or data['kill'])
 
-    def test_authority_heartbeat_preserves_original_request_clock(self):
-        wall_now = [10.04]
-        node = SimpleNamespace(
-            decoder=ready_decoder(10., request_steady=100.), battery_timeout=1.5,
-            clock_id='test-boot', minimum=[0.]*3, maximum=[0.]*3, fused=None, output=None,
-            get_clock=lambda: SimpleNamespace(now=lambda: SimpleNamespace(nanoseconds=round(wall_now[0]*1e9))))
-        for name in ('decoded_pub', 'authority_pub', 'health_pub', 'status_pub'):
-            setattr(node, name, CapturedPublisher())
-        for ros_now, steady_now in ((10.04, 100.04), (10.08, 100.08), (10.08, 100.11)):
-            wall_now[0] = ros_now
-            with patch('msp_evidence.time.monotonic', return_value=steady_now):
-                EvidenceNode.publish(node)
-            authority = node.authority_pub.messages[-1]
-            self.assertEqual(authority.clock_id, 'test-boot')
-            self.assertEqual(authority.rc_request_steady_time, 100.)
-            self.assertEqual(authority.status_request_steady_time, 100.)
-            self.assertEqual(authority.header.stamp, stamp(10.))
-        self.assertTrue(node.authority_pub.messages[1].receiver_valid)
-        self.assertFalse(node.authority_pub.messages[2].receiver_valid)
+    def test_each_source_expires_and_republish_does_not_refresh(self):
+        for field in ('rc_sample_steady_time', 'rc_receive_steady_time', 'heartbeat_receive_steady_time',
+                      'system_receive_steady_time'):
+            with self.subTest(field=field):
+                d = ready_decoder()
+                m = telemetry(10.04, 100.04)
+                m.channels[7] = 2000
+                m.base_mode = 128
+                d.accept(m)
+                self.assertTrue(d.snapshot(10.04, steady_now=100.04)['auto_switch'])
+                stale = telemetry(11., 101.)
+                stale.channels[7] = 2000
+                setattr(stale, field, 100.)
+                d.accept(stale)
+                data = d.snapshot(11., steady_now=101.)
+                self.assertFalse(data['receiver_valid'])
+                self.assertTrue(data['auto_switch'])
+                d.accept(telemetry(11.04, 101.04, channels=[int(v) for v in stale.channels]))
+                self.assertFalse(d.snapshot(11.04, steady_now=101.04)['receiver_valid'])
+                d.accept(telemetry(11.08, 101.08))
+                self.assertTrue(d.snapshot(11.08, steady_now=101.08)['receiver_valid'])
+        d = ready_decoder()
+        self.assertTrue(d.snapshot(10.499, steady_now=100.499)['receiver_valid'])
+        self.assertFalse(d.snapshot(10.501, steady_now=100.501)['receiver_valid'])
 
-    def node_and_event(self, event='rx', request=95., request_steady=995.):
-        node = SimpleNamespace(decoder=ready_decoder(), clock_id='test-boot', publish=lambda: None,
-                               get_clock=lambda: SimpleNamespace(now=lambda: SimpleNamespace(nanoseconds=100_000_000_000)))
-        message = MspEvent(code=105, event=event, session_id='test-boot:1',
-                           steady_time=999.9, request_steady_time=request_steady,
-                           request_stamp=Time(sec=int(request)),
-                           payload=list(struct.pack('<7H', 1500, 1500, 1000, 1500, 1800, 1000, 1000)))
-        message.header.stamp = Time(sec=99, nanosec=900_000_000)
-        return node, message
+    def test_restart_transport_clock_failure_require_low(self):
+        for change in ({'source_session': 'reboot'}, {'transport_healthy': False}, {'clock_aligned': False},
+                       {'system_status': 5}):
+            with self.subTest(change=change):
+                d = ready_decoder()
+                m = telemetry(10.04, 100.04)
+                m.channels[7] = 2000
+                d.accept(m)
+                self.assertTrue(d.snapshot(10.04, steady_now=100.04)['receiver_valid'])
+                m = telemetry(10.08, 100.08, **change)
+                m.channels[7] = 2000
+                d.accept(m)
+                self.assertFalse(d.snapshot(10.08, steady_now=100.08)['receiver_valid'])
+                session = m.source_session
+                d.accept(telemetry(10.12, 100.12, source_session=session, channels=[int(v) for v in m.channels]))
+                self.assertFalse(d.snapshot(10.12, steady_now=100.12)['receiver_valid'])
+                d.accept(telemetry(10.16, 100.16, source_session=session))
+                self.assertTrue(d.snapshot(10.16, steady_now=100.16)['receiver_valid'])
 
-    def test_old_mode_request_revokes_authority_without_transport_failure(self):
-        node, message = self.node_and_event()
-        with patch('msp_evidence.time.monotonic', return_value=1000.):
-            EvidenceNode.on_event(node, message)
-        self.assertFalse(node.decoder.failed)
-        self.assertEqual(node.decoder.frames[105][1], 95.)
-        self.assertFalse(node.decoder.snapshot(100.)['receiver_valid'])
+    def test_battery_units_pack_cells_extended_unknowns_and_precedence(self):
+        cases = [([24000]+[65535]*9, [0]*4, 24.), ([4000]*6+[65535]*4, [0]*4, 24.),
+                 ([4000]*10, [4000, 4000, 0, 0], 48.), ([65534, 4466]+[65535]*8, [0]*4, 70.)]
+        for volts, ext, expected in cases:
+            with self.subTest(volts=volts):
+                d = ready_decoder()
+                d.accept(telemetry(10.04, 100.04, battery_voltages_mv=volts, battery_voltages_ext_mv=ext))
+                data = d.snapshot(10.04, steady_now=100.04)
+                self.assertAlmostEqual(data['battery_voltage'], expected)
+                self.assertAlmostEqual(data['battery_current_a'], 1.23)
+                self.assertEqual(data['battery_consumed_mah'], 456.)
+                self.assertEqual(data['battery_remaining_percent'], 75.)
+                self.assertAlmostEqual(data['battery_temperature_c'], 25.34)
+        d = ready_decoder()
+        d.accept(telemetry(10.04, 100.04, battery_current_ca=-1, battery_consumed_mah=-1,
+                           battery_remaining_percent=-1, battery_temperature_cdeg=32767))
+        data = d.snapshot(10.04, steady_now=100.04)
+        for key in ('battery_current_a', 'battery_consumed_mah', 'battery_remaining_percent', 'battery_temperature_c'):
+            self.assertTrue(math.isnan(data[key]))
 
-    def test_unmatched_reply_keeps_request_time_unknown(self):
-        node, message = self.node_and_event('mode_rx_unmatched', 0., 0.)
-        with patch('msp_evidence.time.monotonic', return_value=1000.):
-            EvidenceNode.on_event(node, message)
-        self.assertFalse(node.decoder.failed)
-        self.assertNotIn(105, node.decoder.frames)
-        self.assertFalse(node.decoder.snapshot(100.)['receiver_valid'])
+    def test_battery_fallback_expiry_and_default_remaining_is_not_evidence(self):
+        d = ready_decoder()
+        m = telemetry(10.04, 100.04, battery_voltages_mv=[65535]*10)
+        d.accept(m)
+        self.assertAlmostEqual(d.snapshot(10.04, steady_now=100.04)['battery_voltage'], 15.)
+        m = telemetry(10.08, 100.08, battery_voltages_mv=[65535]*10, system_voltage_mv=0,
+                      system_remaining_percent=100)
+        d.accept(m)
+        data = d.snapshot(10.08, steady_now=100.08)
+        self.assertTrue(math.isnan(data['battery_voltage']))
+        self.assertTrue(math.isnan(data['battery_remaining_percent']))
+        d = ready_decoder()
+        self.assertTrue(math.isnan(d.snapshot(11.501, steady_now=101.501)['battery_voltage']))
 
-    def test_future_or_different_clock_evidence_still_fails(self):
-        for request, steady in ((101., 1001.), (95., 994.)):
-            node, message = self.node_and_event(request=request, request_steady=steady)
-            with patch('msp_evidence.time.monotonic', return_value=1000.):
-                EvidenceNode.on_event(node, message)
-            self.assertTrue(node.decoder.failed)
-
-
-class ClockRecoveryTest(unittest.TestCase):
-    def setUp(self):
-        self.ros = 10.
-        self.steady = 100.
-        self.node = SimpleNamespace(
-            decoder=ready_decoder(self.ros, request_steady=self.steady),
-            clock_epoch=ClockEpoch(self.ros, self.steady),
-            battery_timeout=1.5, clock_id='test-boot', minimum=[0.]*3, maximum=[0.]*3,
-            fused=None, output=None,
-            get_clock=lambda: SimpleNamespace(now=lambda: SimpleNamespace(nanoseconds=round(self.ros*1e9))))
-        self.node.decoder.session = 'test-boot:1'
-        for name in ('decoded_pub', 'authority_pub', 'health_pub', 'status_pub'):
-            setattr(self.node, name, CapturedPublisher())
-        self.node.publish = lambda: EvidenceNode.publish(self.node)
-        self.monotonic = patch('msp_evidence.time.monotonic', side_effect=lambda: self.steady)
-        self.monotonic.start()
-        self.addCleanup(self.monotonic.stop)
-        self.node.publish()
-        self.assertTrue(self.node.authority_pub.messages[-1].receiver_valid)
-
-    def event(self, code, payload, name='', request=None, request_steady=None, event='rx'):
-        message = MspEvent(code=code, payload=list(payload), request_name=name,
-                           event=event, session_id='test-boot:1', steady_time=self.steady,
-                           request_stamp=stamp(self.ros if request is None else request),
-                           request_steady_time=self.steady if request_steady is None else request_steady)
-        message.header.stamp = stamp(self.ros)
-        EvidenceNode.on_event(self.node, message)
-
-    def modes(self, armed=False, auto=False, status_armed=None, status_auto=None):
-        self.ros += .001
-        self.steady += .001
-        self.event(105, struct.pack('<7H', 1500, 1500, 1000, 1500,
-                                   1800 if armed else 1000, 1800 if auto else 1000, 1000))
-        self.event(150, status_frame(armed=armed if status_armed is None else status_armed,
-                                     auto=auto if status_auto is None else status_auto))
-        self.node.publish()
-
-    def configuration(self):
-        for code, payload in config_frames().items():
-            self.event(code, payload)
-        for name, value in (('msp_override_channels_mask', '15'), ('msp_override_failsafe', 'OFF'),
-                            ('msp_override_timeout_ms', '50')):
-            self.event(0x3010, f'{name} = {value}'.encode(), name=name)
-
-    def test_forward_step_drops_cross_epoch_requests_and_requires_disarmed_low(self):
-        self.ros += 3295.34
-        self.steady += .01
-        # The first callback after the step is the crossing STATUS response.
-        self.event(150, status_frame(), request=10., request_steady=100.)
-        d = self.node.decoder
-        self.assertFalse(d.failed)
-        self.assertTrue(d.clock_recovery_pending)
-        self.assertEqual(self.node.clock_epoch.rejected_events, 1)
-        self.assertFalse(self.node.authority_pub.messages[-1].receiver_valid)
-        self.assertTrue(self.node.authority_pub.messages[-1].armed)  # Unknown is not disarmed.
-        self.ros += .01
-        self.steady += .01
-        self.modes()
-        self.assertFalse(self.node.authority_pub.messages[-1].receiver_valid)  # Configuration not fresh.
-        self.configuration()
-        for kwargs in (dict(armed=True), dict(auto=True), dict(status_armed=True), dict(status_auto=True)):
-            self.modes(**kwargs)
-            self.assertFalse(self.node.authority_pub.messages[-1].receiver_valid)
-            self.assertTrue(d.clock_recovery_pending)
-            self.ros += .001
-            self.steady += .001
-        self.modes()
-        authority = self.node.authority_pub.messages[-1]
-        self.assertTrue(authority.receiver_valid)
-        self.assertFalse(authority.armed or authority.auto_switch)
-        self.assertFalse(d.clock_recovery_pending)
-        status = json.loads(self.node.status_pub.messages[-1].data)['clock']
-        self.assertEqual(status['epoch_resets'], 1)
-        self.assertAlmostEqual(status['last_step_seconds'], 3295.33)
-        self.assertFalse(status['recovery_pending'])
-
-    def test_backward_step_from_timer_recovers_using_only_new_epoch_evidence(self):
-        self.ros -= 5.
-        self.steady += .01
-        self.node.publish()
-        self.assertTrue(self.node.decoder.clock_recovery_pending)
-        self.event(1, config_frames()[1], request=10., request_steady=100.)
-        self.assertFalse(self.node.decoder.failed)
-        self.assertEqual(self.node.clock_epoch.rejected_events, 1)
-        self.ros += .01
-        self.steady += .01
-        self.configuration()
-        self.modes()
-        self.assertTrue(self.node.authority_pub.messages[-1].receiver_valid)
-        self.assertFalse(self.node.decoder.clock_recovery_pending)
-
-    def test_clock_recovery_never_clears_real_transport_or_configuration_fault(self):
-        self.event(1, [], event='transport_error')
-        self.ros += 100.
-        self.steady += .01
-        self.node.publish()
-        self.configuration()
-        self.modes()
-        self.assertTrue(self.node.decoder.failed)
-        self.assertFalse(self.node.authority_pub.messages[-1].receiver_valid)
-
-    def test_changed_configuration_across_epoch_still_latches_failure(self):
-        self.ros += 100.
-        self.steady += .01
-        self.node.publish()
-        self.event(3, bytes((202, 7, 0)))
-        self.assertTrue(self.node.decoder.failed)
-        self.assertIn('Configuration changed', self.node.decoder.reason)
-
-    def test_scheduler_pause_between_clock_reads_is_not_a_clock_step(self):
-        with patch('msp_evidence.time.monotonic', side_effect=[100., 100.1, 100., 100.1, 100., 100.1]):
-            self.node.publish()
-        self.assertEqual(self.node.clock_epoch.resets, 0)
-        self.assertFalse(self.node.decoder.failed)
-        self.assertIn('Clock sampling delayed', self.node.decoder.mode_failure_reason)
-        self.node.publish()
-        self.assertFalse(self.node.authority_pub.messages[-1].receiver_valid)
-        self.modes()
-        self.assertTrue(self.node.authority_pub.messages[-1].receiver_valid)
-
-    def test_transport_fault_latches_even_if_local_clock_sampling_is_delayed(self):
-        with patch('msp_evidence.time.monotonic', side_effect=[100., 100.1, 100., 100.1, 100., 100.1]):
-            self.event(1, [], event='transport_error')
-        self.assertTrue(self.node.decoder.failed)
+    def test_wrong_clock_and_old_snapshot_do_not_replace_source(self):
+        d = ready_decoder()
+        d.accept(telemetry(11., 101., clock_id='other'))
+        d.accept(telemetry(9., 99., source_session='old'))
+        self.assertEqual(d.session, 'session-one')
+        self.assertEqual(d.message.rc_sample_steady_time, 100.)
+        d.reset_clock_epoch()
+        self.assertFalse(d.snapshot(10., steady_now=100.)['receiver_valid'])
+        self.assertTrue(d.recovery_pending)
+        epoch = ClockEpoch(10., 100.)
+        self.assertFalse(epoch.observe(10.1, 100.1))
+        self.assertTrue(epoch.observe(12., 100.2))
 
 
 if __name__ == '__main__':

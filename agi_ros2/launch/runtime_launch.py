@@ -287,7 +287,7 @@ def assemble(context, forced_shadow=False, sensor_only=False, msp_only=False):
             processes.append(node('gnss_adapter.py', {**navigation, 'use_sim_time': False}))
         if diagnostic or msp_only:
             processes.append(node('betaflight_msp_node', {**output, 'mode': 'monitor', 'use_sim_time': False}))
-        if not sensor_only:
+        if not sensor_only and not msp_only:
             processes.append(node('msp_evidence.py', {**evidence, 'runtime_config': str(path), 'use_sim_time': False}))
     elif fc_fused:
         processes.append(node('mavlink_sensor_node', {**mavlink, 'use_sim_time': False}))

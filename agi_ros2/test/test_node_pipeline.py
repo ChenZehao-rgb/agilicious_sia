@@ -163,6 +163,7 @@ class Harness:
             rc.clock_id = self.authority_clock
             rc.rc_request_steady_time = wall - self.authority_request_ages[0]
             rc.status_request_steady_time = wall - self.authority_request_ages[1]
+            rc.arm_switch = self.armed
             rc.armed, rc.auto_switch, rc.kill, rc.rc_link = self.armed, self.auto, self.kill, True
             rc.manual_aetr = [1500, 1500, 1000, 1500]
             self.publisher('authority', Authority).publish(rc)
@@ -229,6 +230,7 @@ class Harness:
             evidence.thrust_mapping_ready = self.thrust_mapping_ready
             evidence.command_valid = self.command_valid
             evidence.armed, evidence.auto_switch, evidence.kill = self.armed, self.auto, self.kill
+            evidence.arm_switch = self.armed
             self.publisher('control_command', ControlCommand).publish(command)
             self.last_command = wall
 
@@ -408,7 +410,7 @@ class NodePipelineTest(unittest.TestCase):
         h.auto = True
         h.run(.15, commands=True)
         self.assertTrue(h.received['output_status'][-1].override_active)
-        for ages, clock_id in (((.150, 0.), CLOCK_ID), ((0., .150), CLOCK_ID),
+        for ages, clock_id in (((.550, 0.), CLOCK_ID), ((0., .550), CLOCK_ID),
                                ((-1., 0.), CLOCK_ID), ((0., 0.), 'different-boot')):
             with self.subTest(ages=ages, clock_id=clock_id):
                 # Header and publication remain current; original matched
@@ -706,8 +708,7 @@ class NodePipelineTest(unittest.TestCase):
                 self.assertEqual(size, 8)
                 frames.append(struct.unpack('<4H', frame[5:-1]))
             else:
-                self.assertEqual(size, 0)
-                self.assertIn(code, (108,105,150,110,130,106))
+                self.fail('Hardware MSP transmitted a query: ' + str(code))
         self.assertTrue(frames)
         writes = [v for v in h.received['msp/write_timing'] if v.code == 200]
         self.assertTrue(writes)
@@ -732,13 +733,10 @@ class NodePipelineTest(unittest.TestCase):
         h.clear()
         h.run(0.1, commands=True)
         self.assertFalse(any(frame[4] == 200 for frame in h.serial_frames))
-        # Telemetry remains available after KILL; no synthetic RC/AUX frame.
-        self.assertTrue(h.serial_frames)
+        self.assertFalse(h.serial_frames, 'Stopped hardware output must not send queries')
         h.drop_telemetry = True
-        # Mode reads are nonfatal. Wait for the independently polled 2 Hz
-        # critical battery request to expire after queued mode read timeouts.
         h.run(1.4, commands=True)
-        self.assertFalse(h.received['output_status'][-1].transport_healthy)
+        self.assertTrue(h.received['output_status'][-1].transport_healthy, 'Missing ACK is not a new output gate')
 
     def test_gnss_output_separates_raw_age_and_accepted_age_with_local_delay(self):
         h = self.h

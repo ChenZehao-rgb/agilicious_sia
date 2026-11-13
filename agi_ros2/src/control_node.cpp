@@ -87,8 +87,9 @@ ControlNode::ControlNode()
 	_pilot = std::make_unique<agi::hardware::HardwarePilot>(
 	        *_params, [this] { return _control_time; }, [this] { return _simulation_time ? _control_time : monotonicSeconds(); },
 	        _navigation_policy, _observation_delay,
-	        (_mode == "hardware" || _fc_event_control) ? agi::hardware::ReceiverPolicy::LatchedSwitches
-		                                           : agi::hardware::ReceiverPolicy::FreshSamples);
+	        _mode == "hardware" ? agi::hardware::ReceiverPolicy::MavlinkSwitches
+	        : _fc_event_control ? agi::hardware::ReceiverPolicy::LatchedSwitches
+	                            : agi::hardware::ReceiverPolicy::FreshSamples);
 	if (!trajectory.empty()) {
 		const auto rows = agi::trajectory_csv::readTrajectoryRows(trajectory);
 		const auto points = agi::trajectory_csv::loadTrajectory(rows, 0, agi::Vector<3>::Zero(), 0,
@@ -117,7 +118,8 @@ ControlNode::ControlNode()
 	        "go_to_geographic_position", 1, std::bind(&ControlNode::onGeographicGoal, this, std::placeholders::_1));
 	_authority_sub = create_subscription<msg::Authority>("authority", 1, [this](msg::Authority::ConstSharedPtr message) {
 		if ((_mode == "hardware" || _fc_event_control) && _authority.session_id != message->session_id) _output_fault = true;
-		if (_output_fault || !message->auto_switch || !message->armed || message->kill || !message->rc_link)
+		if (_output_fault || (_mode == "hardware" && !message->arm_switch) || !message->auto_switch || !message->armed ||
+		    message->kill || !message->rc_link)
 			clearPendingGoal("AUTO authorization unavailable");
 		_authority = *message;
 		_authority_receive_time = monotonicSeconds();
@@ -548,6 +550,7 @@ void ControlNode::runCycle(bool computation_requested) {
 	evidence.rc_link = _authority.rc_link &&
 	                   timely(wall, _authority_receive_time, _simulation_time ? kSitlWallTimeout : SafetyGate::kReceiverEvidenceMaxAge);
 	evidence.armed = _authority.armed;
+	evidence.arm_switch = _authority.arm_switch;
 	evidence.auto_switch = _authority.auto_switch;
 	evidence.kill = _authority.kill;
 	evidence.rtk_fixed = _state.rtk_fixed && (_simulation_time || timely(wall, _state.rtk_receive_time, 0.3));
@@ -590,11 +593,14 @@ void ControlNode::runCycle(bool computation_requested) {
 		evidence.estimator_ready = evidence.navigation_ready = navigation_valid;
 		evidence.accuracy_ok = navigation_valid;
 	}
+	const auto receiver_policy = _mode == "hardware" ? agi::hardware::ReceiverPolicy::MavlinkSwitches
+	                                                 : agi::hardware::ReceiverPolicy::LatchedSwitches;
 	const bool healthy_idle = _fc_event_control && !computation_requested && !fault && navigation_valid && state.valid() &&
 	                          timely(_control_time, state.t, state_max_age) && evidence.armed && !evidence.kill &&
-	                          (_shadow_only ? !SafetyGate::receiverFailure(evidence, agi::hardware::ReceiverPolicy::LatchedSwitches)
+	                          (_mode != "hardware" || evidence.arm_switch) &&
+	                          (_shadow_only ? !SafetyGate::receiverFailure(evidence, receiver_policy)
 	                                        : SafetyGate::inputsHealthy(evidence, _navigation_policy, _observation_delay,
-	                                                                    agi::hardware::ReceiverPolicy::LatchedSwitches, fc_check));
+	                                                                    receiver_policy, fc_check));
 	if (healthy_idle) {
 		_fc_fault_reported = false;
 		return;

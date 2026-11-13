@@ -87,7 +87,7 @@ def emit():
     cpub.publish(ComputationStatus(control_session_start=10.,state_valid=True,controller_success=True,
                                    trajectory_active=auto_active[0],hover_stable=hover_stable[0]))
     hpub.publish(Health(battery_voltage=16.2))
-    apub.publish(Authority(armed=bool(s.fc_flags & 0x10),auto_switch=True,receiver_valid=True,rc_link=True))
+    apub.publish(Authority(armed=bool(s.fc_flags & 0x10),arm_switch=True,auto_switch=True,receiver_valid=True,rc_link=True))
     if ticks[0]%100==0:
         # Real FC metadata refreshes its time even when its mapping is unchanged.
         origin.fc_time_usec=s.fc_time_usec
@@ -448,7 +448,7 @@ try:
         expect(page.locator('#position')).to_contain_text('GPS · 31.0000001, 121.0000001')
         expect(page.locator('#position')).to_contain_text('MSL 20.12 m · 相对原点 未知 m · 3.74 m/s · 航向 90.0°')
         expect(page.locator('#navigation')).to_contain_text('GPS 位置 · 融合导航不可用')
-        expect(page.locator('#authority')).to_contain_text('ARM OFF')
+        expect(page.locator('#authority')).to_contain_text('实际解锁 OFF')
         assert page.evaluate('snapshot.position_source')=='gps_global'
         assert page.evaluate('snapshot.mapping_error')
         assert abs(page.evaluate('airplane.getLatLng().lat')-31.0000001)<1e-10

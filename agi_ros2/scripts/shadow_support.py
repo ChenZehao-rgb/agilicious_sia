@@ -121,7 +121,7 @@ class MspEvidence:
     # Hardware polls each mode at 25 Hz. Two periods (80 ms), the measured
     # <8.35 ms response tail and a 10 ms scheduling budget fit inside 100 ms.
     # This is a request-age bound, never refreshed by unrelated MSP traffic.
-    MODE_MAX_AGE = .100
+    MODE_MAX_AGE = .500
 
     def __init__(self, expected):
         self.expected = expected

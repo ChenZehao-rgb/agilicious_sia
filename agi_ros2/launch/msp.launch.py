@@ -1,4 +1,4 @@
-"""Read-only MSP diagnostics from the hardware profile; no vehicle model is required."""
+"""MSP receive-drain diagnostics without queries; no vehicle model is required."""
 import importlib.util
 from pathlib import Path
 

@@ -13,7 +13,13 @@ bool thrust_mapping_ready
 bool thrust_calibrated
 bool geofence_ok
 bool transport_healthy
+# Battery source stamp, unchanged by summary/relay publication.
+builtin_interfaces/Time battery_stamp
 float64 battery_voltage
+float64 battery_current_a
+float64 battery_consumed_mah
+float64 battery_remaining_percent
+float64 battery_temperature_c
 string reason
 
 # Independent FC estimator summary; does not imply IMU calibration or ROS EKF convergence.

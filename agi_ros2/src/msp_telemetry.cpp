@@ -7,21 +7,25 @@
 
 namespace agi_ros2 {
 using agi::hardware::monotonicSeconds;
-MspTelemetry::MspTelemetry(rclcpp::Node& node) : _node(node) {
+MspTelemetry::MspTelemetry(rclcpp::Node& node, bool queries_enabled) : _node(node) {
 	_config = node.create_publisher<std_msgs::msg::String>("msp/config", rclcpp::QoS(1).reliable().transient_local());
 	_events = node.create_publisher<msg::MspEvent>("msp/events", rclcpp::QoS(1000).reliable());
 	_evidence_events = node.create_publisher<msg::MspEvent>("msp/evidence_events", rclcpp::QoS(100).reliable());
 	_write_timing = node.create_publisher<msg::MspWriteTiming>("msp/write_timing", 100);
 	rcl_interfaces::msg::ParameterDescriptor descriptor;
 	descriptor.read_only = true;
-	_timeout = node.declare_parameter<double>("msp.response_timeout_ms", 100.0, descriptor) / 1000;
-	if (!std::isfinite(_timeout) || _timeout < .001 || _timeout > 5)
-		throw std::invalid_argument("msp.response_timeout_ms must be 1..5000");
 	std::ifstream boot_file("/proc/sys/kernel/random/boot_id");
 	std::string boot_id;
 	if (!std::getline(boot_file, boot_id) || boot_id.empty()) throw std::runtime_error("Cannot identify MSP clock host");
 	_session_id = boot_id + ":" + std::to_string(monotonicSeconds());
 	_clock_id = boot_id;
+	// Hardware retains the same serial owner, ACK drain and write diagnostics,
+	// but never constructs a query schedule or declares query parameters.
+	_timeout = .1;
+	if (!queries_enabled) return;
+	_timeout = node.declare_parameter<double>("msp.response_timeout_ms", 100.0, descriptor) / 1000;
+	if (!std::isfinite(_timeout) || _timeout < .001 || _timeout > 5)
+		throw std::invalid_argument("msp.response_timeout_ms must be 1..5000");
 	const std::array<std::string, 6> names{"attitude", "rc", "status", "analog", "battery", "gps"};
 	const std::array<uint8_t, 6> codes{108, 105, 150, 110, 130, 106};
 	const std::array<double, 6> rates{10, 10, 5, 2, 2, 2};

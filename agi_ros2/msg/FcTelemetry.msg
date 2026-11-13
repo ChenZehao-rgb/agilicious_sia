@@ -1,0 +1,33 @@
+# Decoded MAVLink snapshot. Header is publication time, never a source timestamp.
+std_msgs/Header header
+string clock_id
+string source_session
+bool clock_aligned
+bool transport_healthy
+string reason
+# RC has an FC boot timestamp; the other messages only have local receipt times.
+uint32 rc_time_boot_ms
+builtin_interfaces/Time rc_stamp
+float64 rc_sample_steady_time
+float64 rc_receive_steady_time
+uint16[8] channels
+builtin_interfaces/Time heartbeat_stamp
+float64 heartbeat_receive_steady_time
+uint8 base_mode
+uint8 system_status
+builtin_interfaces/Time system_stamp
+float64 system_receive_steady_time
+uint32 sensors_present
+uint32 sensors_enabled
+uint32 sensors_health
+uint16 system_voltage_mv
+int16 system_current_ca
+int8 system_remaining_percent
+builtin_interfaces/Time battery_stamp
+float64 battery_receive_steady_time
+uint16[10] battery_voltages_mv
+uint16[4] battery_voltages_ext_mv
+int16 battery_current_ca
+int32 battery_consumed_mah
+int8 battery_remaining_percent
+int16 battery_temperature_cdeg

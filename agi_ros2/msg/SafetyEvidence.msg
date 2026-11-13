@@ -37,6 +37,7 @@ bool command_valid
 bool controller_warm
 bool receiver_valid
 bool armed
+bool arm_switch
 bool auto_switch
 bool kill
 bool rc_link

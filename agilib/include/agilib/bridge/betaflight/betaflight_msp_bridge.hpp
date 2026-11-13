@@ -84,6 +84,7 @@ private:
 	SafetyGate gate_;
 	uint64_t errors_{0};
 	bool failed_{false};
+	const bool _override_only;
 	double last_send_time_{NAN}, last_write_seconds_{NAN};
 };
 }  // namespace agi::hardware

@@ -38,7 +38,7 @@ class RuntimeProfiles(unittest.TestCase):
                  ('flight', 'sitl', core),
                  ('shadow', 'hardware', core | {'msp_evidence.py'}),
                  ('mavlink_sensors', 'hardware', {'mavlink_sensor_node'}),
-                 ('msp', 'hardware', {'betaflight_msp_node', 'msp_evidence.py'})]
+                 ('msp', 'hardware', {'betaflight_msp_node'})]
         for entry, mode, expected in cases:
             with self.subTest(entry=entry, mode=mode):
                 module = import_path('offline_' + entry, ROOT / 'agi_ros2/launch' / (entry + '.launch.py'))
@@ -228,6 +228,21 @@ class RuntimeProfiles(unittest.TestCase):
         self.assertEqual(params['max_tilt_rad'], 0.35)
         self.assertFalse(params['drag_compensation'])
 
+    def test_hardware_telemetry_has_no_readback_configuration(self):
+        _, profile = runtime.load_profile('hardware')
+        self.assertFalse(any(key.startswith('msp.') for key in profile['output']))
+        self.assertEqual(profile['evidence']['aux_low'], 1875)
+        self.assertEqual(profile['evidence']['aux_high'], 2100)
+        self.assertFalse(set(profile['evidence']) & {'arm_aux', 'auto_aux', 'kill_aux', 'rx_map',
+                                                    'expected_pid_profile', 'expected_rate_profile',
+                                                    'expected_override_timeout_ms'})
+        nodes = self.actions(mode='hardware', diagnostic_only='true', state_source='fc_fused')
+        self.assertIn('mavlink_sensor_node', nodes)
+        self.assertIn('msp_evidence.py', nodes)
+        self.assertFalse(any(key.startswith('msp.') for key in nodes['betaflight_msp_node']))
+        self.assertEqual(set(nodes),
+                         {'mavlink_sensor_node', 'fc_state_adapter_node', 'betaflight_msp_node', 'msp_evidence.py'})
+
     def test_hardware_placeholders_reject_control_but_allow_diagnostics(self):
         values = dict(mode='hardware', device='/dev/null', mavlink_device='/dev/zero')
         with self.assertRaisesRegex(ValueError, 'measured'):
@@ -236,7 +251,7 @@ class RuntimeProfiles(unittest.TestCase):
         self.assertEqual(set(nodes), {'state_fusion_node', 'mavlink_sensor_node', 'gnss_adapter.py',
                                     'betaflight_msp_node', 'msp_evidence.py', 'static_transform_publisher'})
         self.assertEqual(nodes['betaflight_msp_node']['mode'], 'monitor')
-        self.assertTrue(nodes['betaflight_msp_node']['msp.read_configuration'])
+        self.assertFalse(any(key.startswith('msp.') for key in nodes['betaflight_msp_node']))
         self.assertEqual(nodes['state_fusion_node']['navigation_source'], 'gnss')
         self.assertEqual(nodes['gnss_adapter.py']['max_horizontal_accuracy'], 0.0)
 

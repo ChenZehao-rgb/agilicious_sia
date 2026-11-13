@@ -22,12 +22,14 @@ from sensor_msgs.msg import Imu
 from agi_ros2.msg import Authority, ControlCommand, ComputationStatus, FusedState, Health, MspState, OutputStatus
 from nav_msgs.msg import Odometry
 from test_shadow_pipeline import ShadowHarness
+from test_mavlink_telemetry_support import init_telemetry, send_telemetry
 from test_runtime_profile_nodes import dump_profile
 
 
 class HardwareHarness(ShadowHarness):
     def __init__(self, shadow=False, override_timeout='50', controller='MPC', thrust_model='table', observation_delay=0.0):
         super().__init__()
+        init_telemetry(self)
         self.response_armed = False
         self.config_frames[119] = bytes((27, 50, 0, 1))  # Include ANGLE in the FC's stable BOXIDS list.
         self.override_settings['msp_override_timeout_ms'] = override_timeout
@@ -43,7 +45,7 @@ class HardwareHarness(ShadowHarness):
         self.streaming = True
         self.gps_streaming = True
         self.driver = self.drive_sensors
-        for topic, cls in [('fused_state', FusedState), ('health', Health), ('msp/decoded_state', MspState),
+        for topic, cls in [('fused_state', FusedState), ('health', Health), ('authority', Authority),
                            ('output_status', OutputStatus), ('computation_status', ComputationStatus), ('status', String)]:
             self.subscribe(topic, cls)
         table = self.path / 'test_thrust.csv'
@@ -70,11 +72,8 @@ class HardwareHarness(ShadowHarness):
         # Firmware faults stay in the emulated readback, independent of this expected configuration.
         control_parameters = dict(runtime_config=str(path), controller=controller)
         self.start_node('command_output_node', shadow_only=shadow, navigation_source='gnss',
-                        device=os.ttyname(self.slave), thrust_table=str(table), **control_parameters,
-                        **{'msp.read_configuration': True, 'msp.rc.rate_hz': 25., 'msp.status.rate_hz': 25.,
-                           'msp.battery.rate_hz': 2., 'msp.attitude.enabled': False,
-                           'msp.analog.enabled': False, 'msp.gps.enabled': False})
-        self.start_node('msp_evidence.py', bridge_config=str(self.bridge),
+                        device=os.ttyname(self.slave), thrust_table=str(table), **control_parameters)
+        self.start_node('msp_evidence.py',
                         geofence_min=[-10., -10., -2.], geofence_max=[10., 10., 10.])
         self.start_node('mavlink_sensor_node', device=os.ttyname(self.mav_slave), gps_mode='gnss',
                         altitude_source='msl', imu_rate_hz=500, gps_rate_hz=10, attitude_rate_hz=0)
@@ -105,6 +104,8 @@ class HardwareHarness(ShadowHarness):
                 self.peer.command_ack_send(msg.command, mav.MAV_RESULT_ACCEPTED,
                                            target_system=245, target_component=191)
         now = time.monotonic()
+        if getattr(self, "send_control_telemetry", True):
+            send_telemetry(self, now)
         if self.streaming and now >= self.next_imu:
             self.peer.highres_imu_send(self.remote(), 0., 0., -9.80665, 0., 0., 0.,
                                       0., 0., 0., 0., 0., 0., 0., 63)
@@ -127,7 +128,7 @@ class HardwareHarness(ShadowHarness):
             health = self.received['health']
             computation = self.received['computation_status']
             if (health and computation and health[-1].imu_ready and health[-1].estimator_ready and
-                    health[-1].navigation_ready and health[-1].config_verified and health[-1].geofence_ok and
+                    health[-1].navigation_ready and not health[-1].config_verified and health[-1].geofence_ok and
                     (not self.response_armed or computation[-1].warm_cycles >= 50)):
                 return
         raise AssertionError('hardware pipeline did not become ready: ' + str(self.snapshot()))
@@ -147,6 +148,7 @@ def run_sensor_process(fd, epoch):
     sensor = HardwareHarness.__new__(HardwareHarness)
     sensor.mav_master, sensor.epoch = fd, epoch
     sensor.next_imu = sensor.next_gps = 0.
+    sensor.send_control_telemetry = False
     sensor.heading, sensor.fix_type = 9000, 3
     sensor.invalid_velocity = False
     sensor.streaming = sensor.gps_streaming = True
@@ -193,7 +195,7 @@ class HardwarePipelineTests(unittest.TestCase):
             pass_fds=(h.mav_master,), stdout=sensor_log, stderr=sensor_log)
         h.processes.append(worker)
         h.logs.append(sensor_log)
-        h.driver = lambda: None
+        h.driver = lambda: send_telemetry(h, time.monotonic())
         def stop_sensors():
             worker.terminate()
             worker.wait(timeout=2.)
@@ -235,7 +237,8 @@ class HardwarePipelineTests(unittest.TestCase):
         h.run(.05)
         self.assertFalse(h.received['computation_status'][-1].trajectory_active)
         self.assertTrue(h.received['computation_status'][-1].controller_success)
-        for field, fault in (('response_kill', True), ('response_armed', False), ('response_failsafe', True)):
+        h.arm_request = True
+        for field, fault in (('arm_request', False), ('response_armed', False), ('response_failsafe', True)):
             with self.subTest(field=field):
                 h.response_auto = False
                 h.wait_ready()
@@ -263,24 +266,23 @@ class HardwarePipelineTests(unittest.TestCase):
         h.run(.2)
         self.assertTrue(h.received['output_status'][-1].override_active, h.received['output_status'][-1].last_fault)
 
-        # A missing mode reply expires independently of the running IMU and
-        # unrelated telemetry. MSP lacks a transaction ID, so this code remains
-        # disabled for the transport session after timeout.
-        h.drop_codes = {105, 150}
-        h.run(.18)
+        # Telemetry ages expire independently of running IMU/navigation and MSP ACKs.
+        h.disabled_telemetry.update((35, 0))
+        h.run(.65)
         self.assertFalse(h.received['output_status'][-1].override_active)
         self.assertFalse(h.received['authority'][-1].receiver_valid)
         self.assertTrue(h.received['authority'][-1].auto_switch, 'Timeout manufactured AUTO low')
-        authority_stamp = h.received['authority'][-1].header.stamp
         start = len(h.codes)
-        h.drop_codes.clear()
-        h.run(.5)
-        self.assertFalse(h.has_output(start), 'Uncorrelated readback silently restored authority')
-        self.assertEqual(h.received['authority'][-1].header.stamp, authority_stamp)
+        h.disabled_telemetry.clear()
+        h.run(.7)
+        self.assertFalse(h.has_output(start), 'Held AUTO silently reauthorized')
         h.response_auto = False
-        h.run(.15)
-        self.assertFalse(h.received['authority'][-1].receiver_valid)
-        self.assertTrue(h.received['authority'][-1].auto_switch, 'Unknown switch became low without a matched reply')
+        h.wait_ready()
+        h.run(.1)
+        h.response_auto = True
+        h.run(.25)
+        self.assertTrue(h.has_output(start))
+        self.assertEqual({code for _, code, _ in h.codes}, {200})
         self.assertIsNone(worker.poll())
 
     def test_real_gnss_hover_authorization_and_recovery(self):
@@ -304,7 +306,7 @@ class HardwarePipelineTests(unittest.TestCase):
         h.response_auto = True
         h.run(.3)
         self.assertTrue(h.has_output(), h.snapshot())
-        h.response_kill = True
+        h.arm_request = False
         h.run(.15)
         start = len(h.codes)
         h.run(.1)
@@ -319,7 +321,8 @@ class HardwarePipelineTests(unittest.TestCase):
         h.run(.3)
         self.assertTrue(h.has_output(), h.snapshot())
         # Keep RC/STATUS and sensor streams running while only battery replies stop.
-        h.drop_code = 130
+        h.disabled_telemetry.add(147)
+        h.system_voltage_mv = 0
         h.run(1.8)
         self.assertFalse(math.isfinite(h.received['health'][-1].battery_voltage))
         self.assertFalse(h.received['output_status'][-1].override_active)
@@ -346,26 +349,16 @@ class HardwarePipelineTests(unittest.TestCase):
         self.assertTrue(h.has_output(), h.snapshot())
         self.assertTrue(any(s.override_active for s in h.received['output_status']))
         self.assertTrue(all(not s.rtk_fixed and not s.synchronized for s in h.received['fused_state']))
-        # A changed rate profile revokes output using STATUS_EX, before the next curve readback.
+        # No profile/mode/configuration readback is required on this path.
         h.response_rate_profile = 1
-        h.run(.2)
-        start = len(h.codes)
-        h.run(.15)
-        self.assertFalse(h.has_output(start))
-        h.response_rate_profile = 0
-        h.run(.8)
-        start = len(h.codes)
-        h.run(.2)
-        self.assertFalse(h.has_output(start))  # No automatic restart with AUTO still high.
-        h.response_auto = False
-        h.wait_ready()
-        h.run(.05)
         h.response_conflicting_mode = True
-        h.response_auto = True
-        start = len(h.codes)
+        h.response_kill = True  # CH9 is never consumed.
         h.run(.3)
-        self.assertFalse(h.has_output(start))
-        self.assertTrue(any('conflicts' in s.reason for s in h.received['msp/decoded_state']))
+        self.assertTrue(h.received['output_status'][-1].override_active, h.snapshot())
+        self.assertEqual({code for _, code, _ in h.codes}, {200})
+        h.response_auto = False
+        h.run(.1)
+        self.assertFalse(h.received['output_status'][-1].override_active)
 
     def test_diagnostic_shadow_never_writes_control(self):
         self.check_shadow('MPC')
@@ -384,14 +377,17 @@ class HardwarePipelineTests(unittest.TestCase):
         self.assertFalse(h.has_output())
         self.assertTrue(all(not s.override_active for s in h.received['output_status']))
 
-    def test_unverified_firmware_timeout_cannot_authorize(self):
-        h = self.harness(override_timeout='300')
-        h.response_armed = h.response_auto = True
-        h.run(3.)
-        self.assertFalse(h.has_output())
-        self.assertTrue(h.received['msp/decoded_state'])
-        self.assertTrue(all(not s.config_verified for s in h.received['msp/decoded_state']))
-        self.assertTrue(any('50 ms' in s.reason for s in h.received['msp/decoded_state']))
+    def test_unread_override_settings_do_not_block_authorization(self):
+        h = self.harness(override_timeout='300', controller='GEO')
+        h.wait_ready()
+        h.response_armed = True
+        h.wait_ready()
+        h.run(.1)
+        h.response_auto = True
+        h.run(.3)
+        self.assertTrue(h.has_output(), h.snapshot())
+        self.assertFalse(h.received['health'][-1].config_verified)
+        self.assertEqual({code for _, code, _ in h.codes}, {200})
 
     def test_explicit_navigation_loss_revokes_before_age_timeout(self):
         h = self.harness()

@@ -69,6 +69,7 @@ msg::SafetyEvidence encodeEvidence(const agi::hardware::Evidence& evidence) {
 	message.command_valid = evidence.command_valid;
 	message.controller_warm = evidence.controller_warm;
 	message.armed = evidence.armed;
+	message.arm_switch = evidence.arm_switch;
 	message.auto_switch = evidence.auto_switch;
 	message.kill = evidence.kill;
 	message.rc_link = evidence.rc_link;
@@ -121,6 +122,7 @@ agi::hardware::Evidence decodeEvidence(const msg::SafetyEvidence& message) {
 	evidence.command_valid = message.command_valid;
 	evidence.controller_warm = message.controller_warm;
 	evidence.armed = message.armed;
+	evidence.arm_switch = message.arm_switch;
 	evidence.auto_switch = message.auto_switch;
 	evidence.kill = message.kill;
 	evidence.rc_link = message.rc_link;

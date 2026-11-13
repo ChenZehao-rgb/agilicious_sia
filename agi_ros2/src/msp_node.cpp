@@ -20,7 +20,7 @@ public:
 			if (rc[i] < 1000 || rc[i] > 2000) throw std::invalid_argument("bench_aetr must be 1000..2000");
 			_channels[i] = rc[i];
 		}
-		_telemetry = std::make_unique<MspTelemetry>(*this);
+		_telemetry = std::make_unique<MspTelemetry>(*this, _bench);
 		const auto device = declare_parameter<std::string>("device", "/dev/ttyAMA0");
 		const auto baud = declare_parameter<int>("baud", 115200);
 		_bridge = std::make_unique<agi::hardware::BetaflightMspBridge>(device, baud);
@@ -41,11 +41,12 @@ public:
 				_telemetry->sentRc(_channels, _bridge->errors());
 				_next += (std::floor((agi::hardware::monotonicSeconds() - _next) / .01) + 1) * .01;
 			}
-			// Read-only monitoring has room for host scheduling delays. Bench
-			// queries retain the short budget and the next RC output deadline.
+			// Monitor only drains reception. Explicit bench queries retain
+			// the short budget and the next RC output deadline.
 			_telemetry->tick(*_bridge, _bench ? _next - .001 : now + .012, _bench ? .002 : .010);
 		});
-		RCLCPP_INFO(get_logger(), "MSP %s: %s @ %d; telemetry on /msp/*", mode.c_str(), device.c_str(), static_cast<int>(baud));
+		RCLCPP_INFO(get_logger(), "MSP %s: %s @ %d; %s", mode.c_str(), device.c_str(), static_cast<int>(baud),
+		            _bench ? "bench telemetry on /msp/*" : "receive drain only; no queries");
 	}
 
 private:

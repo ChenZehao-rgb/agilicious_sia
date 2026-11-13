@@ -113,7 +113,8 @@ bool MspDecoder::next(MspFrame* frame) {
 }
 BetaflightMspBridge::BetaflightMspBridge(const std::string& device, int baud, NavigationPolicy policy, double observation_delay,
                                          ReceiverPolicy receiver_policy)
-        : owner_(std::this_thread::get_id()), gate_(policy, observation_delay, receiver_policy) {
+	: owner_(std::this_thread::get_id()), gate_(policy, observation_delay, receiver_policy),
+	  _override_only(receiver_policy == ReceiverPolicy::MavlinkSwitches) {
 	speed_t speed;
 	switch (baud) {
 		case 115200:
@@ -159,6 +160,7 @@ void BetaflightMspBridge::checkOwner() const {
 }
 bool BetaflightMspBridge::writeFrame(uint16_t code, const std::vector<uint8_t>& payload, double deadline, bool read_only) {
 	checkOwner();
+	if (_override_only && code != 200) throw std::logic_error("Hardware MSP only permits MSP_SET_RAW_RC");
 	_last_write_diagnostic = {};
 	last_write_seconds_ = NAN;
 	const double start = monotonicSeconds();
@@ -308,6 +310,12 @@ bool BetaflightMspBridge::readOverrideSetting(const std::string& name, double de
 bool BetaflightMspBridge::receive(MspFrame* reply) {
 	checkOwner();
 	if (!reply) return false;
+	pollfd state{fd_, POLLIN, 0};
+	if (poll(&state, 1, 0) > 0 && (state.revents & (POLLERR | POLLHUP | POLLNVAL))) {
+		++errors_;
+		failed_ = true;
+		throw std::runtime_error("MSP serial disconnected");
+	}
 	if (!decoder_.next(reply)) {
 		uint8_t bytes[512];
 		const ssize_t n = read(fd_, bytes, sizeof(bytes));

@@ -54,7 +54,8 @@ CommandOutputNode::CommandOutputNode()
 	const auto policy = _navigation_policy;
 	_latched_receiver = _mode == "hardware" || policy == agi::hardware::NavigationPolicy::FcFused;
 	const auto receiver_policy =
-	        _latched_receiver ? agi::hardware::ReceiverPolicy::LatchedSwitches : agi::hardware::ReceiverPolicy::FreshSamples;
+	        _mode == "hardware" ? agi::hardware::ReceiverPolicy::MavlinkSwitches
+	        : _latched_receiver ? agi::hardware::ReceiverPolicy::LatchedSwitches : agi::hardware::ReceiverPolicy::FreshSamples;
 	_gate = std::make_unique<SafetyGate>(policy, _observation_delay, receiver_policy);
 	if (_shadow_only && _mode != "hardware") throw std::invalid_argument("shadow_only requires hardware mode");
 	if (_mode != "sitl" && _mode != "hardware") {
@@ -184,7 +185,8 @@ CommandOutputNode::CommandOutputNode()
 	_authority_sub = create_subscription<msg::Authority>("authority", 1, [this](msg::Authority::ConstSharedPtr message) {
 		_authority_session_changed = _latched_receiver && _authority.session_id != message->session_id;
 		const bool revoke = _authority_session_changed || (_latched_receiver && !message->receiver_valid) || message->kill ||
-		                    !message->armed || message->auto_switch != _authority.auto_switch || !message->rc_link;
+		                    !message->armed || (_mode == "hardware" && !message->arm_switch) ||
+		                    message->auto_switch != _authority.auto_switch || !message->rc_link;
 		_authority = *message;
 		_authority_receive_time = monotonicSeconds();
 		if (revoke) {
@@ -208,20 +210,20 @@ CommandOutputNode::CommandOutputNode()
 		                ? (_mode == "hardware" ? _health.fc_imu_ready
 		                                       : (_health.imu_ready && _health.estimator_ready && _health.navigation_ready))
 		                : (_health.imu_calibrated && _health.converged);
-		if (!navigation_ready || !_health.config_verified || !_health.thrust_mapping_ready ||
+		if (!navigation_ready || (_mode != "hardware" && !_health.config_verified) || !_health.thrust_mapping_ready ||
 		    (_mode != "hardware" && !_health.geofence_ok) || !_health.transport_healthy ||
 		    (_mode == "hardware" && (!std::isfinite(_health.battery_voltage) || _health.battery_voltage <= 0)))
 			processOutput();
 	});
 	if (_msp) {
-		_telemetry = std::make_unique<MspTelemetry>(*this);
+		_telemetry = std::make_unique<MspTelemetry>(*this, false);
 		_msp_timer = create_wall_timer(std::chrono::milliseconds(1), [this] {
 			// RC stays on the 100 Hz control-command callback: adding another
 			// independent 10 ms wait would age the command's IMU evidence.
 			_telemetry->tick(*_msp, monotonicSeconds() + 0.0025);
 			if (!_telemetry->healthy() && _transport_healthy) {
 				_transport_healthy = false;
-				reportFault("Critical MSP telemetry failed");
+				reportFault("MSP override transport failed");
 				processOutput();
 			}
 		});
@@ -387,7 +389,8 @@ void CommandOutputNode::processOutput(bool new_command) {
 	// may arrive before its matching control decision (or vice versa). Wait for
 	// that pair without consuming the healthy low edge. Never defer a revocation
 	// while output is active, and never extend the command's original deadline.
-	if (command_fresh && !authority_matches && !_override_active && rc_fresh && _authority.armed && !_authority.kill) {
+	if (command_fresh && !authority_matches && !_override_active && rc_fresh && _authority.armed &&
+	    (_mode != "hardware" || _authority.arm_switch) && !_authority.kill) {
 		publishStatus();
 		return;
 	}
@@ -400,8 +403,9 @@ void CommandOutputNode::processOutput(bool new_command) {
 	}
 	evidence.kill = evidence.kill || _authority.kill;
 	evidence.armed = evidence.armed && _authority.armed;
+	evidence.arm_switch = evidence.arm_switch && _authority.arm_switch;
 	evidence.auto_switch = _authority.auto_switch;
-	// Battery freshness is encoded as NaN by the MSP evidence producer.
+	// Battery freshness is encoded as NaN by the hardware evidence producer.
 	const bool battery_valid = _mode != "hardware" || (std::isfinite(_health.battery_voltage) && _health.battery_voltage > 0);
 	evidence.command_valid = evidence.command_valid && command_fresh && authority_matches && battery_valid &&
 	                         (!_authority.auto_switch || _command.permit_override);
@@ -489,11 +493,12 @@ void CommandOutputNode::processOutput(bool new_command) {
 		// A successful gate check can still be followed by a failed write.
 		_reason = _last_fault;
 	} else if (!rc_fresh) {
-		_reason = (_mode == "hardware" ? "Receiver mode unavailable or RX failsafe" : "RC timeout/link unavailable: SITL disarms") +
+		_reason = (_mode == "hardware" ? "Receiver evidence unavailable or FC/link fault"
+		                               : "RC timeout/link unavailable: SITL disarms") +
 		          std::string(" ages=") + std::to_string(wall - _authority_receive_time) + "," +
 		          std::to_string(ros_time - stampSeconds(_authority.header.stamp));
-	} else if (_authority.kill || !_authority.armed) {
-		_reason = "Receiver KILL or ARM low";
+	} else if (_authority.kill || !_authority.armed || (_mode == "hardware" && !_authority.arm_switch)) {
+		_reason = "Receiver KILL, ARM request low or FC disarmed";
 	} else if (_authority.auto_switch) {
 		_reason = "AUTO rejected: " + _gate->reason();
 	} else {

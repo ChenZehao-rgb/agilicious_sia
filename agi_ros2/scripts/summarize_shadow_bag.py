@@ -35,12 +35,15 @@ def summarize(path):
     configurations, origins = [], []
     controllers = collections.Counter()
     latest_mavlink_diagnostics = {}
+    telemetry_sessions = set()
+    telemetry_sources = collections.defaultdict(set)
+    msp_tx_codes = collections.Counter()
     while reader.has_next():
         topic, raw, timestamp = reader.read_next()
         typ = types[topic]
         if typ not in ('sensor_msgs/msg/Imu', 'agi_ros2/msg/Navigation', 'agi_ros2/msg/Authority',
                        'agi_ros2/msg/FusedState', 'agi_ros2/msg/ComputationStatus', 'agi_ros2/msg/MspEvent',
-                       'agi_ros2/msg/ControlCommand', 'agi_ros2/msg/OutputStatus', 'agi_ros2/msg/NavigationOrigin',
+                       'agi_ros2/msg/FcTelemetry', 'agi_ros2/msg/ControlCommand', 'agi_ros2/msg/OutputStatus', 'agi_ros2/msg/NavigationOrigin',
                        'diagnostic_msgs/msg/DiagnosticArray', 'std_msgs/msg/String'):
             continue
         message = deserialize_message(raw, get_message(typ))
@@ -58,7 +61,16 @@ def summarize(path):
             controllers[getattr(message, 'controller_type', '') or 'legacy/unknown'] += 1
             solve.append(message.solve_seconds)
             warm.append(message.warm_cycles)
+        elif typ == 'agi_ros2/msg/FcTelemetry':
+            telemetry_sessions.add(message.source_session)
+            for key in ('rc_sample_steady_time', 'rc_receive_steady_time', 'heartbeat_receive_steady_time',
+                        'system_receive_steady_time', 'battery_receive_steady_time'):
+                value = getattr(message, key)
+                if value > 0 and math.isfinite(value):
+                    telemetry_sources[key].add(value)
         elif typ == 'agi_ros2/msg/MspEvent':
+            if message.event == 'tx':
+                msp_tx_codes[message.code] += 1
             if message.event == 'tx' and message.code == 200:
                 code200 += 1
             if message.event in ('timeout', 'error', 'transport_error', 'late'):
@@ -111,7 +123,9 @@ def summarize(path):
     return dict(streams=streams, controller=computation, mpc=dict(computation, deprecated_alias=True),
                 evidence_ages_seconds=dict(imu=stats(imu_age), navigation=stats(nav_age), rc=stats(rc_age)),
                 timesync_rtt_ms=stats(rtt), latest_mavlink_diagnostics=latest_mavlink_diagnostics, msp_errors=dict(errors),
-                output_isolation=dict(code200_tx_events=code200, permitted_commands=permits, active_statuses=active,
+                mavlink_telemetry=dict(sessions=sorted(telemetry_sessions),
+                    unique_source_times={key: len(values) for key, values in telemetry_sources.items()}),
+                output_isolation=dict(msp_tx_codes=dict(msp_tx_codes), code200_tx_events=code200, permitted_commands=permits, active_statuses=active,
                     note='Zero recorded events is not proof of complete UART capture; check bag discovery/coverage.'),
                 observed_position_extent_m=extents, observed_yaw_offset_rad=stats(yaw_offsets),
                 navigation_sessions=sorted(navigation_sessions), origins=origins, msp_configurations=configurations,

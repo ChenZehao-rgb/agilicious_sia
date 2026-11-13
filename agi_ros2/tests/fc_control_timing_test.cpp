@@ -1,10 +1,14 @@
 #include <gtest/gtest.h>
+#include <poll.h>
+#include <pty.h>
+#include <unistd.h>
 
 #include <cmath>
 #include <vector>
 
 #include "agi_ros2/fc_control_schedule.h"
 #include "agilib/pilot/hardware_pilot.hpp"
+#include "agilib/bridge/betaflight/betaflight_msp_bridge.hpp"
 
 namespace agi_ros2 {
 namespace {
@@ -200,6 +204,71 @@ TEST_F(PilotFixture, FiniteResultPastDeadlineCannotAuthorize) {
 	EXPECT_EQ(_pilot.warmCycles(), 0u);
 }
 
+TEST(FcSafety, MavlinkHardwareSkipsReadbackButRequiresArmRequest) {
+	using agi::hardware::ReceiverPolicy;
+	auto e = health(10.);
+	e.command_time = e.now;
+	e.solve_seconds = .001;
+	e.command_valid = e.controller_warm = true;
+	e.config_verified = false;
+	e.arm_switch = true;
+	EXPECT_NE(SafetyGate::inputFailure(e, NavigationPolicy::FcFused, 0, ReceiverPolicy::LatchedSwitches), nullptr);
+	EXPECT_EQ(SafetyGate::inputFailure(e, NavigationPolicy::FcFused, 0, ReceiverPolicy::MavlinkSwitches), nullptr);
+	SafetyGate gate(NavigationPolicy::FcFused, 0, ReceiverPolicy::MavlinkSwitches);
+	gate.update(e);
+	gate.update(e);
+	e.auto_switch = true;
+	ASSERT_TRUE(gate.update(e));
+	e.arm_switch = false;
+	EXPECT_FALSE(gate.update(e));
+	e.arm_switch = true;
+	EXPECT_FALSE(gate.update(e));
+	e.auto_switch = false;
+	gate.update(e);
+	e.auto_switch = true;
+	EXPECT_TRUE(gate.update(e));
+	e.msp_healthy = false;
+	EXPECT_FALSE(gate.update(e));
+	e.msp_healthy = true;
+	EXPECT_FALSE(gate.update(e));
+}
+
+TEST(FcSafety, HardwareMspCannotSendQueries) {
+	int master = -1, slave = -1;
+	char path[128];
+	ASSERT_EQ(openpty(&master, &slave, path, nullptr, nullptr), 0);
+	close(slave);
+	{
+		agi::hardware::BetaflightMspBridge bridge(path, 115200, NavigationPolicy::FcFused, 0, ReceiverPolicy::MavlinkSwitches);
+		EXPECT_THROW(bridge.sendRequest(105, agi::hardware::monotonicSeconds() + .002), std::logic_error);
+		EXPECT_THROW(bridge.readOverrideSetting("msp_override_channels_mask", agi::hardware::monotonicSeconds() + .002),
+		             std::logic_error);
+		pollfd reader{master, POLLIN, 0};
+		EXPECT_EQ(poll(&reader, 1, 0), 0);
+		auto send = [&](bool automatic, bool arm_request = true) {
+			auto e = health(agi::hardware::monotonicSeconds());
+			e.command_time = e.now;
+			e.solve_seconds = .001;
+			e.command_valid = e.controller_warm = true;
+			e.config_verified = false;
+			e.arm_switch = arm_request;
+			e.auto_switch = automatic;
+			return bridge.sendOverride({1500, 1500, 1200, 1500}, e, e.now + .002);
+		};
+		EXPECT_FALSE(send(false));
+		EXPECT_FALSE(send(false));
+		ASSERT_TRUE(send(true));
+		ASSERT_EQ(poll(&reader, 1, 20), 1);
+		uint8_t frame[64];
+		ASSERT_EQ(read(master, frame, sizeof(frame)), 14);
+		EXPECT_EQ(frame[4], 200);
+		EXPECT_FALSE(send(true, false));
+		EXPECT_FALSE(send(true));
+		EXPECT_EQ(poll(&reader, 1, 0), 0);
+	}
+	close(master);
+}
+
 TEST(FcOutputSafety, HoldDoesNotAdmitStaleInputOrFreezeOtherEvidence) {
 	using agi::hardware::FcStateCheck;
 	auto e = health(10.);
@@ -219,7 +288,7 @@ TEST(FcOutputSafety, HoldDoesNotAdmitStaleInputOrFreezeOtherEvidence) {
 	e = health(10.);
 	e.command_time = 10.;
 	e.now = 10.012;
-	e.rc_time = e.now - .101;
+	e.rc_time = e.now - .501;
 	EXPECT_NE(SafetyGate::inputFailure(e, NavigationPolicy::FcFused, 0., ReceiverPolicy::LatchedSwitches, FcStateCheck::CommandHold),
 	          nullptr);
 	e = health(10.);

@@ -4,6 +4,46 @@
 
 2026-10-26，本地软件验证；没有连接物理 UART、解锁、飞行、刷写、commit 或 push。
 
+## 2026-11-13：硬件授权与电池遥测
+
+硬件 `mavlink_sensor_node` 在 `fc_fused` 与 `ros_ekf` 下均请求 RC_CHANNELS_RAW、HEARTBEAT、
+SYS_STATUS 各 25 Hz 和 BATTERY_STATUS 2 Hz，发布 `/sensors/fc/telemetry`。
+`msp_evidence.py` 保留可执行文件名，节点名为 `hardware_evidence`，是硬件 `/authority` 和 `/health` 的唯一发布者。
+CH5 请求解锁、CH8 请求 AUTO，有效区间 `[1875,2100)`；实际 armed 只取 HEARTBEAT，CH9 不读取。
+输出同时要求 CH5 请求和实际 armed；取消所有硬件 FC 配置、通道映射、模式/profile 和 override 参数读回核验。
+`Health.config_verified=false` 表示未核验，本地硬件策略不再要求该字段，不影响 SITL 原有策略。
+
+RC 源时间由 FC `time_boot_ms` 通过 TIMESYNC 映射；其余三类消息仅有本地接收时间。
+快照的发布 header 不代表新观测；重复发布、健康汇总和地面站转发均不刷新各分量年龄。
+RC/HEARTBEAT/SYS_STATUS 独立 500 ms，电池 1.5 s；故障和新会话后需要新的有效 AUTO 低→高。
+HEARTBEAT 的 CRITICAL 可报告已解锁时 failsafe，但这些消息不能完整判断未解锁 RXLOSS。
+SYS_STATUS 传感器位只用于传感器可用性摘要，不证明校准完成。未知电池保持 NaN；默认 100% 不证明电池存在。
+
+正常、shadow 和 diagnostic 硬件启动均不产生 MSP 查询。`msp.launch.py` 只排空串口接收，不产生授权。
+输出节点只发送 MSP_SET_RAW_RC，持续排空 ACK 并记录写入/负 ACK/断链故障。独立显式 bench 工具保留原行为。
+以下章节是历史协议/测试记录；涉及 MSP 授权和配置回读的旧描述由本节替代。
+
+### 本次本地软件验证
+
+- ROS 2 Release 构建通过（Gazebo 关闭；FC/timing 测试目标开启）。未打开真实 UART，未操作真实电机。
+- 新硬件双 PTY 端到端 5/5：解锁请求/实际 armed、AUTO 退出、消息中断、RC 冻结、电池丢失、
+  FC 重启、TIMESYNC 中断、负 ACK、断链，以及 MSP 发送帧只有 code 200、单一 authority/health 发布者。
+- 解码/健康/电池单元 18/18；monitor 无查询/ACK 排空 3/3；新增配置/启动检查 2/2；
+  ROS EKF 硬件回归 3/3；直接输出/UDP/推力映射回归 5/5；shadow 2/2；地图/遥测转发 17/17；
+  遥测解码及全话题录包/摘要 2/2。独立 bench 和 C++ MSP 写入期限/部分写入/errno 测试通过。
+- 维护中的 `fc_control_timing_test`（含新硬件策略与 bridge 禁止查询用例）通过。
+- 旧 MAVLink 套件 24 项中 4 项失败，用 HEAD 接收器在 `/tmp` 重建后全部复现：GPS 无效/航向撤销、
+  气压时序断言和旧启动假设。旧配置套件 29 项中 4 项失败，用 HEAD 配置复现，涉及已变更的质量/限幅与零占位假设。
+- 可选本地 FC 套件仍有旧方差幅值上限断言失败；HEAD `fcFailure` 也接受对应有限数值，未在本次改动估计器策略。
+  额外气压集成测试仍预期 5 维诊断而收到 4 维；未修改气压融合逻辑。
+- `git diff --check`、修改行 140 列（Tab=8）检查及 Python/JS 语法检查通过。
+  环境没有 clang-format 和 Playwright，未宣称自动格式检查或浏览器测试通过。
+
+复测主入口：先 source ROS 和 `install/agi_ros2/local_setup.bash`，再运行
+`python3 agi_ros2/test/test_hardware_mavlink_override.py`、
+`python3 agi_ros2/test/test_msp_evidence.py`、`python3 agi_ros2/test/test_msp_poll_scheduler.py`。
+ROS 进程测试需要本机 DDS/UDP 权限，测试串口始终由 `pty.openpty()` 创建。
+
 ## 范围与来源
 
 Agilicious 分支 `betaflight-bridge`，修改前 HEAD
@@ -32,7 +72,7 @@ MAVLink2 V2_EXTENSION 248 / 50 Hz，message_type 0xBF01
   → /sensors/fc/estimator_status : FcEstimatorStatus → 同一个适配器
 
 适配器同时输出 /state : nav_msgs/Odometry。
-MSP 物理 RC/STATUS → msp_evidence.py → Authority / Health；
+MAVLink RC/HEARTBEAT/SYS_STATUS/BATTERY_STATUS → msp_evidence.py → Authority / Health；
 OutputStatus 独立提供控制输出、映射与传输证据。
 ```
 

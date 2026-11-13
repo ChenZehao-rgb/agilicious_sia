@@ -14,7 +14,7 @@ namespace agi_ros2 {
 // Shares the output node's single-threaded serial owner. Never opens a second fd.
 class MspTelemetry {
 public:
-	explicit MspTelemetry(rclcpp::Node& node);
+	explicit MspTelemetry(rclcpp::Node& node, bool queries_enabled = true);
 	void tick(agi::hardware::BetaflightMspBridge& bridge, double write_deadline, double write_budget = .002);
 	void sentRc(const std::array<uint16_t, 4>& channels, uint64_t errors);
 	void recordWrite(const agi::hardware::BetaflightMspBridge& bridge, uint64_t command_sequence = 0, double control_session_start = 0);

@@ -8,7 +8,8 @@
 namespace agi::hardware {
 enum class Mode { Boot, SensorCheck, ReadyManual, AutoStandby, AutoActive, ManualFallback };
 enum class NavigationPolicy { Rtk, Gnss, FcFused };
-enum class ReceiverPolicy { FreshSamples, LatchedSwitches };
+// MavlinkSwitches is selected locally for hardware; it requires CH5 and skips MSP readback.
+enum class ReceiverPolicy { FreshSamples, LatchedSwitches, MavlinkSwitches };
 // Selected locally by the caller; never accepted from a received message.
 enum class FcStateCheck { Input, Hold, CommandHold };
 
@@ -41,7 +42,7 @@ struct Evidence {
 	bool thrust_mapping_ready{false};  // A usable mapping may still be an uncalibrated estimate.
 	bool msp_healthy{false}, command_valid{false}, controller_warm{false};
 	bool receiver_valid{false};
-	bool armed{false}, auto_switch{false}, kill{true}, rc_link{false};
+	bool arm_switch{false}, armed{false}, auto_switch{false}, kill{true}, rc_link{false};
 };
 
 class SafetyGate {
@@ -53,7 +54,7 @@ public:
 	// Hardware rechecks a command between control ticks and before UART writes.
 	// Its source IMU must outlive the 25 ms command lease plus state/solve delay.
 	static constexpr double kHardwareImuMaxAge = 0.050;
-	static constexpr double kReceiverEvidenceMaxAge = 0.100;
+	static constexpr double kReceiverEvidenceMaxAge = 0.500;
 	static double acceptedNavigationMaxAge(double observation_delay) {
 		if (!std::isfinite(observation_delay) || observation_delay < 0 || observation_delay > 0.250) return NAN;
 		return kNavigationSourceMaxAge + observation_delay;
@@ -70,7 +71,7 @@ public:
 		if (policy == NavigationPolicy::FcFused) {
 			if (const char* failure = fcFailure(e, fc_check)) return failure;
 		} else {
-			const double imu_max_age = receiver_policy == ReceiverPolicy::LatchedSwitches ? kHardwareImuMaxAge : .010;
+			const double imu_max_age = receiver_policy != ReceiverPolicy::FreshSamples ? kHardwareImuMaxAge : .010;
 			if (!fresh(e.now, e.imu_time, imu_max_age, e.timing_checks)) return "IMU stale/future";
 			if (!fresh(e.now, e.imu_sample_time, imu_max_age, e.timing_checks)) return "IMU source sample stale/future";
 			const double accepted_max_age = acceptedNavigationMaxAge(observation_delay);
@@ -96,7 +97,8 @@ public:
 			if (!e.rtk_fixed || !e.synchronized) return "RTK fix/PPS unavailable";
 			if (!e.imu_calibrated || !e.converged) return "IMU calibration/estimator convergence unavailable";
 		}
-		if (!e.config_verified) return "flight-controller configuration rejected";
+		if (receiver_policy != ReceiverPolicy::MavlinkSwitches && !e.config_verified)
+			return "flight-controller configuration rejected";
 		if (!e.thrust_mapping_ready) return "thrust mapping unavailable";
 		if (!e.geofence_ok) return "geofence rejected";
 		if (!e.msp_healthy) return "output transport unavailable";
@@ -104,11 +106,11 @@ public:
 	}
 	// Shared by control admission, current authority checks and the output gate.
 	static const char* receiverFailure(const Evidence& e, ReceiverPolicy receiver_policy = ReceiverPolicy::FreshSamples) {
-		if (receiver_policy == ReceiverPolicy::LatchedSwitches) {
+		if (receiver_policy != ReceiverPolicy::FreshSamples) {
 			if (!e.receiver_valid) return "receiver mode unavailable";
-			if (!fresh(e.now, e.rc_time, kReceiverEvidenceMaxAge, e.timing_checks)) return "RC request stale/future";
-			if (!fresh(e.now, e.status_time, kReceiverEvidenceMaxAge, e.timing_checks)) return "STATUS request stale/future";
-			if (!e.rc_link) return "receiver reports RX failsafe";
+			if (!fresh(e.now, e.rc_time, kReceiverEvidenceMaxAge, e.timing_checks)) return "RC source stale/future";
+			if (!fresh(e.now, e.status_time, kReceiverEvidenceMaxAge, e.timing_checks)) return "FC status source stale/future";
+			if (!e.rc_link) return "receiver evidence/link unavailable";
 		} else if (!fresh(e.now, e.rc_time, .100, e.timing_checks) || !e.rc_link) {
 			return "RC timeout/future/link unavailable";
 		}
@@ -148,7 +150,8 @@ public:
 		return inputFailure(e, policy, observation_delay, receiver_policy, fc_check) == nullptr;
 	}
 	bool canEnterAuto(const Evidence& e) const {
-		return _low_seen && e.armed && e.auto_switch && !e.kill && e.controller_warm &&
+		return _low_seen && e.armed && (_receiver_policy != ReceiverPolicy::MavlinkSwitches || e.arm_switch) && e.auto_switch &&
+		       !e.kill && e.controller_warm &&
 		       inputsHealthy(e, _policy, _observation_delay, _receiver_policy);
 	}
 	bool update(const Evidence& e, FcStateCheck fc_check = FcStateCheck::Input) {
@@ -175,10 +178,11 @@ public:
 			                               : "command invalid/expired";
 			return false;
 		}
-		if (_receiver_policy == ReceiverPolicy::LatchedSwitches && !e.armed) {
+		if (_receiver_policy != ReceiverPolicy::FreshSamples &&
+		    (!e.armed || (_receiver_policy == ReceiverPolicy::MavlinkSwitches && !e.arm_switch))) {
 			_low_seen = false;
 			_mode = Mode::ReadyManual;
-			_reason = "physical ARM is low";
+			_reason = "ARM request low or FC disarmed";
 			return false;
 		}
 		if (!e.auto_switch) {
@@ -190,7 +194,7 @@ public:
 		if (!e.armed) {
 			_low_seen = false;
 			_mode = Mode::ReadyManual;
-			_reason = "physical ARM is low";
+			_reason = "ARM request low or FC disarmed";
 			return false;
 		}
 		if (_mode != Mode::AutoActive && !_low_seen) {

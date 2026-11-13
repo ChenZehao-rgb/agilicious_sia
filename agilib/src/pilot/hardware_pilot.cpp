@@ -150,7 +150,8 @@ ControlDecision HardwarePilot::tick(const QuadState& state, Evidence evidence, b
 	        shadow_only ? navigation_valid
 	                    : SafetyGate::inputsHealthy(evidence, _navigation_policy, _observation_delay, _receiver_policy);
 	const bool ready = computation_requested && new_fc_sample && result.state_valid && compute_healthy && !evidence.kill &&
-	                   (_receiver_policy != ReceiverPolicy::LatchedSwitches || (receiver_ok && evidence.armed));
+	                   (_receiver_policy == ReceiverPolicy::FreshSamples || (receiver_ok && evidence.armed)) &&
+	                   (_receiver_policy != ReceiverPolicy::MavlinkSwitches || evidence.arm_switch);
 	if (!ready || !receiver_ok || !evidence.armed || !evidence.auto_switch) {
 		_reference_active = false;
 		_reference->clearOnlineTarget();

@@ -34,6 +34,7 @@
 #include "agi_ros2/msg/barometer.hpp"
 #include "agi_ros2/msg/fc_estimated_state.hpp"
 #include "agi_ros2/msg/fc_estimator_status.hpp"
+#include "agi_ros2/msg/fc_telemetry.hpp"
 #include "agi_ros2/msg/global_position_int.hpp"
 #include "agi_ros2/msg/heading.hpp"
 #include "agi_ros2/msg/imu_timing.hpp"
@@ -122,6 +123,13 @@ public:
 			                  {MAVLINK_MSG_ID_GLOBAL_POSITION_INT, _global_position_hz}};
 			_imu_hz = _gps_hz = _attitude_hz = _baro_hz = 0;
 		}
+		// Append after state-source selection: hardware telemetry is needed in both modes.
+		for (const auto& request : std::vector<std::pair<uint32_t, int>>{
+		             {MAVLINK_MSG_ID_RC_CHANNELS_RAW, 25}, {MAVLINK_MSG_ID_HEARTBEAT, 25},
+		             {MAVLINK_MSG_ID_SYS_STATUS, 25}, {MAVLINK_MSG_ID_BATTERY_STATUS, 2}})
+			_rate_requests.push_back(request);
+		_telemetry_pub = create_publisher<agi_ros2::msg::FcTelemetry>("sensors/fc/telemetry", rclcpp::QoS(10).reliable());
+		_telemetry_timer = create_wall_timer(std::chrono::milliseconds(20), [this] { publishTelemetry(); });
 		_baro_max_age_s = declare_parameter<double>("baro_max_age_s", .25, desc);
 		_baro_pressure_variance_pa2 = declare_parameter<double>("baro_pressure_variance_pa2", 0., desc);
 		_baro_temperature_variance_c2 = declare_parameter<double>("baro_temperature_variance_c2", 0., desc);
@@ -227,8 +235,72 @@ private:
 		_origin.session_id = _source_session;
 		if (_origin_pub) _origin_pub->publish(_origin);
 	}
+	void publishTelemetry() {
+		_telemetry.header.stamp = now();
+		_telemetry.clock_id = _clock_id;
+		_telemetry.source_session = _source_session;
+		_telemetry.clock_aligned = _sync_count >= 5 && steady() - _last_sync < 2;
+		_telemetry.transport_healthy = _fd >= 0 && _telemetry.clock_aligned && !_publisher_conflict && !_commands_failed;
+		_telemetry_pub->publish(_telemetry);
+	}
+	bool handleTelemetry(const mavlink_message_t& m, double received) {
+		const builtin_interfaces::msg::Time arrival_stamp = rclcpp::Time(int64_t((received + _ros_offset) * 1e9));
+		if (m.msgid == MAVLINK_MSG_ID_RC_CHANNELS_RAW) {
+			mavlink_rc_channels_raw_t rc{};
+			mavlink_msg_rc_channels_raw_decode(&m, &rc);
+			if (rc.port != 0) return true;
+			const double remote = bootMs(rc.time_boot_ms);
+			if (!stamp(m.msgid, remote, _telemetry.rc_stamp)) return true;
+			_telemetry.rc_time_boot_ms = rc.time_boot_ms;
+			_telemetry.rc_sample_steady_time = mapFcToSteady(remote);
+			_telemetry.rc_receive_steady_time = received;
+			_telemetry.channels = {rc.chan1_raw, rc.chan2_raw, rc.chan3_raw, rc.chan4_raw,
+			                       rc.chan5_raw, rc.chan6_raw, rc.chan7_raw, rc.chan8_raw};
+		} else if (m.msgid == MAVLINK_MSG_ID_HEARTBEAT) {
+			mavlink_heartbeat_t heartbeat{};
+			mavlink_msg_heartbeat_decode(&m, &heartbeat);
+			_telemetry.heartbeat_stamp = arrival_stamp;
+			_telemetry.heartbeat_receive_steady_time = received;
+			_telemetry.base_mode = heartbeat.base_mode;
+			_telemetry.system_status = heartbeat.system_status;
+		} else if (m.msgid == MAVLINK_MSG_ID_SYS_STATUS) {
+			mavlink_sys_status_t status{};
+			mavlink_msg_sys_status_decode(&m, &status);
+			_telemetry.system_stamp = arrival_stamp;
+			_telemetry.system_receive_steady_time = received;
+			_telemetry.sensors_present = status.onboard_control_sensors_present;
+			_telemetry.sensors_enabled = status.onboard_control_sensors_enabled;
+			_telemetry.sensors_health = status.onboard_control_sensors_health;
+			_telemetry.system_voltage_mv = status.voltage_battery;
+			_telemetry.system_current_ca = status.current_battery;
+			_telemetry.system_remaining_percent = status.battery_remaining;
+		} else if (m.msgid == MAVLINK_MSG_ID_BATTERY_STATUS) {
+			mavlink_battery_status_t battery{};
+			mavlink_msg_battery_status_decode(&m, &battery);
+			if (battery.id != 0) return true;
+			_telemetry.battery_stamp = arrival_stamp;
+			_telemetry.battery_receive_steady_time = received;
+			for (size_t i = 0; i < _telemetry.battery_voltages_mv.size(); ++i)
+				_telemetry.battery_voltages_mv[i] = battery.voltages[i];
+			for (size_t i = 0; i < _telemetry.battery_voltages_ext_mv.size(); ++i)
+				_telemetry.battery_voltages_ext_mv[i] = battery.voltages_ext[i];
+			_telemetry.battery_current_ca = battery.current_battery;
+			_telemetry.battery_consumed_mah = battery.current_consumed;
+			_telemetry.battery_remaining_percent = battery.battery_remaining;
+			_telemetry.battery_temperature_cdeg = battery.temperature;
+		} else {
+			return false;
+		}
+		_telemetry.reason = "MAVLink telemetry; disarmed RXLOSS is not observable";
+		publishTelemetry();
+		return true;
+	}
 	void resetEpoch(const std::string& reason) {
 		_source_session = (_bench_fixed_gps ? "bench_fixed_gps:" : "") + std::to_string(steady());
+		_telemetry = agi_ros2::msg::FcTelemetry();
+		_telemetry.reason = reason;
+		_sync_count = 0;
+		publishTelemetry();
 		_last_fc_time = _last_health_time = 0;
 		_origin = agi_ros2::msg::NavigationOrigin();
 		invalidateOrigin();
@@ -744,6 +816,7 @@ private:
 				_global_position_pub->publish(out);
 			}
 		}
+		if (handleTelemetry(m, received)) return;
 		if (_fc_fused) {
 			handleFc(m, received);
 			return;
@@ -1003,14 +1076,15 @@ private:
 		_baro_publisher_conflict = count_publishers(_pressure_pub->get_topic_name()) > 1 ||
 		                           count_publishers(_temperature_pub->get_topic_name()) > 1 ||
 		                           count_publishers(_baro_pub->get_topic_name()) > 1;
-		const bool publisher_conflict = _fc_fused ? (count_publishers(_fc_state_pub->get_topic_name()) > 1 ||
+		const bool publisher_conflict = count_publishers(_telemetry_pub->get_topic_name()) > 1 ||
+		                                (_fc_fused ? (count_publishers(_fc_state_pub->get_topic_name()) > 1 ||
 		                                             count_publishers(_fc_status_pub->get_topic_name()) > 1)
 		                                          : (imu_publisher_conflict || _baro_publisher_conflict ||
 		                                             count_publishers(_fix_pub->get_topic_name()) > 1 ||
 		                                             count_publishers(_velocity_pub->get_topic_name()) > 1 ||
 		                                             count_publishers(_attitude_pub->get_topic_name()) > 1 ||
 		                                             count_publishers(_navigation_pub->get_topic_name()) > 1 ||
-		                                             count_publishers(_heading_pub->get_topic_name()) > 1);
+		                                             count_publishers(_heading_pub->get_topic_name()) > 1));
 		if (publisher_conflict && !_publisher_conflict) {
 			invalidateFc("FC publisher conflict");
 			invalidateNavigation();
@@ -1103,6 +1177,9 @@ private:
 		out.status.push_back(s);
 		_status_pub->publish(out);
 	}
+	agi_ros2::msg::FcTelemetry _telemetry;
+	rclcpp::Publisher<agi_ros2::msg::FcTelemetry>::SharedPtr _telemetry_pub;
+	rclcpp::TimerBase::SharedPtr _telemetry_timer;
 	agi_ros2::msg::NavigationOrigin _origin;
 	rclcpp::Publisher<agi_ros2::msg::NavigationOrigin>::SharedPtr _origin_pub;
 	uint64_t _fc_validity_epoch{0}, _fc_future{0}, _fc_expired{0};

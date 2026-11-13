@@ -35,6 +35,7 @@ class SimRc(Node):
         msg.rc_stamp = msg.status_stamp = msg.header.stamp
         for name in ('armed', 'auto_switch', 'kill', 'rc_link'):
             setattr(msg, name, self.get_parameter(name).value)
+        msg.arm_switch = msg.armed
         msg.manual_aetr = [max(1000, min(2000, self.get_parameter(k).value))
                            for k in ('roll', 'pitch', 'throttle', 'yaw')]
         self.pub.publish(msg)

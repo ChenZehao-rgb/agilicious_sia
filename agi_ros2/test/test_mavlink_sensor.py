@@ -23,7 +23,7 @@ from pymavlink.dialects.v20 import common as mav
 from sensor_msgs.msg import FluidPressure, Imu, NavSatFix, Temperature
 from geometry_msgs.msg import TwistStamped, QuaternionStamped
 from diagnostic_msgs.msg import DiagnosticArray
-from agi_ros2.msg import Barometer, GlobalPositionInt, Heading, ImuTiming, Navigation
+from agi_ros2.msg import Barometer, FcTelemetry, GlobalPositionInt, Heading, ImuTiming, Navigation
 
 
 class Harness:
@@ -62,7 +62,7 @@ class Harness:
         self.ack_result_by_id = {}
         self.next_imu = self.next_gps = self.next_attitude = self.next_baro = 0
         self.values = {k: [] for k in ('imu', 'imu_timing', 'fix', 'global_position', 'velocity', 'attitude', 'heading', 'navigation',
-                                     'pressure', 'temperature', 'barometer', 'status')}
+                                     'pressure', 'temperature', 'barometer', 'telemetry', 'status')}
         self.node = rclpy.create_node('test_' + uuid.uuid4().hex)
         self.namespace = '/mavtest_' + uuid.uuid4().hex
         topics = [('imu', Imu, 'sensors/imu'), ('fix', NavSatFix, 'sensors/gps/fix'),
@@ -75,10 +75,10 @@ class Harness:
                   ('pressure', FluidPressure, 'sensors/baro/pressure'),
                   ('temperature', Temperature, 'sensors/baro/temperature'),
                   ('barometer', Barometer, 'sensors/baro/sample'),
-                  ('status', DiagnosticArray, 'sensors/mavlink/status')]
+                  ('telemetry', FcTelemetry, 'sensors/fc/telemetry'), ('status', DiagnosticArray, 'sensors/mavlink/status')]
         self.subs = [self.node.create_subscription(typ, self.namespace + '/' + topic,
                      lambda m, k=key: self.values[k].append(m),
-                     100 if key == 'barometer' else 10 if key == 'status' else qos_profile_sensor_data)
+                     100 if key == 'barometer' else 10 if key in ('status', 'telemetry') else qos_profile_sensor_data)
                      for key, typ, topic in topics]
         binary = os.environ.get('AGI_MAVLINK_SENSOR_BINARY',
                                 str(Path(get_package_prefix('agi_ros2')) / 'lib/agi_ros2/mavlink_sensor_node'))
@@ -203,8 +203,8 @@ class SensorTests(unittest.TestCase):
         h.sync = True
         h.drive(1.6)
         self.assertTrue(h.values['global_position'])
-        self.assertEqual({int(c[1]) for c in h.commands}, {33, 248, 331})
-        self.assertEqual({int(c[1]): c[2] for c in h.commands}, {33: 100000., 248: 20000., 331: 10000.})
+        self.assertEqual({int(c[1]) for c in h.commands}, {33, 248, 331, 35, 0, 1, 147})
+        self.assertEqual({int(c[1]): c[2] for c in h.commands}, {33: 100000., 248: 20000., 331: 10000., 35: 40000., 0: 40000., 1: 40000., 147: 500000.})
         self.assertFalse(h.values['fix'] or h.values['velocity'] or h.values['heading'])
         self.assertFalse(h.values['imu'] or h.values['attitude'] or h.values['pressure'])
         self.assertFalse(any(n.clock_aligned for n in h.values['navigation']))
@@ -246,6 +246,12 @@ class SensorTests(unittest.TestCase):
         h = self.h
         h.fix_type = 1
         h.drive(1.5)
+        h.peer.rc_channels_raw_send((h.remote()//1000) & 0xffffffff, 0, 1500, 1500, 1000, 1500, 1000, 1000, 1000, 1000, 0)
+        h.peer.heartbeat_send(2, 0, 0, 0, 3)
+        h.peer.sys_status_send(3, 3, 3, 0, 24000, -1, 100, 0, 0, 0, 0, 0, 0)
+        h.peer.battery_status_send(0, 0, 0, 32767, [4000]*6+[65535]*4, 123, 456, -1, -1)
+        h.drive(.1)
+        source_times = h.values['telemetry'][-1]
         bag = Path(h.tmp.name) / 'all_topics'
         with open(Path(h.tmp.name) / 'recorder.log', 'w+') as log:
             recorder = subprocess.Popen(['ros2', 'bag', 'record', '--all', '--include-hidden-topics', '--output', str(bag)],
@@ -264,11 +270,26 @@ class SensorTests(unittest.TestCase):
                     rosbag2_py.ConverterOptions('', ''))
         topic = h.namespace + '/sensors/gps/global_position'
         self.assertIn((topic, 'agi_ros2/msg/GlobalPositionInt'), [(t.name, t.type) for t in reader.get_all_topics_and_types()])
+        telemetry_topic = h.namespace + '/sensors/fc/telemetry'
+        recorded_telemetry = []
         recorded = []
         while reader.has_next():
             name, payload, _ = reader.read_next()
             if name == topic:
                 recorded.append(deserialize_message(payload, GlobalPositionInt))
+            elif name == telemetry_topic:
+                recorded_telemetry.append(deserialize_message(payload, FcTelemetry))
+        self.assertGreater(len(recorded_telemetry), 5)
+        self.assertTrue(all(m.rc_sample_steady_time == source_times.rc_sample_steady_time and
+                            m.heartbeat_receive_steady_time == source_times.heartbeat_receive_steady_time
+                            for m in recorded_telemetry))
+        summary_spec = importlib.util.spec_from_file_location('bag_summary',
+                        Path(__file__).resolve().parents[1] / 'scripts/summarize_shadow_bag.py')
+        summary_module = importlib.util.module_from_spec(summary_spec)
+        summary_spec.loader.exec_module(summary_module)
+        summary = summary_module.summarize(bag)
+        self.assertEqual(summary['mavlink_telemetry']['unique_source_times']['rc_sample_steady_time'], 1)
+        self.assertEqual(summary['mavlink_telemetry']['unique_source_times']['battery_receive_steady_time'], 1)
         self.assertGreater(len(recorded), 5)
         self.assertTrue(all((m.lat, m.lon, m.alt) == (310000000, 1210000000, 20000) for m in recorded))
         self.assertTrue(all(m.source_session == h.values['global_position'][-1].source_session for m in recorded))
@@ -280,8 +301,43 @@ class SensorTests(unittest.TestCase):
         self.h = Harness(state_source='fc_fused', gps_rate_hz=0)
         h = self.h
         h.drive(1.6)
-        self.assertEqual({int(c[1]): c[2] for c in h.commands}, {33: -1., 248: 20000., 331: 10000.})
+        self.assertEqual({int(c[1]): c[2] for c in h.commands}, {33: -1., 248: 20000., 331: 10000., 35: 40000., 0: 40000., 1: 40000., 147: 500000.})
         self.assertFalse(h.values['global_position'] or h.values['fix'] or h.values['velocity'])
+
+    def test_fc_telemetry_decoding_and_immutable_receipts(self):
+        self.h.close()
+        self.h = Harness(state_source='fc_fused')
+        h = self.h
+        h.drive(1.7)
+        t = (h.remote()//1000) & 0xffffffff
+        h.peer.rc_channels_raw_send(t, 0, 1100, 1200, 1300, 1400, 1875, 1600, 1700, 2099, 0)
+        h.peer.heartbeat_send(2, 0, 128, 0, 4)
+        h.peer.sys_status_send(3, 3, 3, 0, 24000, -1, 100, 0, 0, 0, 0, 0, 0)
+        h.peer.battery_status_send(0, 0, 0, 32767, [4000]*6+[65535]*4, 123, 456, -1, -1)
+        h.drive(.1)
+        value = h.values['telemetry'][-1]
+        self.assertEqual(list(value.channels), [1100, 1200, 1300, 1400, 1875, 1600, 1700, 2099])
+        self.assertEqual(value.base_mode & 128, 128)
+        self.assertEqual(value.system_voltage_mv, 24000)
+        self.assertEqual(value.battery_current_ca, 123)
+        self.assertTrue(value.transport_healthy and value.clock_aligned)
+        fields = ('rc_sample_steady_time', 'rc_receive_steady_time', 'heartbeat_receive_steady_time',
+                  'system_receive_steady_time', 'battery_receive_steady_time')
+        original = tuple(getattr(value, field) for field in fields)
+        h.peer.rc_channels_raw_send(t, 0, 0, 0, 0, 0, 1000, 0, 0, 1000, 0)
+        h.peer.rc_channels_raw_send(t+1, 1, 0, 0, 0, 0, 1000, 0, 0, 1000, 0)
+        h.peer.battery_status_send(1, 0, 0, 32767, [10000]+[65535]*9, 0, 0, -1, 1)
+        h.drive(.6)
+        value = h.values['telemetry'][-1]
+        self.assertEqual(tuple(getattr(value, field) for field in fields), original)
+        self.assertEqual(value.channels[4], 1875)
+        old_session = value.source_session
+        h.epoch = time.monotonic() - 10
+        h.drive(1.2)
+        value = h.values['telemetry'][-1]
+        self.assertNotEqual(value.source_session, old_session)
+        self.assertEqual(value.rc_receive_steady_time, 0.)
+        self.assertEqual(value.heartbeat_receive_steady_time, 0.)
 
     def test_decode_sources_duplicates_and_units(self):
         h = self.h
@@ -312,7 +368,7 @@ class SensorTests(unittest.TestCase):
         q = h.values['attitude'][-1].quaternion
         self.assertAlmostEqual(q.w, math.sqrt(.5), places=6)
         self.assertAlmostEqual(q.z, math.sqrt(.5), places=6)
-        self.assertEqual({int(c[1]) for c in h.commands}, {24, 29, 30, 33, 105})
+        self.assertEqual({int(c[1]) for c in h.commands}, {24, 29, 30, 33, 105, 35, 0, 1, 147})
         self.assertTrue(all(c[0] == mav.MAV_CMD_SET_MESSAGE_INTERVAL for c in h.commands))
         h.streaming = False; h.drive(.1)
         count = len(h.values['imu'])

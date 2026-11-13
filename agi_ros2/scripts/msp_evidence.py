@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Decode matched MSP readbacks and assemble honest authority/health evidence."""
+"""Assemble hardware authority/health from timestamped MAVLink telemetry and output diagnostics.
+
+The executable filename is retained for launch compatibility; no MSP readback grants authority.
+"""
 import json
 import math
 from pathlib import Path
@@ -10,10 +13,10 @@ from rclpy.node import Node
 from rcl_interfaces.msg import ParameterDescriptor
 from builtin_interfaces.msg import Time
 from std_msgs.msg import String
-from agi_ros2.msg import MspEvent, MspState, Authority, Health, OutputStatus, FusedState
+from agi_ros2.msg import FcTelemetry, MspEvent, Authority, Health, OutputStatus, FusedState
 import yaml
 
-from shadow_support import MspEvidence, evidence_config_path, fresh
+from shadow_support import fresh
 
 
 def seconds(stamp):
@@ -24,12 +27,6 @@ def stamp(value):
     value = max(0., value) if math.isfinite(value) else 0.
     ns = round(value * 1e9)
     return Time(sec=ns//1000000000, nanosec=ns % 1000000000)
-
-
-def mode_key(data, session):
-    return (session,) + tuple(data[key] for key in (
-        'receiver_valid', 'armed', 'auto_switch', 'kill', 'rc_link',
-        'imu_ready', 'control_mode_ok', 'config_verified'))
 
 
 class ClockEpoch:
@@ -97,58 +94,151 @@ def output_freshness(output, clock_id, ros_now, steady_now, received_steady=None
     return result
 
 
+class TelemetryEvidence:
+    MODE_MAX_AGE = .500
+
+    def __init__(self, clock_id, aux_low=1875, aux_high=2100):
+        self.clock_id = clock_id
+        self.low, self.high = aux_low, aux_high
+        self.session = ''
+        self.message = None
+        self.failed = False
+        self.recovery_pending = True
+        self.fault_versions = (0., 0., 0.)
+        self.last = dict(arm_switch=False, armed=False, auto_switch=False, kill=False, rc_link=False)
+        self.reason = 'Waiting for MAVLink RC/HEARTBEAT/SYS_STATUS and physical AUTO low'
+
+    def invalidate_modes(self, reason):
+        if not self.recovery_pending and self.message is not None:
+            self.fault_versions = self.versions(self.message)
+        self.recovery_pending = True
+        self.reason = reason
+
+    def reset_clock_epoch(self):
+        self.invalidate_modes('Local clock changed; fresh physical AUTO low required')
+        self.message = None
+
+    @staticmethod
+    def versions(message):
+        return (message.rc_receive_steady_time, message.heartbeat_receive_steady_time,
+                message.system_receive_steady_time)
+
+    def accept(self, message):
+        if message.clock_id != self.clock_id:
+            return
+        if self.message is not None and seconds(message.header.stamp) <= seconds(self.message.header.stamp):
+            return
+        if message.source_session != self.session:
+            self.session = message.source_session
+            self.recovery_pending = True
+            self.fault_versions = (0., 0., 0.)
+            self.reason = 'FC session changed; fresh physical AUTO low required'
+        self.message = message
+
+    def snapshot(self, now, battery_timeout=1.5, steady_now=None):
+        steady_now = time.monotonic() if steady_now is None else steady_now
+        result = dict(self.last, receiver_valid=False, config_verified=False, imu_ready=False,
+                      transport_healthy=False, rc_stamp=0., status_stamp=0., battery_stamp=0.,
+                      rc_steady=math.nan, status_steady=math.nan, battery_voltage=math.nan,
+                      battery_current_a=math.nan, battery_consumed_mah=math.nan,
+                      battery_remaining_percent=math.nan, battery_temperature_c=math.nan,
+                      reason=self.reason)
+        m = self.message
+        if m is None:
+            return result
+        result.update(rc_stamp=seconds(m.rc_stamp), status_stamp=seconds(m.heartbeat_stamp),
+                      rc_steady=m.rc_sample_steady_time, status_steady=m.heartbeat_receive_steady_time)
+
+        def current(ros_stamp, steady_stamp, timeout):
+            return (steady_stamp > 0. and fresh(steady_now, steady_stamp, timeout) and
+                    fresh(now, seconds(ros_stamp), timeout) and
+                    abs((now-seconds(ros_stamp)) - (steady_now-steady_stamp)) <= .05)
+
+        battery_fresh = current(m.battery_stamp, m.battery_receive_steady_time, battery_timeout)
+        system_battery_fresh = current(m.system_stamp, m.system_receive_steady_time, battery_timeout)
+        if battery_fresh:
+            cells = [v for v in m.battery_voltages_mv if v != 65535]
+            extended = [v for v in m.battery_voltages_ext_mv if v != 0]
+            # Cell 0 can contain total pack voltage; summing valid entries also
+            # handles per-cell values and the protocol's overflow representation.
+            voltage = (sum(cells) + sum(extended)) * .001 if cells else math.nan
+            if cells and all(0 < v < 65535 for v in cells + extended) and voltage > 0.:
+                result.update(battery_voltage=voltage, battery_stamp=seconds(m.battery_stamp),
+                              battery_current_a=m.battery_current_ca * .01 if m.battery_current_ca != -1 else math.nan,
+                              battery_consumed_mah=float(m.battery_consumed_mah) if m.battery_consumed_mah >= 0 else math.nan,
+                              battery_remaining_percent=float(m.battery_remaining_percent)
+                              if 0 <= m.battery_remaining_percent <= 100 else math.nan,
+                              battery_temperature_c=m.battery_temperature_cdeg * .01
+                              if m.battery_temperature_cdeg != 32767 else math.nan)
+        if not math.isfinite(result['battery_voltage']) and system_battery_fresh and 0 < m.system_voltage_mv < 65535:
+            result.update(battery_voltage=m.system_voltage_mv * .001, battery_stamp=seconds(m.system_stamp),
+                          battery_current_a=m.system_current_ca * .01 if m.system_current_ca != -1 else math.nan,
+                          battery_remaining_percent=float(m.system_remaining_percent)
+                          if 0 <= m.system_remaining_percent <= 100 else math.nan)
+
+        mode_fresh = (current(m.rc_stamp, m.rc_sample_steady_time, self.MODE_MAX_AGE) and
+                      fresh(steady_now, m.rc_receive_steady_time, self.MODE_MAX_AGE) and
+                      current(m.heartbeat_stamp, m.heartbeat_receive_steady_time, self.MODE_MAX_AGE) and
+                      current(m.system_stamp, m.system_receive_steady_time, self.MODE_MAX_AGE))
+        channels_valid = all(900 <= m.channels[i] <= 2100 for i in (4, 7))
+        link = m.system_status in (3, 4)  # STANDBY or ACTIVE; CRITICAL includes armed BF failsafe.
+        healthy = bool(self.session and m.clock_aligned and m.transport_healthy and not self.failed)
+        result['transport_healthy'] = healthy
+        result['imu_ready'] = bool(mode_fresh and (m.sensors_present & m.sensors_enabled & m.sensors_health & 3) == 3)
+        if not mode_fresh or not channels_valid or not healthy or not link:
+            self.invalidate_modes('MAVLink mode evidence stale/invalid or FC/transport fault; cycle physical AUTO')
+            result['reason'] = self.reason
+            return result
+        switches = dict(arm_switch=bool(self.low <= m.channels[4] < self.high),
+                        armed=bool(m.base_mode & 128), auto_switch=bool(self.low <= m.channels[7] < self.high),
+                        kill=False, rc_link=True)
+        # Invalid evidence never manufactures a physical AUTO-low edge. A new
+        # session/fault requires refreshed evidence of all three sources and low.
+        if self.recovery_pending:
+            if switches['auto_switch'] or not all(v > old for v, old in zip(self.versions(m), self.fault_versions)):
+                result['reason'] = self.reason
+                return result
+            self.recovery_pending = False
+        self.last = switches
+        result.update(switches, receiver_valid=True,
+                      reason='MAVLink receiver evidence; disarmed RXLOSS cannot be established; FC configuration not read back')
+        return result
+
+
 class EvidenceNode(Node):
     def __init__(self):
-        super().__init__('msp_evidence')
+        super().__init__('hardware_evidence')
         if self.get_parameter('use_sim_time').value:
-            raise ValueError('MSP evidence requires system ROS time')
-        defaults = dict(runtime_config='', bridge_config='', aux_low=1700, aux_high=2100,
-                        arm_aux=0, auto_aux=1, kill_aux=2,
-                        rx_map=[0, 1, 3, 2, 4, 5, 6, 7], battery_timeout=1.5,
-                        expected_pid_profile=0, expected_rate_profile=0, expected_override_timeout_ms=50,
+            raise ValueError('Hardware evidence requires system ROS time')
+        runtime_config = self.declare_parameter('runtime_config', '', ParameterDescriptor(read_only=True)).value
+        defaults = dict(aux_low=1875, aux_high=2100, battery_timeout=1.5,
                         geofence_min=[0., 0., 0.], geofence_max=[0., 0., 0.])
+        if runtime_config:
+            with Path(runtime_config).open() as stream:
+                configured = yaml.safe_load(stream).get('evidence', {})
+            defaults.update({k: configured[k] for k in defaults if k in configured})
         for k, v in defaults.items():
             self.declare_parameter(k, v, ParameterDescriptor(read_only=True))
         values = {k: self.get_parameter(k).value for k in defaults}
-        filename = evidence_config_path(values['runtime_config'], values['bridge_config'])
-        with Path(filename).open() as stream:
-            config = yaml.safe_load(stream)
-        expected = config['bridge'] if values['runtime_config'] else config
-        expected.update({k: values[k] for k in ('aux_low', 'aux_high', 'rx_map',
-                                               'arm_aux', 'auto_aux', 'kill_aux',
-                                               'expected_pid_profile', 'expected_rate_profile',
-                                               'expected_override_timeout_ms')})
         if not 900 <= values['aux_low'] < values['aux_high'] <= 2100:
             raise ValueError('invalid AUX ranges')
-        if sorted(values['rx_map']) != list(range(8)):
-            raise ValueError('rx_map must be an eight-channel permutation')
-        if any(not 0 <= values[k] <= 254 for k in ('expected_pid_profile', 'expected_rate_profile')):
-            raise ValueError('expected profiles must be zero-based indices')
-        self.decoder = MspEvidence(expected)
+        self.clock_id = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+        self.decoder = TelemetryEvidence(self.clock_id, values['aux_low'], values['aux_high'])
         self.battery_timeout = values['battery_timeout']
         if not math.isfinite(self.battery_timeout) or self.battery_timeout <= 0:
             raise ValueError('battery_timeout')
         self.minimum, self.maximum = values['geofence_min'], values['geofence_max']
         if len(self.minimum) != 3 or len(self.maximum) != 3 or not all(math.isfinite(x) for x in self.minimum+self.maximum):
             raise ValueError('geofence requires three finite coordinates')
-        self.clock_id = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
-        clocks = sample_clocks(self)
-        if clocks is not None:
-            self.clock_epoch = ClockEpoch(*clocks)
-        self.output = None
+        self.output = self.fused = None
         self.output_received_steady = None
-        self.fused = None
-        # Keep switch updates independent of high-rate control tx/ACK diagnostics.
+        self.clock_epoch = ClockEpoch(self.get_clock().now().nanoseconds * 1e-9, time.monotonic())
+        self.create_subscription(FcTelemetry, 'sensors/fc/telemetry', self.on_telemetry, 10)
         self.create_subscription(MspEvent, 'msp/evidence_events', self.on_event, 100)
-        for topic in ('msp/rc', 'msp/status', 'msp/battery'):
-            self.create_subscription(MspEvent, topic, self.on_event, 10)
-        # OutputStatus is a current snapshot, not an event history. Retaining
-        # old snapshots can keep this cache stale after a scheduling stall.
         self.create_subscription(OutputStatus, 'output_status', self.on_output, 1)
         self.create_subscription(FusedState, 'fused_state', self.on_state, 1)
         self.authority_pub = self.create_publisher(Authority, 'authority', 1)
         self.health_pub = self.create_publisher(Health, 'health', 1)
-        self.decoded_pub = self.create_publisher(MspState, 'msp/decoded_state', 10)
         self.status_pub = self.create_publisher(String, 'health/status', 10)
         self.create_timer(.02, self.publish)
 
@@ -159,58 +249,25 @@ class EvidenceNode(Node):
     def on_state(self, message):
         self.fused = message
 
-    def on_event(self, message):
-        # The receipt stamp is never substituted for a missing request stamp.
-        # Only an independently observed local clock step permits epoch recovery.
-        if not message.session_id.startswith(self.clock_id + ':'):
-            return
-        if message.event in ('error', 'timeout', 'transport_error'):
-            # A real transport failure is authoritative even when local clock
-            # sampling is delayed or a wall-clock step is being recovered.
-            self.decoder.accept(message.code, [], 0., message.session_id, event=message.event)
-            self.publish()
-            return
+    def on_telemetry(self, message):
         clocks = sample_clocks(self)
         if clocks is None:
             return
-        now, steady = clocks
-        request_time = seconds(message.request_stamp)
-        mode = message.code in (105, 150) and message.event in ('rx', 'mode_rx_unmatched')
-        epoch = check_clock_epoch(self, now, steady)
-        if message.event in ('rx', 'mode_rx_unmatched') and (
-                0. < message.steady_time < epoch.started_steady or
-                (message.event == 'rx' and 0. < message.request_steady_time < epoch.started_steady)):
-            # Includes requests sent before the step whose replies arrived after
-            # it. Their payloads cannot revalidate configuration or physical low.
+        epoch = check_clock_epoch(self, *clocks)
+        if (message.clock_id != self.clock_id or
+                seconds(message.header.stamp) > clocks[0] or
+                not fresh(clocks[0], seconds(message.header.stamp), .5)):
+            return
+        if any(0 < v < epoch.started_steady for v in self.decoder.versions(message)):
             epoch.rejected_events += 1
-            self.publish()
             return
-        if mode:
-            # Validate the response clocks independently of the successful
-            # request-age limit in snapshot(). Unmatched replies never grant
-            # authority and cannot manufacture a physical AUTO low.
-            received_ros = seconds(message.header.stamp)
-            invalid = (not math.isfinite(message.steady_time) or message.steady_time <= 0. or
-                       message.steady_time > steady or received_ros <= 0. or received_ros > now or
-                       abs((now-received_ros) - (steady-message.steady_time)) > .05)
-            if message.event == 'rx':
-                invalid = invalid or (not math.isfinite(request_time) or request_time <= 0. or
-                                      request_time > now or not math.isfinite(message.request_steady_time) or
-                                      message.request_steady_time <= 0. or message.request_steady_time > steady or
-                                      abs((now-request_time) - (steady-message.request_steady_time)) > .05)
-        else:
-            invalid = message.event == 'rx' and (
-                not fresh(now, request_time, 3.) or not fresh(steady, message.request_steady_time, 3.) or
-                abs((now-request_time) - (steady-message.request_steady_time)) > .05)
-        if invalid:
-            self.decoder.accept(message.code, [], 0., message.session_id, event='transport_error')
-            return
-        self.decoder.accept(message.code, message.payload, request_time, message.session_id,
-                            message.request_name, message.event, observed_steady=message.steady_time,
-                            request_steady=message.request_steady_time)
-        changed = mode and mode_key(self.decoder.snapshot(now, getattr(self, 'battery_timeout', 1.5), steady_now=steady),
-                                    self.decoder.session) != getattr(self, '_last_mode_key', None)
-        if changed or message.event in ('error', 'timeout', 'transport_error', 'mode_timeout'):
+        self.decoder.accept(message)
+        self.publish()
+
+    def on_event(self, message):
+        if message.session_id.startswith(self.clock_id + ':') and message.event in ('error', 'transport_error'):
+            self.decoder.failed = True
+            self.decoder.invalidate_modes('MSP override transport failed; restart required')
             self.publish()
 
     def publish(self):
@@ -220,34 +277,29 @@ class EvidenceNode(Node):
         now, steady = clocks
         epoch = check_clock_epoch(self, now, steady)
         data = self.decoder.snapshot(now, self.battery_timeout, steady_now=steady)
-        self._last_mode_key = mode_key(data, self.decoder.session)
-        decoded = MspState()
-        decoded.header.stamp = stamp(now)
-        decoded.session_id = self.decoder.session or ''
-        for key, value in data.items():
-            setattr(decoded, key, stamp(value) if key.endswith('_stamp') else value)
-        self.decoded_pub.publish(decoded)
         authority = Authority()
         authority.header.stamp = stamp(min(data['rc_stamp'], data['status_stamp']))
         authority.rc_stamp = stamp(data['rc_stamp'])
         authority.status_stamp = stamp(data['status_stamp'])
         authority.clock_id = self.clock_id
-        authority.rc_request_steady_time = self.decoder.mode_request_steady.get(105, math.nan)
-        authority.status_request_steady_time = self.decoder.mode_request_steady.get(150, math.nan)
+        authority.rc_request_steady_time = data['rc_steady']
+        authority.status_request_steady_time = data['status_steady']
         authority.receiver_valid = data['receiver_valid']
-        authority.session_id = self.decoder.session or ''
-        authority.armed = data['armed']
-        authority.auto_switch = data['auto_switch']
-        authority.kill = data['kill']
-        authority.rc_link = data['rc_link']
-        # Hardware never treats the possibly overridden AETR as physical input.
+        authority.session_id = self.decoder.session
+        for key in ('arm_switch', 'armed', 'auto_switch', 'kill', 'rc_link'):
+            setattr(authority, key, data[key])
         authority.manual_aetr = [1500, 1500, 1000, 1500]
         self.authority_pub.publish(authority)
         health = Health()
+        # This is a newly evaluated summary. Individual source times above and
+        # battery_stamp below remain immutable, and snapshot() checks their ages.
         health.header.stamp = stamp(now)
-        health.config_verified = data['config_verified'] and data['control_mode_ok']
+        health.config_verified = False
         health.transport_healthy = data['transport_healthy']
-        health.battery_voltage = data['battery_voltage']
+        health.battery_stamp = stamp(data['battery_stamp'])
+        for key in ('battery_voltage', 'battery_current_a', 'battery_consumed_mah',
+                    'battery_remaining_percent', 'battery_temperature_c'):
+            setattr(health, key, data[key])
         output_diagnostic = output_freshness(self.output, self.clock_id, now, time.monotonic(),
                                              getattr(self, 'output_received_steady', None))
         # Mapping is configuration, not a heartbeat. Control checks the output
@@ -260,7 +312,7 @@ class EvidenceNode(Node):
                         output_diagnostic['steady_age_seconds'] >= 0.)
         health.thrust_calibrated = bool(output_known and self.output.thrust_calibrated)
         health.thrust_mapping_ready = bool(output_known and self.output.thrust_mapping_ready)
-        # MSP readback failures remain authoritative. The output process checks
+        # MSP override transport failures remain authoritative. The output process checks
         # its own write health without this asynchronous summary round trip.
         configured = all(a < b for a, b in zip(self.minimum, self.maximum))
         # A diagnostic cache has a 25 ms lifetime. Control checks its own latest
@@ -272,7 +324,7 @@ class EvidenceNode(Node):
         if configured and fused_fresh:
             position = self.fused.position.x, self.fused.position.y, self.fused.position.z
             health.geofence_ok = all(a <= x <= b for a, x, b in zip(self.minimum, position, self.maximum))
-        # Readiness combines explicit FC checks and the estimator's statistical
+        # Readiness combines FC sensor availability and the estimator's statistical
         # startup/update checks; legacy calibration/RTK claims remain untouched.
         health.imu_calibrated = False
         health.converged = False
@@ -285,7 +337,7 @@ class EvidenceNode(Node):
         health.state_source = self.fused.state_source if self.fused else ''
         health.state_session = self.fused.navigation_session if self.fused else ''
         health.state_reset_counter = self.fused.reset_counter if self.fused else 0
-        health.msp_healthy = data['transport_healthy']
+        health.msp_healthy = bool(output_known and self.output.transport_healthy and not self.decoder.failed)
         health.control_output_healthy = bool(output_known and self.output.transport_healthy)
         health.fc_estimator_healthy = bool(fused_fresh and self.fused.state_source == 'fc_fused' and
                                            self.fused.fc_state_valid and self.fused.clock_aligned and
@@ -293,7 +345,7 @@ class EvidenceNode(Node):
                                            fresh(time.monotonic(), self.fused.fc_health_sample_steady_time, .060))
         reasons = [data['reason']]
         if health.state_source != 'fc_fused' and not health.imu_ready:
-            reasons.append('IMU startup checks or FC calibration/sensor status not ready')
+            reasons.append('IMU startup checks or FC sensor status not ready')
         if not health.estimator_ready or not health.navigation_ready:
             reasons.append(self.fused.readiness_reason if fused_fresh else 'Fused state unavailable/stale')
         if not health.thrust_mapping_ready:
@@ -305,13 +357,15 @@ class EvidenceNode(Node):
             reasons.append('Geofence unconfigured, stale, or exceeded')
         if not math.isfinite(health.battery_voltage):
             reasons.append('Battery unavailable/stale')
+        if not health.msp_healthy:
+            reasons.append('MSP output unavailable/unhealthy')
         health.reason = '; '.join(reasons)
         self.health_pub.publish(health)
-        self.status_pub.publish(String(data=json.dumps(dict(reasons=reasons, session=decoded.session_id,
+        self.status_pub.publish(String(data=json.dumps(dict(reasons=reasons, session=self.decoder.session,
                                                            clock=dict(epoch_resets=epoch.resets,
                                                                       last_step_seconds=epoch.last_step_seconds,
                                                                       rejected_events=epoch.rejected_events,
-                                                                      recovery_pending=self.decoder.clock_recovery_pending),
+                                                                      recovery_pending=self.decoder.recovery_pending),
                                                            estimator=dict(source=health.state_source, healthy=health.fc_estimator_healthy,
                                                                           session=health.state_session, reset=health.state_reset_counter),
                                                            msp_healthy=health.msp_healthy, output=output_diagnostic))))

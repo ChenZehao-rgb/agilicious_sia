@@ -178,7 +178,10 @@ function renderTelemetry() {
   badge('connection', httpFailure || (!lastHTTP ? 'UI 连接中' : !httpOK ? 'UI 在线 · 更新延迟' :
     positionFresh() ? 'UI 在线 · 位置更新中' : snapshot?.position ? 'UI 在线 · 位置未连接 / 过期' : 'UI 在线 · 状态已收到，位置无效'), httpOK && positionFresh());
   const prefix = topic => fresh(topic) ? '' : '过期 · ';
-  badge('authority', authority ? `${prefix('authority')}ARM ${authority.armed ? 'ON' : 'OFF'} / AUTO ${authority.auto_switch ? 'ON' : 'OFF'} / KILL ${authority.kill ? 'ON' : 'OFF'} / RC ${authority.rc_link ? 'OK' : '丢失'}` : 'ARM / AUTO 未知', !!authority && fresh('authority'));
+  const receiverKnown = !!authority && fresh('authority') && authority.receiver_valid;
+  badge('authority', authority ? `${prefix('authority')}${receiverKnown
+    ? `解锁请求 ${authority.arm_switch ? 'ON' : 'OFF'} / 实际解锁 ${authority.armed ? 'ON' : 'OFF'} / AUTO ${authority.auto_switch ? 'ON' : 'OFF'}`
+    : '遥控证据无效 / 解锁状态未知'}` : '遥控 / 解锁状态未知', receiverKnown && authority.rc_link);
   badge('output', output ? `${prefix('output_status')}输出 ${output.override_active ? '接管中' : '未接管'}` : '输出 未知', !!output && fresh('output_status') && output.transport_healthy);
   badge('navigation', snapshot?.position_source === 'gps_global' ? 'GPS 位置 · 融合导航不可用' :
     !snapshot?.mapping_error && snapshot?.position ? `${prefix('fused_state')}FC 导航 / 原点有效` :

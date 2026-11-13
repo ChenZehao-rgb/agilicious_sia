@@ -16,7 +16,7 @@ from rclpy.qos import qos_profile_sensor_data
 from rcl_interfaces.srv import SetParameters
 from rcl_interfaces.msg import Parameter, ParameterValue, ParameterType
 from agi_ros2.msg import (Authority, Health, FusedState, OutputStatus, ControlCommand, ComputationStatus,
-                          Navigation, LocalNavigation, NavigationOrigin, MspState, MspEvent)
+                          Navigation, LocalNavigation, NavigationOrigin, MspState, MspEvent, FcTelemetry)
 from sensor_msgs.msg import Imu
 from std_msgs.msg import String
 from nav_msgs.msg import Odometry
@@ -183,6 +183,7 @@ class ShadowHarness(Harness):
             authority.clock_id = CLOCK_ID
             authority.rc_request_steady_time = authority.status_request_steady_time = now
             authority.armed = self.response_armed
+            authority.arm_switch = self.response_armed
             authority.rc_link = True
             authority.kill = self.response_kill
             self.publisher('authority', Authority).publish(authority)
@@ -222,6 +223,7 @@ class ShadowHarness(Harness):
         a.clock_id = CLOCK_ID
         a.rc_request_steady_time = a.status_request_steady_time = now
         a.armed = self.response_armed
+        a.arm_switch = self.response_armed
         a.auto_switch = self.response_auto
         a.kill = self.response_kill
         a.rc_link = True
@@ -253,41 +255,43 @@ class ShadowTests(unittest.TestCase):
 
     def test_output_interlock_telemetry_and_readonly_parameter(self):
         h = self.h
-        h.subscribe('output_status', OutputStatus)
-        h.subscribe('msp/decoded_state', MspState)
-        h.subscribe('authority', Authority)
-        h.subscribe('health', Health)
-        h.subscribe('msp/events', MspEvent)
+        for topic, kind in [('output_status', OutputStatus), ('authority', Authority), ('health', Health)]:
+            h.subscribe(topic, kind)
         h.output()
-        h.start_node('msp_evidence.py', bridge_config=str(h.bridge))
+        h.start_node('msp_evidence.py')
         def forged():
+            now = time.monotonic()
+            telemetry = FcTelemetry()
+            telemetry.header.stamp = h.stamp()
+            telemetry.clock_id, telemetry.source_session = CLOCK_ID, 'synthetic-fc'
+            telemetry.clock_aligned = telemetry.transport_healthy = True
+            telemetry.rc_stamp = telemetry.heartbeat_stamp = telemetry.system_stamp = telemetry.header.stamp
+            telemetry.rc_sample_steady_time = telemetry.rc_receive_steady_time = now
+            telemetry.heartbeat_receive_steady_time = telemetry.system_receive_steady_time = now
+            telemetry.channels = [1500, 1500, 1000, 1500, 2000, 1000, 1000, 2000 if h.response_auto else 1000]
+            telemetry.base_mode, telemetry.system_status = 128, 4
+            telemetry.sensors_present = telemetry.sensors_enabled = telemetry.sensors_health = 3
+            telemetry.system_voltage_mv = 16000
+            h.publisher('sensors/fc/telemetry', FcTelemetry).publish(telemetry)
             m = ControlCommand()
             m.header.stamp = h.stamp()
             m.header.frame_id = 'base_link'
             m.clock_id = CLOCK_ID
             m.permit_override = True
-            m.evidence.now = time.monotonic()
+            m.evidence.now = now
             m.total_thrust = 10.
             h.publisher('control_command', ControlCommand).publish(m)
         h.driver = forged
-        # Python process startup and DDS discovery are not part of the 100 ms
-        # receiver deadline. Wait for observed readback instead of a fixed sleep.
         deadline = time.monotonic() + 8.
         while time.monotonic() < deadline:
             h.run(.05)
-            if (all(h.received[topic] for topic in ('output_status', 'msp/decoded_state', 'authority', 'health', 'msp/events')) and
-                    any(m.config_verified for m in h.received['msp/decoded_state']) and
-                    any(m.battery_voltage == 16. for m in h.received['health'])):
+            if (h.received['health'] and h.received['authority'] and h.received['authority'][-1].receiver_valid):
                 break
-        self.assertTrue(any(m.config_verified for m in h.received['msp/decoded_state']),
-                        [m.reason for m in h.received['msp/decoded_state'][-5:]])
-        self.assertTrue(any(m.armed and m.rc_link and not m.kill for m in h.received['authority']),
-                        [str(m) for m in h.received['msp/decoded_state'][-3:]])
-        self.assertTrue(any(m.battery_voltage == 16. for m in h.received['health']))
+        self.assertTrue(h.received['authority'][-1].armed)
+        self.assertFalse(h.received['health'][-1].config_verified)
+        self.assertEqual(h.received['health'][-1].battery_voltage, 16.)
         self.assertTrue(all(not m.converged and not m.imu_calibrated for m in h.received['health']))
         h.response_auto = True
-        h.run(.3)
-        h.response_kill = True
         h.run(.3)
         client = h.node.create_client(SetParameters, 'command_output/set_parameters')
         self.assertTrue(client.wait_for_service(timeout_sec=2))
@@ -300,27 +304,7 @@ class ShadowTests(unittest.TestCase):
         self.assertTrue(h.received['output_status'])
         self.assertTrue(all(not m.override_active for m in h.received['output_status']))
         self.assertNotIn(200, [code for _, code, _ in h.codes])
-        for code in (105, 150):
-            stamps = [t for t, c, _ in h.codes if c == code]
-            rate = (len(stamps)-1)/(stamps[-1]-stamps[0])
-            self.assertAlmostEqual(rate, 25., delta=3.)
-        events = [m for m in h.received['msp/events'] if m.event == 'rx' and m.code == 105]
-        self.assertTrue(events)
-        self.assertLess(events[-1].request_steady_time, events[-1].steady_time)
-        h.drop_code = 150
-        h.run(.3)
-        self.assertTrue(h.received['authority'][-1].kill)
-        # The already asserted KILL appears as FC failsafe; the gap preserves it.
-        self.assertFalse(h.received['authority'][-1].rc_link)
-        # Restart while physical AUTO is held high: output remains impossible.
-        h.processes[0].send_signal(signal.SIGINT)
-        h.processes[0].wait(timeout=3)
-        h.processes.pop(0)
-        h.logs.pop(0).close()
-        h.drain()
-        h.output()
-        h.run(.3)
-        self.assertNotIn(200, [code for _, code, _ in h.codes])
+        self.assertEqual(h.codes, [], 'Shadow hardware must not emit queries or forged overrides')
 
     def test_gnss_fusion_session_and_unknown_accuracy(self):
         h = self.h
@@ -482,7 +466,7 @@ class ShadowTests(unittest.TestCase):
             authority.rc_stamp = authority.status_stamp = authority.header.stamp
             authority.clock_id = CLOCK_ID
             authority.rc_request_steady_time = authority.status_request_steady_time = now
-            authority.armed = True
+            authority.armed = authority.arm_switch = True
             authority.rc_link = True
             h.publisher('authority', Authority).publish(authority)
             output = OutputStatus()

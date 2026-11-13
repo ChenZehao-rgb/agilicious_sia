@@ -1,7 +1,7 @@
 # Hardware profile: remaining zero model/accuracy/geofence placeholders require measurements/test limits.
 # Recorded evidence and remaining steps: ../analysis/hardware_diagnostic_20260924/README.md.
 # Zero readiness thresholds never authorize override. Heading/declination confirmed by the operator below.
-# Use diagnostic_only:=true to inspect sensors/MSP before the vehicle model is available.
+# Use diagnostic_only:=true to inspect MAVLink telemetry before the vehicle model is available.
 # Dedicated MSP and MAVLink UARTs are mandatory. A table CSV path is relative to this file.
 # bridge host/port/hover_throttle/motor_idle are compatibility fields; hardware uses the selected thrust model.
 mode: hardware
@@ -107,7 +107,7 @@ bridge:
   port: 9004
   timeout: 0.1
   n_timeouts_for_lock: 4
-  # MSP 111/125/44 readback in hardware_20260924_150053_980611, rate profile 0.
+  # Historical MSP 111/125/44 readback in hardware_20260924_150053_980611, rate profile 0.
   # These FC curve parameters do not establish the vehicle's safe omega_max.
   center_rate_deg_s: [70.0, 70.0, 70.0]
   max_rate_deg_s: [670.0, 670.0, 670.0]
@@ -198,18 +198,9 @@ fusion:
 output:
   device: '/dev/ttyAMA0'
   baud: 115200
-  msp.response_timeout_ms: 100.0
-  msp.read_configuration: true
-  msp.rc.enabled: true
-  msp.rc.rate_hz: 25.0
-  msp.status.enabled: true
-  msp.status.rate_hz: 25.0
-  msp.battery.enabled: true
-  msp.battery.rate_hz: 2.0
-  msp.attitude.enabled: false
-  msp.analog.enabled: false
-  msp.gps.enabled: false
+
 mavlink:
+  # RC_CHANNELS_RAW / HEARTBEAT / SYS_STATUS: 25 Hz; BATTERY_STATUS: 2 Hz.
   odometry_rate_hz: 100
   estimator_status_rate_hz: 50
   # gps_rate_hz also requests GLOBAL_POSITION_INT for recording/map display in fc_fused.
@@ -256,17 +247,9 @@ navigation:
   max_vertical_accuracy: 5.0
   max_velocity_accuracy: 2.0
 evidence:
-  # Zero-based AUX indices: AUX1=0, ..., AUX14=13; choose three distinct channels.
-  arm_aux: 0
-  auto_aux: 3
-  kill_aux: 4
+  # Fixed MAVLink RC_CHANNELS_RAW CH5 ARM request / CH8 AUTO; no CH9 KILL.
   aux_low: 1875
   aux_high: 2100
-  rx_map: [0, 1, 3, 2, 4, 5, 6, 7]
   battery_timeout: 1.5
   geofence_min: [-50.0, -50.0, -50.0]
   geofence_max: [50.0, 50.0, 50.0]
-  expected_pid_profile: 1
-  expected_rate_profile: 0
-  # Fixed at 50 ms for this hardware policy; cannot be relaxed through configuration.
-  expected_override_timeout_ms: 50

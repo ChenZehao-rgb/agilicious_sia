@@ -12,7 +12,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/ComputationStatus.msg" "msg/MspState.msg"
   "msg/Heading.msg" "msg/FusedState.msg" "msg/SafetyEvidence.msg" "msg/NavigationUpdate.msg"
   "msg/ControlCommand.msg" "msg/OutputStatus.msg" "msg/MspEvent.msg"
-  "msg/FcEstimatedState.msg" "msg/FcEstimatorStatus.msg" "msg/GlobalPositionInt.msg"
+  "msg/FcEstimatedState.msg" "msg/FcEstimatorStatus.msg" "msg/GlobalPositionInt.msg" "msg/FcTelemetry.msg"
   "msg/ImuTiming.msg" "msg/OutputTiming.msg" "msg/MspWriteTiming.msg"
   DEPENDENCIES std_msgs geometry_msgs builtin_interfaces)
 rosidl_get_typesupport_target(typesupport ${PROJECT_NAME} rosidl_typesupport_cpp)
@@ -123,7 +123,7 @@ if(AGI_ROS2_TIMING_TESTS)
   find_package(GTest REQUIRED)
   add_executable(fc_control_timing_test tests/fc_control_timing_test.cpp tests/fc_geographic_test.cpp)
   target_include_directories(fc_control_timing_test SYSTEM PRIVATE third_party/mavlink)
-  target_link_libraries(fc_control_timing_test ros2_node_common GTest::gtest_main)
+  target_link_libraries(fc_control_timing_test ros2_node_common GTest::gtest_main util)
   if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64)$")
     target_compile_options(fc_control_timing_test PRIVATE -march=native)
   endif()
