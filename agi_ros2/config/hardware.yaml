@@ -204,7 +204,7 @@ mavlink:
   odometry_rate_hz: 100
   estimator_status_rate_hz: 50
   # gps_rate_hz also requests GLOBAL_POSITION_INT for recording/map display in fc_fused.
-  # IMU/attitude/barometer rates below apply only to state.source=ros_ekf.
+  # IMU is also published for recording in fc_fused; attitude/barometer require ros_ekf.
   device: '/dev/ttyAMA2'
   baud: 921600
   gps_mode: gnss
@@ -217,7 +217,7 @@ mavlink:
   # GPS_RAW_INT.alt is MSL in the paired FC firmware; bag diagnostics contain finite MSL.
   # This selects the height datum, not a fixed height or a barometer measurement.
   altitude_source: msl
-  imu_rate_hz: 500
+  imu_rate_hz: 300
   gps_rate_hz: 10
   attitude_rate_hz: 0
   baro_rate_hz: 40

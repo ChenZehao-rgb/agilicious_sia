@@ -120,8 +120,9 @@ public:
 				throw std::invalid_argument("fc_fused requires real 100 Hz state / 50 Hz health");
 			_rate_requests = {{MAVLINK_MSG_ID_ODOMETRY, odometry_hz},
 			                  {MAVLINK_MSG_ID_V2_EXTENSION, status_hz},
-			                  {MAVLINK_MSG_ID_GLOBAL_POSITION_INT, _global_position_hz}};
-			_imu_hz = _gps_hz = _attitude_hz = _baro_hz = 0;
+			                  {MAVLINK_MSG_ID_GLOBAL_POSITION_INT, _global_position_hz},
+			                  {MAVLINK_MSG_ID_HIGHRES_IMU, _imu_hz}};
+			_gps_hz = _attitude_hz = _baro_hz = 0;
 		}
 		// Append after state-source selection: hardware telemetry is needed in both modes.
 		for (const auto& request : std::vector<std::pair<uint32_t, int>>{
@@ -817,7 +818,8 @@ private:
 			}
 		}
 		if (handleTelemetry(m, received)) return;
-		if (_fc_fused) {
+		// Raw IMU is also published for recording in FC-fused mode.
+		if (_fc_fused && m.msgid != MAVLINK_MSG_ID_HIGHRES_IMU) {
 			handleFc(m, received);
 			return;
 		}

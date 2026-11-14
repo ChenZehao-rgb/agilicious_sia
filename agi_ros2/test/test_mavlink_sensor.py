@@ -203,10 +203,11 @@ class SensorTests(unittest.TestCase):
         h.sync = True
         h.drive(1.6)
         self.assertTrue(h.values['global_position'])
-        self.assertEqual({int(c[1]) for c in h.commands}, {33, 248, 331, 35, 0, 1, 147})
-        self.assertEqual({int(c[1]): c[2] for c in h.commands}, {33: 100000., 248: 20000., 331: 10000., 35: 40000., 0: 40000., 1: 40000., 147: 500000.})
+        self.assertEqual({int(c[1]) for c in h.commands}, {33, 105, 248, 331, 35, 0, 1, 147})
+        self.assertEqual({int(c[1]): c[2] for c in h.commands}, {33: 100000., 105: 2000., 248: 20000., 331: 10000., 35: 40000., 0: 40000., 1: 40000., 147: 500000.})
         self.assertFalse(h.values['fix'] or h.values['velocity'] or h.values['heading'])
-        self.assertFalse(h.values['imu'] or h.values['attitude'] or h.values['pressure'])
+        self.assertTrue(h.values['imu'] and h.values['imu_timing'])
+        self.assertFalse(h.values['attitude'] or h.values['pressure'])
         self.assertFalse(any(n.clock_aligned for n in h.values['navigation']))
         h.streaming_gps = False
         h.drive(.1)
@@ -272,13 +273,23 @@ class SensorTests(unittest.TestCase):
         self.assertIn((topic, 'agi_ros2/msg/GlobalPositionInt'), [(t.name, t.type) for t in reader.get_all_topics_and_types()])
         telemetry_topic = h.namespace + '/sensors/fc/telemetry'
         recorded_telemetry = []
+        recorded_imu = []
+        recorded_timing = []
         recorded = []
         while reader.has_next():
             name, payload, _ = reader.read_next()
             if name == topic:
                 recorded.append(deserialize_message(payload, GlobalPositionInt))
+            elif name == h.namespace + '/sensors/imu':
+                recorded_imu.append(deserialize_message(payload, Imu))
+            elif name == h.namespace + '/sensors/imu/timing':
+                recorded_timing.append(deserialize_message(payload, ImuTiming))
             elif name == telemetry_topic:
                 recorded_telemetry.append(deserialize_message(payload, FcTelemetry))
+        self.assertGreater(len(recorded_imu), 100)
+        self.assertGreater(len(recorded_timing), 100)
+        self.assertEqual(recorded_imu[-1].header.frame_id, 'base_link')
+        self.assertTrue(all(m.source_session == h.values['imu_timing'][-1].source_session for m in recorded_timing))
         self.assertGreater(len(recorded_telemetry), 5)
         self.assertTrue(all(m.rc_sample_steady_time == source_times.rc_sample_steady_time and
                             m.heartbeat_receive_steady_time == source_times.heartbeat_receive_steady_time
@@ -301,8 +312,39 @@ class SensorTests(unittest.TestCase):
         self.h = Harness(state_source='fc_fused', gps_rate_hz=0)
         h = self.h
         h.drive(1.6)
-        self.assertEqual({int(c[1]): c[2] for c in h.commands}, {33: -1., 248: 20000., 331: 10000., 35: 40000., 0: 40000., 1: 40000., 147: 500000.})
+        self.assertEqual({int(c[1]): c[2] for c in h.commands}, {33: -1., 105: 2000., 248: 20000., 331: 10000., 35: 40000., 0: 40000., 1: 40000., 147: 500000.})
         self.assertFalse(h.values['global_position'] or h.values['fix'] or h.values['velocity'])
+
+    def test_fc_imu_validation_and_disable(self):
+        self.h.close()
+        self.h = Harness(state_source='fc_fused')
+        h = self.h
+        h.drive(1.7)
+        sample = h.values['imu'][-1]
+        self.assertEqual(sample.header.frame_id, 'base_link')
+        self.assertAlmostEqual(sample.linear_acceleration.y, -2.)
+        self.assertAlmostEqual(sample.linear_acceleration.z, 9.80665, places=5)
+        self.assertAlmostEqual(sample.angular_velocity.z, -.3, places=6)
+        self.assertEqual(sample.orientation_covariance[0], -1.)
+        h.streaming = False
+        h.drive(.1)
+        before = len(h.values['imu'])
+        stamp = h.remote()
+        h.imu(stamp)
+        h.imu(stamp)
+        h.peer.highres_imu_send(stamp + 1, 1, 2, 3, .1, .2, .3, 0, 0, 0, 0, 0, 0, 0, 7)
+        h.peer.highres_imu_send(stamp + 2, math.nan, 2, 3, .1, .2, .3, 0, 0, 0, 0, 0, 0, 0, 63)
+        h.drive(.1)
+        self.assertEqual(len(h.values['imu']), before + 1)
+        self.assertEqual(h.values['imu'][-1].header, h.values['imu_timing'][-1].header)
+        self.assertEqual(h.values['imu_timing'][-1].fc_time_usec, stamp)
+        h.close()
+        self.h = Harness(state_source='fc_fused', imu_rate_hz=0)
+        h = self.h
+        h.drive(1.7)
+        self.assertIn((mav.MAV_CMD_SET_MESSAGE_INTERVAL, 105., -1.), h.commands)
+        self.assertFalse(h.values['imu'] or h.values['imu_timing'])
+        self.assertTrue(h.values['global_position'])
 
     def test_fc_telemetry_decoding_and_immutable_receipts(self):
         self.h.close()
