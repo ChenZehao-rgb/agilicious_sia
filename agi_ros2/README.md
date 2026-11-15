@@ -685,8 +685,23 @@ RC年龄、计算耗时、预热数、授权位、状态机枚举；新分析优
 硬件 `ComputationStatus.cycle_seconds` 包含控制回调内的时间对齐与决策构造，
 `OutputStatus.write_seconds` 用于区分串口写出开销；这些字段的统计需要目标机录包。
 
-所有入口默认录制全部及隐藏话题到 `~/agi_bags/hardware_*` 或 `sitl_*`；可用
-`record_bag:=false` 或 `bag_output:=路径` 覆盖。任一业务组件或 recorder 退出会关闭整组。
+所有入口默认录制全部及隐藏话题到 `~/agi_bags/序号_模式_时间戳`，例如
+`1_hardware_20261115_120000_123456`。序号不补零，在该目录已有编号的最大值上加一，
+hardware 与 sitl 共用编号，不依赖系统时间；旧的无编号目录保持原名且不参与计数。
+删除或移走已有编号目录会影响后续编号；查找先后顺序时可用 `ls -v ~/agi_bags` 按序号排序，不按修改时间排序。
+可用 `record_bag:=false` 关闭录制，或用 `bag_output:=路径` 指定完整输出路径（不自动加序号）。
+任一业务组件或 recorder 退出会关闭整组。
+
+启用录包时，同时启动普通调度优先级的 Python 系统监控节点，以 1 Hz 发布
+`/system/resource_usage`（`diagnostic_msgs/msg/DiagnosticArray`），由同一个 bag 自动录制。
+`status[0].values` 包含 `cpu_percent`（所有核心平均，0–100%）、`cpu0_percent` 等各核占用率，
+以及 `memory_total_bytes`、`memory_available_bytes`、`memory_used_bytes`、`memory_used_percent`。
+CPU 为两次采样间的平均繁忙比例，idle 与 iowait 不计入繁忙时间；内存已用量为
+`MemTotal - MemAvailable`，保留可回收缓存的语义，来源为 `/proc/stat` 和 `/proc/meminfo`。
+消息还包含 `monotonic_ns` 和 `sample_interval_seconds`，header 使用主机 ROS 系统时间；
+采样周期使用单调时钟，不随系统时间校正或仿真暂停而停止。首次采样或计数器回退时，
+对应 CPU 占用率暂缺；读取失败会发布 ERROR，监控故障或退出不作为停止飞行的条件。
+1 Hz 适合观察持续负载，不能反映毫秒级峰值；机载 CPU、内存和录包开销需在目标机实测。
 
 硬件 MSP 控制帧保留严格写入截止时间；部分写入或真实串口 I/O 故障锁存为不健康并撤销接管。
 `/msp/events`、`/msp/write_timing` 继续记录 code 200、ACK、错误及实际写入耗时；

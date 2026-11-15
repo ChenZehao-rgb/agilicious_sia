@@ -299,9 +299,20 @@ def assemble(context, forced_shadow=False, sensor_only=False, msp_only=False):
                            f'bench_fixed_gps={bench_fixed_gps}' +
                            (' (synthetic navigation, props-off bench only)' if bench_fixed_gps else ''))] + processes
     if boolean(flight.get('record_bag', True)):
+        # Resource diagnostics are observational; their exit must not stop flight components.
+        actions.append(node('system_monitor.py', {'use_sim_time': False}))
         bag_output = resolve_data_path(path, flight.get('bag_output', ''))
         if not bag_output:
-            bag_output = str(Path.home() / 'agi_bags' / datetime.now().strftime(mode + '_%Y%m%d_%H%M%S_%f'))
+            bag_root = Path.home() / 'agi_bags'
+            bag_root.mkdir(parents=True, exist_ok=True)
+            sequence = 1
+            # Use existing directory numbers rather than the possibly unsynchronized clock.
+            for entry in bag_root.iterdir():
+                prefix, separator, _ = entry.name.partition('_')
+                if entry.is_dir() and separator and prefix.isdecimal():
+                    sequence = max(sequence, int(prefix) + 1)
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+            bag_output = str(bag_root / f'{sequence}_{mode}_{timestamp}')
         Path(bag_output).parent.mkdir(parents=True, exist_ok=True)
         command = ['ros2', 'bag', 'record', '--all', '--include-hidden-topics', '--output', bag_output]
         if mode == 'sitl' and not fc_fused:
