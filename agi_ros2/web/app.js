@@ -18,7 +18,7 @@ function badge(id, text, fresh) { $(id).textContent = text; $(id).className = 'b
 function data(topic) { return snapshot?.topics[topic]?.data; }
 function age(topic) { return (snapshot?.topics[topic]?.age_s ?? Infinity) + (performance.now() - lastHTTP) / 1000; }
 // Display stale annotations only; these are not flight acceptance gates.
-function fresh(topic) { return age(topic) < (['fused_state', 'sensors/gps/global_position'].includes(topic) ? 1 : 3); }
+function fresh(topic) { return age(topic) < (['fused_state', 'sensors/gps/global_position', 'sensors/fc/estimator_status'].includes(topic) ? 1 : 3); }
 function positionTopic() { return snapshot?.position_source === 'gps_global' ? 'sensors/gps/global_position' : 'fused_state'; }
 function positionFresh() {
   return !!snapshot?.position && fresh(positionTopic()) && (snapshot.position_source !== 'gps_global' || fresh('fused_state'));
@@ -173,6 +173,11 @@ function renderTelemetry() {
   const state = data('fused_state'), authority = data('authority'), health = data('health'), output = data('output_status');
   const goal = data('goal_status'), computation = data('computation_status');
   const httpOK = lastHTTP > 0 && !httpFailure && performance.now() - lastHTTP < 1500;
+  const fcHealth = data('sensors/fc/estimator_status');
+  const magKnown = httpOK && fresh('sensors/fc/estimator_status') && fcHealth?.valid && fcHealth.clock_aligned &&
+    fcHealth.version === 1 && !!(fcHealth.flags & 0x80);
+  const magFresh = magKnown && !!(fcHealth.flags & 0x08);
+  badge('mag-heading', magKnown ? (magFresh ? '磁航向 新鲜' : '磁航向 不新鲜') : '磁航向 未知', magFresh);
   // A late browser timer is not evidence of a broken HTTP connection. Keep
   // transport failures separate from delayed rendering and stale ROS topics.
   badge('connection', httpFailure || (!lastHTTP ? 'UI 连接中' : !httpOK ? 'UI 在线 · 更新延迟' :
@@ -216,7 +221,9 @@ function renderTelemetry() {
       const item = document.createElement('li'); item.textContent = `${label}：${text}`; return item;
     }));
   }
-  const labels = {'fused_state': '融合位置 / 姿态', 'sensors/gps/global_position': 'GPS 全局位置', authority: '授权', health: '电池 / 健康', output_status: '输出', computation_status: '控制', 'navigation/origin': '原点快照', goal_status: '目标快照'};
+  const labels = {'fused_state': '融合位置 / 姿态', 'sensors/gps/global_position': 'GPS 全局位置',
+    'sensors/fc/estimator_status': 'FC 磁航向 / 估计状态', authority: '授权', health: '电池 / 健康',
+    output_status: '输出', computation_status: '控制', 'navigation/origin': '原点快照', goal_status: '目标快照'};
   $('freshness').textContent = Object.entries(labels).map(([key, label]) => `${label}：${fmt(Number.isFinite(age(key)) ? age(key) : null, 1)} s` +
     (key === 'navigation/origin' || key === 'goal_status' ? ' · 保留型' : fresh(key) ? '' : ' · 未更新')).join('\n');
   if (airplane) airplane.getElement()?.classList.toggle('old', !positionFresh() || !httpOK);

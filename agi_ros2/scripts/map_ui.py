@@ -24,7 +24,7 @@ from std_msgs.msg import Empty
 from diagnostic_msgs.msg import DiagnosticArray
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from rosidl_runtime_py.convert import message_to_ordereddict
-from agi_ros2.msg import Authority, ComputationStatus, FusedState, GeographicGoal, GlobalPositionInt, GoalStatus, Health, NavigationOrigin, OutputStatus
+from agi_ros2.msg import Authority, ComputationStatus, FcEstimatorStatus, FusedState, GeographicGoal, GlobalPositionInt, GoalStatus, Health, NavigationOrigin, OutputStatus
 
 
 def f32(value):
@@ -247,6 +247,7 @@ class MapUI(Node):
                                      lambda msg, key=topic: self.receive(key, msg), runtime_qos)
         self.runtime_shutdown_publisher = self.create_publisher(Empty, 'ground_station/runtime/hardware/shutdown', runtime_qos)
         topics = {'fused_state': FusedState, 'sensors/gps/global_position': GlobalPositionInt,
+                  'sensors/fc/estimator_status': FcEstimatorStatus,
                   'authority': Authority, 'health': Health,
                   'output_status': OutputStatus, 'computation_status': ComputationStatus,
                   'navigation/origin': NavigationOrigin, 'goal_status': GoalStatus}

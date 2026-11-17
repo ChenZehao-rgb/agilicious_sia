@@ -24,7 +24,7 @@ from rclpy.executors import SingleThreadedExecutor
 from rclpy.parameter import Parameter
 from rclpy.serialization import serialize_message
 from rosidl_runtime_py.convert import message_to_ordereddict
-from agi_ros2.msg import FusedState, GeographicGoal, GlobalPositionInt, GoalStatus, NavigationOrigin, Health, Authority, ComputationStatus, OutputStatus
+from agi_ros2.msg import FcEstimatorStatus, FusedState, GeographicGoal, GlobalPositionInt, GoalStatus, NavigationOrigin, Health, Authority, ComputationStatus, OutputStatus
 
 
 def mapping():
@@ -420,12 +420,31 @@ class DDSTests(unittest.TestCase):
         self.assertEqual(self.ui.snapshot()['position_source'], 'gps_global')
         self.assertNotEqual(self.ui.snapshot()['identity'], identity)
 
+    def test_fc_health_relay_without_position_or_arming(self):
+        topic = 'sensors/fc/estimator_status'
+        health = FcEstimatorStatus(source_session='preflight', valid=True, clock_aligned=True,
+                                   version=1, payload_length=68, flags=174)
+        for flags in (174, 247, 255):
+            health.flags = flags
+            self.run_for(.35, lambda _: self.pubs[topic].publish(health))
+            self.assertEqual(self.ui.snapshot()['topics'][topic]['data']['flags'], flags)
+            self.assertEqual(self.received[topic][-1][1], health)
+            self.assertIsNone(self.ui.snapshot()['position'])
+        health.valid = False
+        self.run_for(.35, lambda _: self.pubs[topic].publish(health))
+        self.assertFalse(self.ui.snapshot()['topics'][topic]['data']['valid'])
+        self.run_for(1.4)  # Allow the final pending 5 Hz relay flush before its 1 s lease expires.
+        self.assertGreaterEqual(self.ui.snapshot()['topics'][topic]['age_s'], 1.)
+        self.assertFalse(self.commands)
+
     def test_changing_statuses_stay_rate_limited_with_payload_budget(self):
         state, _ = mapping()
         state.readiness_reason = 'FC XY/Z/fusion/snapshot unavailable'
         messages = {
             'fused_state': state,
             'sensors/gps/global_position': GlobalPositionInt(source_session=state.navigation_session),
+            'sensors/fc/estimator_status': FcEstimatorStatus(source_session=state.navigation_session, valid=True,
+                                                           clock_aligned=True, version=1, flags=174),
             'authority': Authority(clock_id=state.clock_id, session_id=state.navigation_session, receiver_valid=True),
             'health': Health(state_source='fc_fused', state_session=state.navigation_session, battery_voltage=16.2),
             'output_status': OutputStatus(clock_id=state.clock_id, session_start=10., thrust_model='measured_cubic'),

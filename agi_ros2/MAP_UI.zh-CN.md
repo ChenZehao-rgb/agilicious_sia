@@ -449,6 +449,10 @@ ros2 run agi_ros2 map_ui.py
 左下角位置文字每 200 ms 检查一次（5 Hz），文字不变时不重绘；飞机标记与轨迹仍按原速率更新，断流仍会标记过期。
 进入 AUTO 后，控制器当前参考满足已有悬停判据时即显示“稳定悬停”，无需先执行在线目标；
 尚未稳定时显示“AUTO 控制中”。该状态来自控制器的 `hover_stable`，不改变控制授权或悬停判据。
+顶部“磁航向”直接显示飞控 `FcEstimatorStatus.flags` 的 `0x08` 位：新鲜为绿色，不新鲜为橙色。
+消息尚未收到、超过 1 秒未更新、HTTP 连接未确认，或消息无效、时钟未对齐、协议版本不支持、FC 快照不存在时显示“未知”。
+该状态通过 `/ground_station/sensors/fc/estimator_status` 按现有 fast 组默认 5 Hz 中继，未解锁或地图位置无效时也可显示。
+它只表示飞控磁航向新鲜度，不代表磁力计校准或绝对航向正确；不改变控制授权与起飞判据。
 顶部连接状态区分浏览器更新延迟、HTTP 请求超时和连接失败；浏览器暂时卡顿不再直接报告“UI HTTP 中断”。
 遥测数据过期仍单独提示。升级后需使用同次构建的消息，重启控制端、遥测转发和地图服务，再刷新浏览器。
 
@@ -571,6 +575,7 @@ CM5 按前文部署 hardware 监听服务，地面电脑启动 UI。ROS/监听�
 | 输出 topic 前缀 `/ground_station/` | 常规频率 / 语义 |
 | --- | --- |
 | `fused_state` | fast_rate_hz，默认 5 Hz，最新位置/速度/姿态及 FC 有效性 |
+| `sensors/gps/global_position`, `sensors/fc/estimator_status` | fast_rate_hz，默认 5 Hz，GPS 全局位置及 FC 磁航向/估计状态 |
 | `authority`, `health`, `output_status`, `computation_status` | slow_rate_hz，默认 1 Hz |
 | `navigation/origin`, `goal_status` | 语义更新即时可靠发布，transient_local、depth 1 |
 | `runtime/hardware/status` 或 `runtime/simulation/status` | slow_rate_hz 心跳，启动器状态变化即时发送 |

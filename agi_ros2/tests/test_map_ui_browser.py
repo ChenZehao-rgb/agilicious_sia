@@ -23,7 +23,7 @@ import runtime_launcher
 import rclpy
 from std_msgs.msg import Empty
 from rclpy.executors import SingleThreadedExecutor
-from agi_ros2.msg import FusedState, GlobalPositionInt, NavigationOrigin, GoalStatus, ComputationStatus, Health, GeographicGoal, Authority
+from agi_ros2.msg import FcEstimatorStatus, FusedState, GlobalPositionInt, NavigationOrigin, GoalStatus, ComputationStatus, Health, GeographicGoal, Authority
 from playwright.sync_api import sync_playwright, expect
 
 parser = argparse.ArgumentParser(description=__doc__)
@@ -69,6 +69,16 @@ def emit_gps():
         gps.header.stamp=source.get_clock().now().to_msg()
         gps_pub.publish(gps)
 source.create_timer(.05,emit_gps)
+fc_health_pub=source.create_publisher(FcEstimatorStatus,'sensors/fc/estimator_status',relay.LATEST)
+fc_health=FcEstimatorStatus(source_session=s.navigation_session,valid=True,clock_aligned=True,
+                           version=1,payload_length=68,flags=174)
+fc_health_enabled=[False]
+def emit_fc_health():
+    if fc_health_enabled[0]:
+        fc_health.header.stamp=source.get_clock().now().to_msg()
+        fc_health.fc_time_usec+=50000
+        fc_health_pub.publish(fc_health)
+source.create_timer(.05,emit_fc_health)
 goal=GoalStatus(clock_id=s.clock_id,control_session_start=10.,active_valid=True,request_sequence=1,active_request_sequence=1,
                 active_fc_session=s.navigation_session,active_fc_reset_counter=s.fc_reset_counter,active_generation=s.reset_counter,
                 active_phase=GoalStatus.STABLE,request_state=GoalStatus.ACCEPTED)
@@ -157,6 +167,28 @@ try:
         context.route('**/*', lambda route: route.continue_() if route.request.url.startswith(url) else route.abort())
         page=context.new_page();page.on('pageerror',lambda e: errors.append(str(e)));page.on('request',lambda r: requests.append(r.url))
         page.goto(url)
+        # The magnetic status works before any position, origin or ARM evidence exists.
+        expect(page.locator('#mag-heading')).to_have_text('磁航向 未知')
+        fc_health_enabled[0]=True
+        for flags,text in [(174,'磁航向 新鲜'),(247,'磁航向 不新鲜'),(255,'磁航向 新鲜')]:
+            fc_health.flags=flags
+            expect(page.locator('#mag-heading')).to_have_text(text)
+            expect(page.locator('#mag-heading')).to_have_class('badge good' if flags & 8 else 'badge stale')
+        for attribute,value in [('valid',False),('clock_aligned',False),('version',2),('flags',8)]:
+            previous=getattr(fc_health,attribute)
+            setattr(fc_health,attribute,value)
+            expect(page.locator('#mag-heading')).to_have_text('磁航向 未知')
+            setattr(fc_health,attribute,previous)
+            expect(page.locator('#mag-heading')).to_have_text('磁航向 新鲜')
+        fc_health_enabled[0]=False
+        expect(page.locator('#mag-heading')).to_have_text('磁航向 未知')
+        expect(page.locator('#mag-heading')).to_have_class('badge stale')
+        fc_health_enabled[0]=True
+        expect(page.locator('#mag-heading')).to_have_text('磁航向 新鲜')
+        page.route('**/api/state',lambda route: route.abort())
+        expect(page.locator('#mag-heading')).to_have_text('磁航向 未知')
+        page.unroute('**/api/state')
+        expect(page.locator('#mag-heading')).to_have_text('磁航向 新鲜')
         page.locator('#open-tuning').click()
         expect(page.locator('#tuning-read-status')).to_contain_text('已读取')
         expect(page.locator('#tuning-identity')).to_have_text('仿真 · MPC')
@@ -497,7 +529,8 @@ try:
             'shutdown_hardware_only_permission_error_timeout_and_refresh':True,'page_errors':errors,'fixture':'synthetic, not real map',
             'position_updates_in_2_4s':len(changes), 'position_min_interval_ms':min(b-a for a,b in zip(changes,changes[1:])),
             'initial_auto_hover':True,'browser_stall_without_false_disconnect':True,'http_failure_and_timeout_recovery':True,
-            'origin_refresh_without_invalid_position':True,'gps_disarmed_fused_priority_and_invalidity':True},indent=2))
+            'origin_refresh_without_invalid_position':True,'gps_disarmed_fused_priority_and_invalidity':True,
+            'mag_heading_flags_validity_preflight_stale_and_http_recovery':True},indent=2))
         browser.close()
 finally:
     server.shutdown();server.server_close();http_thread.join()
