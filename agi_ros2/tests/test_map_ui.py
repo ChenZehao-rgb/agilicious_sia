@@ -24,7 +24,7 @@ from rclpy.executors import SingleThreadedExecutor
 from rclpy.parameter import Parameter
 from rclpy.serialization import serialize_message
 from rosidl_runtime_py.convert import message_to_ordereddict
-from agi_ros2.msg import FcEstimatorStatus, FusedState, GeographicGoal, GlobalPositionInt, GoalStatus, NavigationOrigin, Health, Authority, ComputationStatus, OutputStatus
+from agi_ros2.msg import FcEstimatorStatus, FusedState, GeographicGoal, GeographicRoute, GlobalPositionInt, GoalStatus, NavigationOrigin, Health, Authority, ComputationStatus, OutputStatus
 
 
 def mapping():
@@ -790,6 +790,47 @@ class DDSTests(unittest.TestCase):
                     self.assertIn('未确认', json.load(error.exception)['error'])
             finally:
                 self.ui.pause_publisher = original
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
+    def test_route_http_is_atomic_volatile_and_preserves_order(self):
+        routes = []
+        self.source.create_subscription(GeographicRoute, 'go_to_geographic_route', routes.append, 1)
+        self.run_for(.3)
+        server = map_ui.make_server(self.ui, map_ui.MBTiles(None), '127.0.0.1', 0)
+        thread = threading.Thread(target=server.serve_forever)
+        thread.start()
+        base = f'http://127.0.0.1:{server.server_port}'
+        point = {'latitude': 0., 'longitude': 0., 'altitude_msl': 10.}
+        def post(payload, origin=None):
+            headers = {'Content-Type': 'application/json'}
+            if origin: headers['Origin'] = origin
+            return urllib.request.urlopen(urllib.request.Request(base + '/api/route', json.dumps(payload).encode(), headers))
+        try:
+            for bad in [{'mode': 'unknown', 'points': [point]}, {'mode': 'straight', 'points': []},
+                        {'mode': 'smooth', 'points': [point, dict(point, latitude=True)]},
+                        {'mode': 'smooth', 'points': [point, dict(point, longitude=181.)]},
+                        {'mode': 'smooth', 'points': [point, dict(point, altitude_msl=math.nan)]}]:
+                with self.assertRaises(urllib.error.HTTPError): post(bad)
+            with self.assertRaises(urllib.error.HTTPError):
+                post({'mode': 'straight', 'points': [point]}, 'http://unrelated.invalid')
+            self.run_for(.1)
+            self.assertFalse(routes)
+            # Exceeds the old 4 KiB single-goal body limit, without introducing a point-count gate.
+            points = [dict(point, latitude=i*.00001, altitude_msl=10.+i) for i in range(80)]
+            with post({'mode': 'smooth', 'points': points}) as response:
+                self.assertEqual(response.status, 202)
+            self.run_for(.3)
+            self.assertEqual(len(routes), 1)
+            self.assertEqual(routes[0].mode, GeographicRoute.SMOOTH)
+            self.assertEqual([p.altitude_msl for p in routes[0].points], [10.+i for i in range(80)])
+            late = []
+            self.source.create_subscription(GeographicRoute, 'go_to_geographic_route', late.append, 1)
+            self.run_for(.3)
+            self.assertFalse(late)
+            self.assertFalse(self.commands)
         finally:
             server.shutdown()
             server.server_close()

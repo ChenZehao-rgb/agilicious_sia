@@ -58,8 +58,11 @@ def main():
     parser.add_argument('--geographic', action='store_true', help='Two WGS84/MSL goals from the actual FC origin')
     parser.add_argument('--map-ui', action='store_true', help='Send geographic goals through the local UI HTTP server')
     parser.add_argument('--pause-hover', action='store_true', help='Browser goal/pause clicks in translation and yaw; requires Playwright/Chrome')
+    parser.add_argument('--multi-route', action='store_true', help='Validate straight/smooth three-point HTTP routes and cancellation')
     parser.add_argument('--runtime-tuning', action='store_true', help='Apply trajectory/MPC patches during flight through HTTP')
     args = parser.parse_args()
+    if args.multi_route and not (args.map_ui and args.geographic and args.state_source == 'fc_fused'):
+        parser.error('--multi-route requires --map-ui --geographic --state-source fc_fused')
     if args.runtime_tuning and not (args.map_ui and args.geographic and args.state_source == 'fc_fused'):
         parser.error('--runtime-tuning requires --map-ui --geographic --state-source fc_fused')
     if args.pause_hover and not (args.map_ui and args.geographic):
@@ -113,9 +116,11 @@ def main():
                 row[key] = getattr(msg, key)
         elif topic == 'goal_status':
             for key in ('request_sequence', 'request_state', 'request_reason', 'active_valid',
-                        'active_request_sequence', 'active_phase', 'active_reason', 'pause_active'):
+                        'active_request_sequence', 'active_phase', 'active_reason', 'pause_active',
+                        'route_preparing', 'active_waypoint_index'):
                 row[key] = getattr(msg, key)
             row['active_enu'] = xyz(msg.active_enu)
+            row['active_route_count'] = len(msg.active_route_enu)
         elif topic.startswith('sensors/fc/'):
             row.update(fc_time_usec=msg.fc_time_usec, valid=msg.valid)
         elif topic in ('reference', 'ground_truth'):
@@ -224,7 +229,7 @@ def main():
     try:
         commands = [
             ('sim', ['python3', 'betaflight_sitl/run.py', '--no-gazebo', '--no-build',
-                     '--runtime-config', str(runtime), '--duration', '420']),
+                     '--runtime-config', str(runtime), '--duration', '900' if args.multi_route else '420']),
             ('flight', ['./agi_ros2/scripts/launch.sh', 'runtime_config:=' + str(runtime),
                         'bag_output:=' + str(out / 'bag')]),
             ('sim_rc', ['ros2', 'run', 'agi_ros2', 'sim_rc.py', '--ros-args', '-p', 'use_sim_time:=' + str(not fc_state).lower()])]
@@ -405,7 +410,7 @@ def main():
                 result['pauses'] = pause_results
                 result['browser_commands'] = browser_commands
                 browser.close()
-        for index, target in enumerate(targets):
+        for index, target in enumerate([] if args.multi_route else targets):
             start_ref = xyz(latest['reference'].pose.pose.position)
             start_heading = yaw(latest['reference'].pose.pose.orientation)
             horizontal = [target[i]-start_ref[i] for i in range(2)]
@@ -543,6 +548,52 @@ def main():
                 assert max(errors) <= .2 and max(speeds) <= .2, topic + ' not stably at target'
                 assert max(heading_errors) <= math.radians(3), topic + ' not holding terminal heading'
             result['goals'].append(goal_result)
+        if args.multi_route:
+            result['routes'] = []
+            for mode in ('straight', 'smooth'):
+                start = xyz(latest['reference'].pose.pose.position)
+                points = [[start[0]+2, start[1], start[2]], [start[0]+3, start[1]+2, start[2]+.3],
+                          [start[0]+1, start[1]+3, start[2]+.3]]
+                payload = {'mode': mode, 'points': [dict(latitude=origin.latitude+p[1]/111319.49424743652,
+                           longitude=origin.longitude+p[0]/(111319.49424743652*origin.longitude_scale),
+                           altitude_msl=origin.altitude+p[2]) for p in points]}
+                previous = latest['goal_status'].request_sequence
+                began = time.monotonic()
+                http('/api/route', payload)
+                wait_for(lambda: latest['goal_status'].request_sequence==previous+1 and
+                         latest['goal_status'].request_state in (GoalStatus.ACCEPTED, GoalStatus.REJECTED), 10, 'route result')
+                assert latest['goal_status'].request_state==GoalStatus.ACCEPTED, latest['goal_status'].request_reason
+                assert len(latest['goal_status'].active_route_enu)==3
+                def route_finished():
+                    if not active():
+                        raise RuntimeError('route AUTO revoked: ' + latest['computation_status'].reason)
+                    return latest['goal_status'].active_phase==GoalStatus.STABLE and latest['goal_status'].active_waypoint_index==2
+                # Slow terminal deceleration can enter the position/speed tolerance before reference completion.
+                wait_for(route_finished, 180, 'route final reference and actual stable state')
+                stable_window(points[-1], 3, 30, require_active=True)
+                samples = [r for r in rows['reference'] if r['wall']>=began]
+                for point in points:
+                    assert min(norm(a-b for a,b in zip(r['position'],point)) for r in samples)<.03
+                phases = [r for r in rows['goal_status'] if r['wall']>=began]
+                assert all(r['active_phase']!=GoalStatus.STABLE or r['active_waypoint_index']==2 for r in phases if r['active_route_count'])
+                summary = dict(mode=mode, points=points, seconds=time.monotonic()-began,
+                               reference_speed_max=max(norm(r['velocity']) for r in samples),
+                               reference_yaw_rate_max=max(abs(r['rates'][2]) for r in samples))
+                result['routes'].append(summary)
+                event('route_verified', **summary)
+                # Cancel a fresh route while moving; no old remaining point may resume.
+                previous = latest['goal_status'].request_sequence
+                http('/api/route', dict(payload, points=list(reversed(payload['points']))))
+                wait_for(lambda: latest['goal_status'].request_sequence==previous+1 and
+                         latest['goal_status'].request_state==GoalStatus.ACCEPTED, 10, 'second route accepted')
+                wait_for(lambda: norm(xyz(latest['reference'].twist.twist.linear))>.03 and
+                         norm(xyz(latest['fused_state'].velocity))>.03, 60, 'route motion before pause')
+                http('/api/pause', {})
+                wait_for(lambda: latest['goal_status'].pause_active, 5, 'route pause')
+                stopped = xyz(latest['goal_status'].active_enu)
+                stable_window(stopped, 3, 45, require_active=True)
+                assert not latest['goal_status'].active_route_enu
+                event('route_pause_verified', mode=mode, stop=stopped)
         end_wall = time.monotonic()
         active_rows = [x for x in rows['computation_status'] if auto_start+.1 <= x['wall'] <= end_wall]
         output_rows = [x for x in rows['output_status'] if auto_start+.1 <= x['wall'] <= end_wall]

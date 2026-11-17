@@ -23,7 +23,7 @@ import runtime_launcher
 import rclpy
 from std_msgs.msg import Empty
 from rclpy.executors import SingleThreadedExecutor
-from agi_ros2.msg import FcEstimatorStatus, FusedState, GlobalPositionInt, NavigationOrigin, GoalStatus, ComputationStatus, Health, GeographicGoal, Authority
+from agi_ros2.msg import FcEstimatorStatus, FusedState, GlobalPositionInt, NavigationOrigin, GoalStatus, ComputationStatus, Health, GeographicGoal, GeographicRoute, Authority
 from playwright.sync_api import sync_playwright, expect
 
 parser = argparse.ArgumentParser(description=__doc__)
@@ -87,6 +87,8 @@ pauses=[]
 source.create_subscription(Empty,'pause_hover',pauses.append,1)
 commands=[]
 source.create_subscription(GeographicGoal,'go_to_geographic_position',lambda m: commands.append(m),1)
+routes=[]
+source.create_subscription(GeographicRoute,'go_to_geographic_route',routes.append,1)
 enabled=[False]; ticks=[0]; moving=[False]; auto_active=[True]; hover_stable=[True]
 def emit():
     if not enabled[0]: return
@@ -520,8 +522,66 @@ try:
         page.locator('.leaflet-control-zoom-out').click()
         page.screenshot(path=str(out/'stale.png'),full_page=True)
         page.set_viewport_size({'width':700,'height':900});page.screenshot(path=str(out/'narrow.png'),full_page=True)
-        page.close();assert len(commands)==1
+        assert len(commands)==1
         assert len(runtime_requests)==1 and len(runtime_stops)==1 and transfer.runtime.snapshot()['state']=='stopped'
+        # Multi-point drafting stays local until explicit submission and never rewrites a sent route.
+        page.locator('#route-enabled').check()
+        page.locator('#altitude').fill('12')
+        page.evaluate("map.fire('click', {latlng:L.latLng(0.00001, 0.00002)})")
+        page.evaluate("map.fire('click', {latlng:L.latLng(0.00003, 0.00004)})")
+        page.locator('#altitude').fill('13')
+        page.evaluate("map.fire('click', {latlng:L.latLng(0.00005, 0.00006)})")
+        expect(page.locator('#route-points li')).to_have_count(3)
+        assert page.evaluate('routeDraft.map(p=>p.altitude_msl)') == [12,13,13]
+        page.locator('#route-points button').nth(0).click()
+        page.locator('#altitude').fill('11')
+        page.evaluate("map.fire('click', {latlng:L.latLng(0.00007, 0.00008)})")
+        assert page.evaluate('routeDraft[3].altitude_msl') == 13
+        page.locator('#route-remove').click()
+        page.locator('#route-points button').nth(0).click()
+        page.locator('#altitude').fill('11')
+        page.locator('#route-remove').click()
+        expect(page.locator('#route-points li')).to_have_count(2)
+        page.locator('#route-mode').select_option('smooth')
+        assert not routes
+        page.locator('#execute').click()
+        expect(page.locator('#submission')).to_contain_text('2 个航点')
+        page.wait_for_timeout(250)
+        assert len(routes)==1 and routes[0].mode==GeographicRoute.SMOOTH
+        assert [p.altitude_msl for p in routes[0].points]==[13.,13.]
+        assert abs(routes[0].points[0].latitude-.00003)<1e-10
+        page.locator('#altitude').fill('99')
+        assert routes[0].points[0].altitude_msl==13.
+        held_route=[]
+        page.route('**/api/route', lambda route: held_route.append(route))
+        page.locator('#execute').click()
+        expect(page.locator('#execute')).to_be_disabled()
+        expect(page.locator('#submission')).to_contain_text('连接中断：发送结果未确认', timeout=8000)
+        expect(page.locator('#execute')).to_be_enabled(timeout=8000)
+        assert len(held_route)==1 and len(routes)==1
+        for pending in held_route: pending.abort()
+        page.unroute('**/api/route')
+        page.screenshot(path=str(out/'multi-route.png'),full_page=True)
+        page.reload()
+        page.wait_for_timeout(250)
+        assert len(routes)==1
+        from geometry_msgs.msg import Point
+        enabled[0]=True;s.fc_state_valid=True;s.fc_flags=0xff
+        goal.pause_active=False;goal.active_valid=True;goal.active_phase=GoalStatus.MOVING
+        goal.active_route_enu=[Point(x=1.,y=2.,z=3.), Point(x=2.,y=3.,z=3.)]
+        goal.active_route_mode=GeographicRoute.SMOOTH;goal.active_waypoint_index=1
+        goal.active_enu=goal.active_route_enu[1];goal.request_source='go_to_geographic_route'
+        goal.requested_route=routes[0];goal.revision+=1
+        gpub.publish(goal)
+        expect(page.locator('#active-detail')).to_contain_text('平滑路线 · 航点 2/2')
+        page.wait_for_function('() => snapshot.active_route.length === 2')
+        page.reload()
+        expect(page.locator('#active-detail')).to_contain_text('平滑路线 · 航点 2/2')
+        page.wait_for_function('() => snapshot.active_route.length === 2')
+        assert len(routes)==1
+        goal.active_waypoint_index=0;goal.active_phase=GoalStatus.SETTLING;goal.revision+=1;gpub.publish(goal)
+        expect(page.locator('#phase')).to_have_text('航点收敛')
+        page.close()
         assert not errors, errors
         assert all(r.startswith(url) for r in requests),requests
         (out/'result.json').write_text(json.dumps({'passed':True,'tuning_tooltips':12,'tuning_patches':tuning_requests,'tuning_timeout_no_retry':True,'requests':len(requests),'external_requests':0,'commands':len(commands),'pauses':len(pauses),'pause_timeout_no_retry':True,'runtime_no_aircraft_online':True,'runtime_requests':len(runtime_requests),
@@ -530,7 +590,8 @@ try:
             'position_updates_in_2_4s':len(changes), 'position_min_interval_ms':min(b-a for a,b in zip(changes,changes[1:])),
             'initial_auto_hover':True,'browser_stall_without_false_disconnect':True,'http_failure_and_timeout_recovery':True,
             'origin_refresh_without_invalid_position':True,'gps_disarmed_fused_priority_and_invalidity':True,
-            'mag_heading_flags_validity_preflight_stale_and_http_recovery':True},indent=2))
+            'mag_heading_flags_validity_preflight_stale_and_http_recovery':True,
+            'route_commands':len(routes),'route_edit_submit_timeout_no_replay_and_retained_refresh':True},indent=2))
         browser.close()
 finally:
     server.shutdown();server.server_close();http_thread.join()

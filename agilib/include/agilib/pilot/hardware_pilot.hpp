@@ -9,6 +9,10 @@
 
 namespace agi::hardware {
 enum class OnlineGoalPhase : uint8_t { None, Moving, Settling, Stable };
+struct OnlineRoute {
+	std::vector<Vector<3>> points;
+	bool smooth = false;
+};
 struct ControlDecision {
 	Command command;
 	QuadState reference;
@@ -24,6 +28,10 @@ struct ControlDecision {
 	std::string goal_event;
 	bool goal_accepted{false};
 	bool pause_active{false};
+	bool route_preparing{false};
+	bool route_request_result{false};
+	bool goal_pending{false};
+	size_t waypoint_index{0};
 	Vector<3> active_endpoint{Vector<3>::Zero()};
 	OnlineGoalPhase online_goal_phase{OnlineGoalPhase::None};
 };
@@ -37,7 +45,9 @@ public:
 	bool setTrajectory(const SetpointVector& relative_setpoints);
 	ControlDecision tick(const QuadState& fused_state, Evidence evidence, bool shadow_only = false, bool navigation_valid = false,
 	                     bool computation_requested = true, const Vector<3>* go_to_position = nullptr, bool pause_hover = false,
-	                     const Vector<3>& fence_min = Vector<3>::Constant(-INF), const Vector<3>& fence_max = Vector<3>::Constant(INF));
+	                     const Vector<3>& fence_min = Vector<3>::Constant(-INF), const Vector<3>& fence_max = Vector<3>::Constant(INF),
+	                     const OnlineRoute* route = nullptr);
+	const OnlineRoute& activeRoute() const { return _route; }
 	std::pair<double, double> getTrajectoryParameters() const;
 	bool setTrajectoryParameters(double max_velocity, double max_acceleration);
 	std::shared_ptr<MpcController> getMpcController();
@@ -47,7 +57,14 @@ public:
 
 private:
 	void checkOwner() const;
-	std::string goalRejection(const QuadState& state, double now);
+	std::string goalRejection(const QuadState& state, double now, bool internal = false);
+	void clearRoute();
+	OnlineRoute _route;
+	OnlineRoute _preparing_route;
+	size_t _route_index = 0;
+	bool _route_running = false;
+	double _route_velocity = 0;
+	double _route_acceleration = 0;
 	// Actual speed and tracking error; no dwell time or additional navigation gate.
 	static constexpr double kHoverSpeed = 0.2;          // m/s, Euclidean norm
 	static constexpr double kHoverPositionError = 0.2;  // m, Euclidean norm

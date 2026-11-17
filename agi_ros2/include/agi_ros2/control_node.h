@@ -14,6 +14,7 @@
 #include "agi_ros2/msg/control_command.hpp"
 #include "agi_ros2/msg/fused_state.hpp"
 #include "agi_ros2/msg/geographic_goal.hpp"
+#include "agi_ros2/msg/geographic_route.hpp"
 #include "agi_ros2/msg/goal_status.hpp"
 #include "agi_ros2/msg/health.hpp"
 #include "agi_ros2/msg/navigation_origin.hpp"
@@ -47,12 +48,15 @@ private:
 	void onGoToPosition(geometry_msgs::msg::PointStamped::ConstSharedPtr message);
 	void onPauseHover(std_msgs::msg::Empty::ConstSharedPtr message);
 	void onGeographicGoal(msg::GeographicGoal::ConstSharedPtr message);
+	void onGeographicRoute(msg::GeographicRoute::ConstSharedPtr message);
+	bool enqueueRoute(const agi::hardware::OnlineRoute& route, const std::string& frame, bool multi = true);
 	void onOrigin(msg::NavigationOrigin::ConstSharedPtr message);
 	bool enqueueGoal(const agi::Vector<3>& target, const std::string& frame);
 	void clearPendingGoal(const char* reason);
 	void beginGoalRequest(const char* source, const std::string& frame);
 	void publishGoalStatus();
-	void updateGoalStatus(const agi::hardware::ControlDecision& decision, const std::optional<agi::Vector<3>>& goal, bool pause);
+	void updateGoalStatus(const agi::hardware::ControlDecision& decision, const std::optional<agi::Vector<3>>& goal, bool pause,
+	                      bool route);
 	void tick();
 	void dispatchFcState();
 	void runCycle(bool computation_requested);
@@ -96,6 +100,8 @@ private:
 	rclcpp::Subscription<msg::NavigationOrigin>::SharedPtr _origin_sub;
 	rclcpp::Subscription<msg::GeographicGoal>::SharedPtr _geographic_goal_sub;
 	rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr _pause_sub;
+	rclcpp::Subscription<msg::GeographicRoute>::SharedPtr _route_sub;
+	std::optional<agi::hardware::OnlineRoute> _pending_route;
 	bool _pending_pause = false;
 	uint64_t _pending_pause_sequence = 0;
 	std::optional<agi::Vector<3>> _pending_goal;

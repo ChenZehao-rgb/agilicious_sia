@@ -110,6 +110,8 @@ ControlNode::ControlNode()
 	_state_sub = create_subscription<msg::FusedState>("fused_state", 1, std::bind(&ControlNode::onState, this, std::placeholders::_1));
 	_goal_sub = create_subscription<geometry_msgs::msg::PointStamped>(
 	        "go_to_position", 1, std::bind(&ControlNode::onGoToPosition, this, std::placeholders::_1));
+	_route_sub = create_subscription<msg::GeographicRoute>("go_to_geographic_route", 1,
+	                                                       std::bind(&ControlNode::onGeographicRoute, this, std::placeholders::_1));
 	_pause_sub = create_subscription<std_msgs::msg::Empty>("pause_hover", rclcpp::QoS(1).reliable().durability_volatile(),
 	                                                       std::bind(&ControlNode::onPauseHover, this, std::placeholders::_1));
 	_origin_sub = create_subscription<msg::NavigationOrigin>("navigation/origin", rclcpp::QoS(1).transient_local(),
@@ -306,7 +308,8 @@ void ControlNode::onOutputStatus(msg::OutputStatus::ConstSharedPtr message) {
 }
 
 void ControlNode::clearPendingGoal(const char* reason) {
-	if (_pending_goal) {
+	const bool preparing = _goal_status.route_preparing;
+	if (_pending_goal || _pending_route || _goal_status.route_preparing) {
 		RCLCPP_WARN(get_logger(), "go_to_position rejected: %s", reason);
 		if (_pending_goal_sequence == _goal_status.request_sequence) {
 			_goal_status.request_state = msg::GoalStatus::REJECTED;
@@ -315,6 +318,8 @@ void ControlNode::clearPendingGoal(const char* reason) {
 		}
 	}
 	_pending_goal.reset();
+	_pending_route.reset();
+	_goal_status.route_preparing = false;
 	if (_pending_pause && _pending_pause_sequence == _goal_status.request_sequence) {
 		_goal_status.request_state = msg::GoalStatus::REJECTED;
 		_goal_status.request_reason = reason;
@@ -323,22 +328,26 @@ void ControlNode::clearPendingGoal(const char* reason) {
 	_pending_pause = false;
 	if (_goal_status.active_valid) {
 		_goal_status.active_valid = false;
+		_goal_status.active_route_enu.clear();
+		_goal_status.active_waypoint_index = 0;
 		_goal_status.pause_active = false;
 		_goal_status.active_phase = msg::GoalStatus::NO_TARGET;
 		_goal_status.active_reason = reason;
 		publishGoalStatus();
 	}
 	_goal_rejection = reason;
+	if (preparing) publishGoalStatus();
 }
 
 void ControlNode::onPauseHover(std_msgs::msg::Empty::ConstSharedPtr) {
 	// Finish the superseded pending request before publishing the new request.
-	if (_pending_goal && _pending_goal_sequence == _goal_status.request_sequence) {
+	if ((_pending_goal || _pending_route || _goal_status.route_preparing) && _pending_goal_sequence == _goal_status.request_sequence) {
 		_goal_status.request_state = msg::GoalStatus::REJECTED;
 		_goal_status.request_reason = "superseded by pause_hover";
 		publishGoalStatus();
 	}
 	_pending_goal.reset();
+	_pending_route.reset();
 	beginGoalRequest("pause_hover", "odom");
 	// Coalesce pending pauses into the latest sequence; no command queue or replay.
 	_pending_pause = true;
@@ -359,6 +368,7 @@ void ControlNode::beginGoalRequest(const char* source, const std::string& frame)
 	_goal_status.request_frame = frame;
 	_goal_status.requested_geographic = msg::GeographicGoal();
 	_goal_status.requested_enu = geometry_msgs::msg::Point();
+	_goal_status.requested_route = msg::GeographicRoute();
 	_goal_status.request_state = msg::GoalStatus::PENDING;
 	_goal_status.request_reason = "waiting for control tick";
 }
@@ -372,12 +382,15 @@ void ControlNode::publishGoalStatus() {
 	_goal_status_pub->publish(_goal_status);
 }
 
-void ControlNode::updateGoalStatus(const agi::hardware::ControlDecision& decision, const std::optional<agi::Vector<3>>& goal, bool pause) {
+void ControlNode::updateGoalStatus(const agi::hardware::ControlDecision& decision, const std::optional<agi::Vector<3>>& goal, bool pause,
+                                   bool route) {
 	bool changed = false;
 	const uint64_t sequence = pause ? _pending_pause_sequence : _pending_goal_sequence;
-	if (goal || pause) {
+	if (goal || pause || route || decision.route_request_result) {
 		if (sequence == _goal_status.request_sequence) {
-			_goal_status.request_state = decision.goal_accepted ? msg::GoalStatus::ACCEPTED : msg::GoalStatus::REJECTED;
+			_goal_status.request_state = decision.goal_pending && !pause ? msg::GoalStatus::PENDING
+			                             : decision.goal_accepted        ? msg::GoalStatus::ACCEPTED
+			                                                             : msg::GoalStatus::REJECTED;
 			_goal_status.request_reason = decision.goal_event;
 			changed = true;
 		}
@@ -392,6 +405,30 @@ void ControlNode::updateGoalStatus(const agi::hardware::ControlDecision& decisio
 			_goal_status.active_generation = _state.reset_counter;
 			changed = true;
 		}
+	}
+	const auto& active_route = _pilot->activeRoute();
+	if (decision.goal_accepted || _goal_status.active_route_enu.size() != active_route.points.size()) {
+		_goal_status.active_route_enu.clear();
+		for (const auto& point : active_route.points) {
+			geometry_msgs::msg::Point value;
+			value.x = point.x();
+			value.y = point.y();
+			value.z = point.z();
+			_goal_status.active_route_enu.push_back(value);
+		}
+		_goal_status.active_route_mode = active_route.smooth ? msg::GeographicRoute::SMOOTH : msg::GeographicRoute::STRAIGHT;
+		changed = true;
+	}
+	if (_goal_status.active_waypoint_index != decision.waypoint_index) {
+		_goal_status.active_waypoint_index = decision.waypoint_index;
+		_goal_status.active_enu.x = decision.active_endpoint.x();
+		_goal_status.active_enu.y = decision.active_endpoint.y();
+		_goal_status.active_enu.z = decision.active_endpoint.z();
+		changed = true;
+	}
+	if (_goal_status.route_preparing != decision.route_preparing) {
+		_goal_status.route_preparing = decision.route_preparing;
+		changed = true;
 	}
 	const auto phase = static_cast<uint8_t>(decision.online_goal_phase);
 	const bool active = phase != msg::GoalStatus::NO_TARGET;
@@ -446,25 +483,60 @@ void ControlNode::onGeographicGoal(msg::GeographicGoal::ConstSharedPtr message) 
 	            target[1], target[2], pending ? "true" : "false");
 }
 
+void ControlNode::onGeographicRoute(msg::GeographicRoute::ConstSharedPtr message) {
+	beginGoalRequest("go_to_geographic_route", "WGS84/MSL");
+	_goal_status.requested_route = *message;
+	agi::hardware::OnlineRoute route;
+	route.smooth = message->mode == msg::GeographicRoute::SMOOTH;
+	std::string rejection;
+	if (message->mode != msg::GeographicRoute::STRAIGHT && message->mode != msg::GeographicRoute::SMOOTH)
+		rejection = "unknown route mode";
+	else if (message->points.empty())
+		rejection = "empty route";
+	for (const auto& point : message->points) {
+		if (!rejection.empty()) break;
+		std::array<double, 3> target;
+		if (const char* reason = fc::geographicTarget(_origin, _state, point, target))
+			rejection = reason;
+		else
+			route.points.emplace_back(target[0], target[1], target[2]);
+	}
+	if (!rejection.empty()) {
+		_goal_status.request_state = msg::GoalStatus::REJECTED;
+		_goal_status.request_reason = rejection;
+	} else {
+		enqueueRoute(route, "odom");
+	}
+	publishGoalStatus();
+}
+
 bool ControlNode::enqueueGoal(const agi::Vector<3>& target, const std::string& frame) {
+	return enqueueRoute({{target}, false}, frame, false);
+}
+
+bool ControlNode::enqueueRoute(const agi::hardware::OnlineRoute& route, const std::string& frame, bool multi) {
 	std::string rejection;
 	if (frame != "odom")
 		rejection = "frame_id must be odom";
-	else if (!target.allFinite())
-		rejection = "nonfinite position";
+	else if (route.points.empty())
+		rejection = "empty route";
 	else if (_output_fault)
 		rejection = "output/state reset pending";
 	else if (_pending_pause)
 		rejection = "pause_hover pending";
-	else if (_pending_goal)
+	else if (_pending_goal || _pending_route)
 		rejection = "another target pending";
 	else
 		rejection = _goal_rejection;
-	// Reuse the hardware profile's existing odom fence, including in shadow mode.
-	if (rejection.empty() && (_mode == "hardware" || _fc_event_control)) {
-		for (int i = 0; i < 3; ++i) {
-			if (!(_geofence_min[i] < _geofence_max[i] && target(i) >= _geofence_min[i] && target(i) <= _geofence_max[i]))
-				rejection = "target outside configured geofence";
+	for (const auto& target : route.points) {
+		if (!target.allFinite()) rejection = "nonfinite position";
+		// Apply exactly the existing endpoint fence to every waypoint.
+		if (rejection.empty() && (_mode == "hardware" || _fc_event_control)) {
+			for (int i = 0; i < 3; ++i) {
+				if (!(_geofence_min[i] < _geofence_max[i] && target(i) >= _geofence_min[i] &&
+				      target(i) <= _geofence_max[i]))
+					rejection = "target outside configured geofence";
+			}
 		}
 	}
 	if (!rejection.empty()) {
@@ -475,7 +547,10 @@ bool ControlNode::enqueueGoal(const agi::Vector<3>& target, const std::string& f
 	}
 	// The sole executor hands this slot to the next control cycle. The stamp is ignored.
 	// This is not acceptance: current state/authority and the solve are checked in tick().
-	_pending_goal = target;
+	if (multi)
+		_pending_route = route;
+	else
+		_pending_goal = route.points.front();
 	_pending_goal_sequence = _goal_status.request_sequence;
 	return true;
 }
@@ -618,15 +693,17 @@ void ControlNode::runCycle(bool computation_requested) {
 	_sample_age_before = _fc_event_control ? monotonicSeconds() - evidence.fc_sample_time : NAN;
 	const bool pause = _pending_pause;
 	const auto goal = pause ? std::nullopt : _pending_goal;
+	const auto route = pause ? std::nullopt : _pending_route;
+	_pending_route.reset();
 	_pending_pause = false;
 	_pending_goal.reset();
 	const bool fenced = _mode == "hardware" || _fc_event_control;
 	const agi::Vector<3> fence_min = fenced ? agi::Vector<3>(_geofence_min.data()) : agi::Vector<3>::Constant(-agi::INF);
 	const agi::Vector<3> fence_max = fenced ? agi::Vector<3>(_geofence_max.data()) : agi::Vector<3>::Constant(agi::INF);
 	const auto decision = _pilot->tick(state, evidence, _shadow_only, navigation_valid, computation_requested, goal ? &*goal : nullptr,
-	                                   pause, fence_min, fence_max);
+	                                   pause, fence_min, fence_max, route ? &*route : nullptr);
 	_goal_rejection = decision.goal_rejection;
-	updateGoalStatus(decision, goal, pause);
+	updateGoalStatus(decision, goal, pause, route.has_value());
 	_cycle_end_time = monotonicSeconds();
 	if (warm_before > 0 && (fault || _pilot->warmCycles() < warm_before)) ++_warm_resets;
 	_cycle_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - cycle_start).count();

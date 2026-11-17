@@ -740,5 +740,185 @@ TEST_F(HardwareGeo, OnlineTargetShadowAndFaultResetPreserveConfiguredCsv) {
 	EXPECT_EQ(decision.online_goal_phase, OnlineGoalPhase::None);
 }
 
+TEST(CapturedOnlineReference, SmoothRoutePassesPointsWithContinuousDerivativesAndDeterministicHeading) {
+	for (const auto& points :
+	     {std::vector<Vector<3>>{{4, 0, 1}, {6, 3, 2}, {3, 5, 2}}, std::vector<Vector<3>>{{0, 0, 1}, {0, 0, 2}, {0, 0, 2}, {0, 0, 1}},
+	      std::vector<Vector<3>>{{3, 0, 1}, {0, 0, 1}, {-2, 0, 1}}}) {
+		CapturedReference reference;
+		QuadState state;
+		state.setZero();
+		state.t = 100;
+		state.p.z() = 1;
+		state.q(3.12);
+		reference.capture(state, state.t, false);
+		ASSERT_TRUE(reference.beginSmoothRoute(points, 100, 2, 1, .5).empty());
+		std::string prepared;
+		for (int i = 0; i < 100 && prepared.empty(); ++i) prepared = reference.prepareSmoothRoute(100);
+		ASSERT_EQ(prepared, "ready");
+		if (points[0].x() > 0 && points[1].y() > 0) {
+			for (size_t index = 0; index + 1 < points.size(); ++index) {
+				double left = 100, right = 700;
+				for (int iteration = 0; iteration < 50; ++iteration) {
+					const double middle = .5 * (left + right);
+					if (reference.smoothWaypointIndex(middle) <= index)
+						left = middle;
+					else
+						right = middle;
+				}
+				const auto at = reference.getSetpoint(state, right).state;
+				const auto before = reference.getSetpoint(state, right - 1e-6).state;
+				const auto after = reference.getSetpoint(state, right + 1e-6).state;
+				EXPECT_LT((at.p - points[index]).norm(), 1e-6);
+				EXPECT_GT(at.v.norm(), 1e-4);
+				EXPECT_LT((before.p - after.p).norm(), 1e-5);
+				EXPECT_LT((before.v - after.v).norm(), 1e-5);
+				EXPECT_LT((before.a - after.a).norm(), 1e-5);
+				EXPECT_LT((before.j - after.j).norm(), 1e-5);
+				EXPECT_LT(before.q().angularDistance(after.q()), 1e-5);
+			}
+		}
+		const auto retained = reference.getSetpoint(state, 101).state;
+		EXPECT_FALSE(reference.beginSmoothRoute({Vector<3>::Constant(NAN)}, 100, 2, 1, .5).empty());
+		EXPECT_LT((reference.getSetpoint(state, 101).state.x - retained.x).norm(), 1e-10);
+		std::vector<bool> visited(points.size(), false);
+		QuadState previous = reference.getSetpoint(state, 100).state;
+		double max_step = 0;
+		for (int i = 0; i < 120000; ++i) {
+			const double now = 100 + .005 * i;
+			const auto at = reference.getSetpoint(state, now);
+			ASSERT_TRUE(at.state.valid());
+			ASSERT_TRUE(at.input.valid());
+			EXPECT_LE(at.state.v.norm(), 2 + 1e-6);
+			EXPECT_LE(at.state.a.norm(), 1 + 1e-6);
+			EXPECT_LE(std::abs(at.state.w.z()), .5 + 1e-5);
+			const double angle_step = previous.q().angularDistance(at.state.q());
+			if (angle_step > .02)
+				ADD_FAILURE() << "time=" << now << " position=" << at.state.p.transpose()
+				              << " velocity=" << at.state.v.transpose() << " previous_yaw=" << previous.getYaw()
+				              << " yaw=" << at.state.getYaw();
+			max_step = std::max(max_step, angle_step);
+			EXPECT_LT((at.input.omega - at.state.w).norm(), 1e-10);
+			if (at.state.v.head<2>().norm() > 1e-5) {
+				const Quaternion tilt = Quaternion::FromTwoVectors(Vector<3>::UnitZ(), at.state.a - GVEC);
+				const Quaternion heading = tilt.conjugate() * at.state.q();
+				const double yaw = 2 * std::atan2(heading.z(), heading.w());
+				EXPECT_NEAR(std::remainder(yaw - std::atan2(at.state.v.y(), at.state.v.x()), 2 * M_PI), 0, 1e-6);
+			}
+			for (size_t index = 0; index < points.size(); ++index)
+				if ((at.state.p - points[index]).norm() < .01) visited[index] = true;
+			if (i % 200 == 0) {
+				reference.getSetpoint(state, now + 10);
+				EXPECT_LT((reference.getSetpoint(state, now).state.x - at.state.x).norm(), 1e-8);
+			}
+			previous = at.state;
+			if (!reference.movingAt(now)) break;
+		}
+		EXPECT_LT(max_step, .02);
+		for (const bool at : visited) EXPECT_TRUE(at);
+		EXPECT_FALSE(reference.movingAt(700));
+		const auto end = reference.getSetpoint(state, 700).state;
+		EXPECT_TRUE(end.p.isApprox(points.back(), 1e-6));
+		EXPECT_TRUE(end.v.isZero());
+		EXPECT_TRUE(end.w.isZero());
+		EXPECT_TRUE(reference.pauseHover(700, 1, Vector<3>::Constant(-100), Vector<3>::Constant(100)).empty());
+		EXPECT_TRUE(reference.pauseActive());
+	}
+}
+
+TEST(CapturedOnlineReference, CoincidentAndVerticalSmoothRoutesKeepHeadingAwayFromOrigin) {
+	for (const auto& points :
+	     {std::vector<Vector<3>>{{5, -3, 1}, {5, -3, 1}}, std::vector<Vector<3>>{{5, -3, 2}, {5, -3, 2}, {5, -3, 1}}}) {
+		CapturedReference reference;
+		QuadState state;
+		state.setZero();
+		state.t = 100;
+		state.p = Vector<3>(5, -3, 1);
+		state.q(1.2);
+		reference.capture(state, 100, false);
+		ASSERT_TRUE(reference.beginSmoothRoute(points, 100, 2, 1, .5).empty());
+		std::string prepared;
+		for (int i = 0; i < 100 && prepared.empty(); ++i) prepared = reference.prepareSmoothRoute(100);
+		ASSERT_EQ(prepared, "ready");
+		for (int i = 0; i < 2000; ++i) {
+			const auto at = reference.getSetpoint(state, 100 + .02 * i).state;
+			EXPECT_NEAR(at.getYaw(), 1.2, 1e-6);
+			EXPECT_NEAR(at.w.z(), 0, 1e-6);
+			EXPECT_NEAR(at.p.x(), 5, 1e-6);
+			EXPECT_NEAR(at.p.y(), -3, 1e-6);
+			if (HasFailure()) break;
+		}
+	}
+}
+
+TEST(CapturedOnlineReference, SmoothPreparationRechecksHoverBeforeAtomicInstallation) {
+	CapturedReference reference;
+	QuadState state;
+	state.setZero();
+	state.t = 100;
+	state.p = Vector<3>(0, 0, 1);
+	reference.capture(state, 100, false);
+	ASSERT_TRUE(reference.beginSmoothRoute({Vector<3>(2, 0, 1), Vector<3>(3, 2, 1)}, 100, 2, 1, .5).empty());
+	std::string result;
+	for (int i = 0; i < 100 && result.empty(); ++i) result = reference.prepareSmoothRoute(100, false);
+	EXPECT_EQ(result, "not stable at route installation");
+	EXPECT_FALSE(reference.hasOnlineTarget());
+	EXPECT_TRUE(reference.getSetpoint(state, 100).state.p.isApprox(state.p));
+	reference.cancelSmoothPreparation();
+	EXPECT_FALSE(reference.smoothPreparing());
+}
+
+TEST_F(HardwareGeo, RoutesWaitForActualStopRejectReplacementAndCancelOnPauseOrFault) {
+	for (const bool smooth : {false, true}) {
+		step(false);
+		for (int i = 0; i < 80; ++i) step(false);
+		ASSERT_TRUE(step(true).permit_override);
+		const Vector<3> start = _state.p;
+		const OnlineRoute route{{start + Vector<3>(2, 0, 0), start + Vector<3>(3, 2, .5), start + Vector<3>(1, 3, .5)}, smooth};
+		const auto routeStep = [&](const OnlineRoute* request = nullptr) {
+			_now += .01;
+			_state.t = _now;
+			Evidence evidence = step(true).evidence;
+			// Use the same fresh evidence on the next tick, without replaying a state epoch.
+			_now += .01;
+			_state.t = _now;
+			evidence.timing_checks = false;
+			return _runtime->tick(_state, evidence, false, true, true, nullptr, false, Vector<3>::Constant(-100),
+			                      Vector<3>::Constant(100), request);
+		};
+		auto decision = routeStep(&route);
+		if (smooth) {
+			ASSERT_TRUE(decision.goal_pending);
+			for (int i = 0; i < 100 && !decision.goal_accepted; ++i) decision = routeStep();
+		}
+		ASSERT_TRUE(decision.goal_accepted) << decision.reason;
+		const Vector<3> replacement = start + Vector<3>(5, 0, 0);
+		EXPECT_FALSE(step(true, true, true, false, &replacement).goal_accepted);
+		bool advanced = smooth;
+		for (int i = 0; i < 50000; ++i) {
+			decision = step(true);
+			ASSERT_TRUE(decision.permit_override) << decision.reason;
+			if (!smooth && !advanced && !decision.reference.v.isZero(1e-6)) continue;
+			if (!smooth && !advanced && decision.online_goal_phase == OnlineGoalPhase::Settling) {
+				EXPECT_EQ(decision.waypoint_index, 0u);
+				_state = decision.reference;
+				advanced = true;
+			} else if (advanced) {
+				_state = decision.reference;
+			}
+			if (decision.online_goal_phase == OnlineGoalPhase::Stable) break;
+		}
+		EXPECT_TRUE(advanced);
+		EXPECT_EQ(decision.waypoint_index, 2u);
+		EXPECT_EQ(decision.online_goal_phase, OnlineGoalPhase::Stable);
+		EXPECT_TRUE(_state.p.isApprox(route.points.back(), 1e-6));
+		decision = routeStep(&route);
+		EXPECT_TRUE(decision.goal_pending || decision.goal_accepted);
+		EXPECT_TRUE(step(true, true, true, false, nullptr, true).goal_accepted);
+		EXPECT_TRUE(_runtime->activeRoute().points.empty());
+		EXPECT_FALSE(step(true, true, false).permit_override);
+		EXPECT_TRUE(_runtime->activeRoute().points.empty());
+	}
+}
+
 }  // namespace
 }  // namespace agi::hardware

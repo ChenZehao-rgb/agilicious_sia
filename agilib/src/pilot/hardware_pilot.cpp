@@ -91,7 +91,16 @@ void HardwarePilot::checkOwner() const {
 	if (_owner != std::this_thread::get_id()) throw std::logic_error("HardwarePilot must have one control-thread owner");
 }
 
-std::string HardwarePilot::goalRejection(const QuadState& state, double now) {
+void HardwarePilot::clearRoute() {
+	_route = {};
+	_preparing_route = {};
+	_route_index = 0;
+	_route_running = false;
+	_reference->cancelSmoothPreparation();
+}
+
+std::string HardwarePilot::goalRejection(const QuadState& state, double now, bool internal) {
+	if (!internal && (_reference->smoothPreparing() || _route_running)) return "route active/preparing";
 	if (!_reference_active) return "AUTO reference inactive";
 	if (_reference->movingAt(now)) return "trajectory moving";
 	const auto hover = _reference->getSetpoint(state, now).state;
@@ -110,6 +119,7 @@ void HardwarePilot::reportOutputFault() {
 	_warm_cycles = 0;
 	_reference_active = false;
 	_reference->clearOnlineTarget();
+	clearRoute();
 	_online_moving = false;
 	_reference_start = NAN;
 	_shadow_low_seen = false;
@@ -117,8 +127,9 @@ void HardwarePilot::reportOutputFault() {
 
 ControlDecision HardwarePilot::tick(const QuadState& state, Evidence evidence, bool shadow_only, bool navigation_valid,
                                     bool computation_requested, const Vector<3>* go_to_position, bool pause_hover,
-                                    const Vector<3>& fence_min, const Vector<3>& fence_max) {
+                                    const Vector<3>& fence_min, const Vector<3>& fence_max, const OnlineRoute* route) {
 	checkOwner();
+	const bool was_preparing = _reference->smoothPreparing();
 	if (_navigation_policy == NavigationPolicy::FcFused &&
 	    (evidence.fc_session != _fc_session || evidence.fc_generation != _fc_generation ||
 	     evidence.fc_reset_counter != _fc_reset_counter)) {
@@ -132,6 +143,7 @@ ControlDecision HardwarePilot::tick(const QuadState& state, Evidence evidence, b
 	                           evidence.fc_sample_time > _previous_fc_sample;
 	if (new_fc_sample) _previous_fc_sample = evidence.fc_sample_time;
 	ControlDecision result;
+	result.route_request_result = route != nullptr;
 	const double now = _clock();
 	evidence.now = _steady_clock();
 	evidence.command_valid = false;
@@ -155,6 +167,7 @@ ControlDecision HardwarePilot::tick(const QuadState& state, Evidence evidence, b
 	if (!ready || !receiver_ok || !evidence.armed || !evidence.auto_switch) {
 		_reference_active = false;
 		_reference->clearOnlineTarget();
+		clearRoute();
 		_online_moving = false;
 		_reference_start = NAN;
 	}
@@ -165,9 +178,12 @@ ControlDecision HardwarePilot::tick(const QuadState& state, Evidence evidence, b
 	if (evidence.auto_switch) _shadow_low_seen = false;
 	std::string compute_failure;
 	bool goal_installed = false;
+	bool route_queued = false;
 	bool segment_ended = false;
 	if (pause_hover)
 		result.goal_event = "pause_hover rejected: AUTO/state/authorization unavailable";
+	else if (route)
+		result.goal_event = "route rejected: AUTO/state/authorization unavailable";
 	else if (go_to_position)
 		result.goal_event = "go_to_position rejected: AUTO/state/authorization unavailable";
 	if (!ready) {
@@ -195,10 +211,44 @@ ControlDecision HardwarePilot::tick(const QuadState& state, Evidence evidence, b
 					rejection = error.what();
 				}
 				goal_installed = rejection.empty();
-				if (goal_installed)
+				if (goal_installed) {
+					clearRoute();
 					_online_moving = _reference->movingAt(now);
-				else
+				} else
 					result.goal_event = "pause_hover rejected: " + rejection;
+			} else if (route) {
+				std::string rejection = goalRejection(state, now);
+				if (route->points.empty()) rejection = "empty route";
+				for (const auto& point : route->points) {
+					if (!point.allFinite())
+						rejection = "nonfinite waypoint";
+					else if (!(point.array() >= fence_min.array()).all() || !(point.array() <= fence_max.array()).all())
+						rejection = "waypoint outside configured geofence";
+				}
+				if (rejection.empty()) {
+					if (route->smooth) {
+						rejection = _reference->beginSmoothRoute(route->points, now, _go_to_pose_max_vel,
+						                                         _go_to_pose_max_acc, _yaw_rate_max);
+						if (rejection.empty()) {
+							_preparing_route = *route;
+							route_queued = true;
+						}
+					} else if (_reference->goToPosition(route->points.front(), now, _go_to_pose_max_vel,
+					                                    _go_to_pose_max_acc, _yaw_rate_max)) {
+						_route = *route;
+						_route_index = 0;
+						_route_running = true;
+						_online_moving = true;
+						goal_installed = true;
+					} else {
+						rejection = "trajectory generation failed";
+					}
+					if (rejection.empty()) {
+						_route_velocity = _go_to_pose_max_vel;
+						_route_acceleration = _go_to_pose_max_acc;
+					}
+				}
+				if (!rejection.empty()) result.goal_event = "route rejected: " + rejection;
 			} else if (!pause_hover && go_to_position) {
 				const std::string rejection = goalRejection(state, now);
 				if (!go_to_position->allFinite()) {
@@ -207,10 +257,47 @@ ControlDecision HardwarePilot::tick(const QuadState& state, Evidence evidence, b
 					result.goal_event = "go_to_position rejected: " + rejection;
 				} else if (_reference->goToPosition(*go_to_position, now, _go_to_pose_max_vel, _go_to_pose_max_acc,
 				                                    _yaw_rate_max)) {
+					clearRoute();
 					goal_installed = true;
 					_online_moving = true;
 				} else {
 					result.goal_event = "go_to_position rejected: trajectory generation failed";
+				}
+			}
+			if (!pause_hover && _reference->smoothPreparing()) {
+				const std::string prepared = _reference->prepareSmoothRoute(now, goalRejection(state, now, true).empty());
+				if (prepared == "ready") {
+					_route = std::move(_preparing_route);
+					_preparing_route = {};
+					_route_index = 0;
+					_route_running = true;
+					_online_moving = true;
+					goal_installed = true;
+					result.route_request_result = true;
+				} else if (!prepared.empty()) {
+					_reference->cancelSmoothPreparation();
+					_preparing_route = {};
+					result.route_request_result = true;
+					result.goal_event = "route rejected: " + prepared;
+				}
+			}
+			if (!pause_hover && _route_running && !_reference->smoothPreparing()) {
+				if (_route.smooth) _route_index = _reference->smoothWaypointIndex(now);
+				if (goalRejection(state, now, true).empty()) {
+					if (!_route.smooth && _route_index + 1 < _route.points.size()) {
+						if (_reference->goToPosition(_route.points[_route_index + 1], now, _route_velocity,
+						                             _route_acceleration, _yaw_rate_max)) {
+							++_route_index;
+							_online_moving = true;
+							result.goal_event = "route advancing after actual stable hover";
+						} else {
+							clearRoute();
+							result.goal_event =
+							        "route cancelled: next segment generation failed; holding current point";
+						}
+					} else {
+						_route_running = false;
+					}
 				}
 			}
 			if (!_reference_registered) _reference_registered = _pilot->addReference(_reference);
@@ -260,6 +347,7 @@ ControlDecision HardwarePilot::tick(const QuadState& state, Evidence evidence, b
 	if (!evidence.command_valid || !fc_fresh_after || (!shadow_only && !result.permit_override)) {
 		_reference_active = false;
 		_reference->clearOnlineTarget();
+		clearRoute();
 		_online_moving = false;
 		_reference_start = NAN;
 		if (!evidence.command_valid) _shadow_low_seen = false;
@@ -271,6 +359,14 @@ ControlDecision HardwarePilot::tick(const QuadState& state, Evidence evidence, b
 	result.evidence = evidence;
 	result.mode = _gate.mode();
 	result.reason = _gate.reason();
+	result.route_preparing = _reference->smoothPreparing();
+	result.goal_pending = result.route_preparing && (!route || route_queued);
+	if (result.goal_pending && route) result.goal_event = "route preparing; holding current reference";
+	result.waypoint_index = _route_index;
+	if (was_preparing && !result.route_preparing && !goal_installed && !pause_hover && !result.route_request_result) {
+		result.route_request_result = true;
+		result.goal_event = "route rejected: preparation cancelled by control/safety check";
+	}
 	result.goal_rejection = goalRejection(state, now);
 	if (segment_ended && !_reference_active && !go_to_position && !pause_hover)
 		result.goal_event = "go_to_position cleared: control/safety check failed";
@@ -279,13 +375,16 @@ ControlDecision HardwarePilot::tick(const QuadState& state, Evidence evidence, b
 		if (pause_hover)
 			result.goal_event = _reference_active ? "pause_hover accepted: braking/hover reference installed or already active"
 			                                      : "pause_hover rejected: control/safety check failed after planning";
+		else if (route || result.route_request_result)
+			result.goal_event = _reference_active ? "route accepted: absolute odom route installed"
+			                                      : "route rejected: control/safety check failed after planning";
 		else
 			result.goal_event = _reference_active ? "go_to_position accepted: absolute odom target installed"
 			                                      : "go_to_position rejected: control/safety check failed after planning";
 	}
 	result.pause_active = _reference->pauseActive();
 	if (_reference->hasOnlineTarget()) {
-		result.active_endpoint = _reference->onlineEndpoint();
+		result.active_endpoint = _route.points.empty() ? _reference->onlineEndpoint() : _route.points[_route_index];
 		result.online_goal_phase = _online_moving
 		                                   ? OnlineGoalPhase::Moving
 		                                   : (result.goal_rejection.empty() ? OnlineGoalPhase::Stable : OnlineGoalPhase::Settling);

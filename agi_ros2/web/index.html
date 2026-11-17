@@ -66,6 +66,15 @@
     <section><div class="eyebrow">WGS84 · MSL</div><h1>地理目标</h1>
       <p class="hint">点击地图选点，或输入经纬高。稳定 AUTO 悬停时可接受新目标。</p>
       <form id="goal-form">
+        <label><input id="route-enabled" type="checkbox"> 多点路线（点击地图依次添加）</label>
+        <div id="route-editor" hidden>
+          <label for="route-mode">整条路线模式</label>
+          <select id="route-mode"><option value="straight">直线 · 每点停稳</option><option value="smooth">平滑 · 连续过点</option></select>
+          <p class="hint">下方经纬高编辑选中的点。连线仅表示航点顺序；平滑曲线可偏离连线。最后一点停止悬停。</p>
+          <ol id="route-points"></ol>
+          <button type="button" id="route-add">添加当前输入</button>
+          <button type="button" id="route-remove">删除选中点</button>
+        </div>
         <label for="latitude">纬度 / °</label><input id="latitude" type="number" step="any" min="-90" max="90" placeholder="未知" required>
         <label for="longitude">经度 / °</label><input id="longitude" type="number" step="any" min="-180" max="180" placeholder="未知" required>
         <label for="altitude">目标海拔 MSL / m</label><div class="altitude-row"><input id="altitude" type="number" step="any" placeholder="绝对海拔" required><button type="button" id="current-altitude">使用当前海拔</button></div>

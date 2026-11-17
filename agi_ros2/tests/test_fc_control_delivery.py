@@ -16,7 +16,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'test'))
 import rclpy
-from agi_ros2.msg import GoalStatus, GeographicGoal, NavigationOrigin, ComputationStatus, ControlCommand, FusedState, Health, OutputStatus, OutputTiming
+from agi_ros2.msg import GoalStatus, GeographicGoal, GeographicRoute, NavigationOrigin, ComputationStatus, ControlCommand, FusedState, Health, OutputStatus, OutputTiming
 from test_node_pipeline import CLOCK_ID, Harness
 from test_shadow_pipeline import ShadowHarness
 from geometry_msgs.msg import PointStamped
@@ -426,6 +426,66 @@ class DeliveryTests(unittest.TestCase):
 
     def test_geographic_goals_share_local_chain_and_reset_cleanup(self):
         self.online_goal_scenario(True, geographic=True)
+
+    def test_multi_route_atomic_admission_feedback_pause_and_reset(self):
+        for mode in (GeographicRoute.STRAIGHT, GeographicRoute.SMOOTH):
+            h = DeliveryHarness(shadow=False)
+            try:
+                h.subscribe('reference', Odometry)
+                h.subscribe('goal_status', GoalStatus)
+                publisher = h.publisher('go_to_geographic_route', GeographicRoute)
+                origins = h.node.create_publisher(NavigationOrigin, 'navigation/origin',
+                    QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
+                origin = NavigationOrigin(session_id=h.fc_session, altitude_reference='msl', xy_valid=True,
+                                          z_valid=True, longitude_scale=.75, altitude=123., fc_time_usec=1)
+                origin.header.frame_id='odom'
+                h.run(1.5)
+                origins.publish(origin)
+                h.auto=True
+                h.run(.12)
+                self.assertTrue(h.received['computation_status'][-1].hover_stable)
+                def point(x,y,z):
+                    return GeographicGoal(latitude=y/111319.49424743652,
+                                          longitude=x/(111319.49424743652*.75), altitude_msl=123.+z)
+                invalid=GeographicRoute(mode=mode, points=[point(2,0,1), point(51,2,1)])
+                publisher.publish(invalid);h.run(.08)
+                status=h.received['goal_status'][-1]
+                self.assertEqual(status.request_state,GoalStatus.REJECTED)
+                self.assertFalse(status.active_valid)
+                if mode==GeographicRoute.SMOOTH:
+                    preparing=GeographicRoute(mode=mode,points=[point(1.+i*.2,.1*i,1.) for i in range(12)])
+                    publisher.publish(preparing);h.run(.04)
+                    self.assertTrue(h.received['goal_status'][-1].route_preparing)
+                    h.position=(.5,0.,1.);h.run(1.)
+                    status=h.received['goal_status'][-1]
+                    self.assertEqual(status.request_state,GoalStatus.REJECTED,status.request_reason)
+                    self.assertIn('not stable at route installation',status.request_reason)
+                    self.assertFalse(status.active_valid)
+                    self.assertFalse(status.route_preparing)
+                    h.position=(0.,0.,1.);h.run(.08)
+                route=GeographicRoute(mode=mode,points=[point(2,0,1),point(3,2,1.3),point(1,3,1.3)])
+                publisher.publish(route);h.run(.5)
+                status=h.received['goal_status'][-1]
+                self.assertEqual(status.request_state,GoalStatus.ACCEPTED,status.request_reason)
+                self.assertEqual(len(status.active_route_enu),3)
+                self.assertEqual(status.active_route_mode,mode)
+                self.assertAlmostEqual(status.active_enu.x,2.)
+                sequence=status.active_request_sequence
+                publisher.publish(invalid);h.run(.08)
+                status=h.received['goal_status'][-1]
+                self.assertEqual(status.request_state,GoalStatus.REJECTED)
+                self.assertEqual(status.active_request_sequence,sequence)
+                self.assertEqual(len(status.active_route_enu),3)
+                h.publisher('pause_hover',Empty).publish(Empty());h.run(.08)
+                status=h.received['goal_status'][-1]
+                self.assertTrue(status.pause_active)
+                self.assertFalse(status.active_route_enu)
+                self.assertFalse(status.route_preparing)
+                h.generation+=1;h.run(.1)
+                self.assertFalse(h.received['goal_status'][-1].active_valid)
+                self.assertFalse(h.received['goal_status'][-1].active_route_enu)
+            finally:
+                h.close()
 
     def test_pause_priority_idle_sequence_and_reset(self):
         h = DeliveryHarness(shadow=False)

@@ -8,7 +8,7 @@ foreach(dep rcl_interfaces diagnostic_msgs rclcpp sensor_msgs geometry_msgs nav_
 endforeach()
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Rtk.msg" "msg/Authority.msg" "msg/Health.msg"
-  "msg/Navigation.msg" "msg/LocalNavigation.msg" "msg/NavigationOrigin.msg" "msg/GeographicGoal.msg" "msg/GoalStatus.msg" "msg/Barometer.msg"
+  "msg/Navigation.msg" "msg/LocalNavigation.msg" "msg/NavigationOrigin.msg" "msg/GeographicGoal.msg" "msg/GeographicRoute.msg" "msg/GoalStatus.msg" "msg/Barometer.msg"
   "msg/ComputationStatus.msg" "msg/MspState.msg"
   "msg/Heading.msg" "msg/FusedState.msg" "msg/SafetyEvidence.msg" "msg/NavigationUpdate.msg"
   "msg/ControlCommand.msg" "msg/OutputStatus.msg" "msg/MspEvent.msg"

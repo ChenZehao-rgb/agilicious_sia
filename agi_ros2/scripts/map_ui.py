@@ -24,7 +24,7 @@ from std_msgs.msg import Empty
 from diagnostic_msgs.msg import DiagnosticArray
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from rosidl_runtime_py.convert import message_to_ordereddict
-from agi_ros2.msg import Authority, ComputationStatus, FcEstimatorStatus, FusedState, GeographicGoal, GlobalPositionInt, GoalStatus, Health, NavigationOrigin, OutputStatus
+from agi_ros2.msg import Authority, ComputationStatus, FcEstimatorStatus, FusedState, GeographicGoal, GeographicRoute, GlobalPositionInt, GoalStatus, Health, NavigationOrigin, OutputStatus
 
 
 def f32(value):
@@ -233,6 +233,9 @@ class MapUI(Node):
         self.command_publisher = self.create_publisher(GeographicGoal, 'go_to_geographic_position',
                                                      QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                                                                 durability=DurabilityPolicy.VOLATILE))
+        self.route_publisher = self.create_publisher(GeographicRoute, 'go_to_geographic_route',
+                                                     QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                                                                durability=DurabilityPolicy.VOLATILE))
         self.pause_publisher = self.create_publisher(Empty, 'pause_hover',
                                                      QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                                                                 durability=DurabilityPolicy.VOLATILE))
@@ -289,6 +292,7 @@ class MapUI(Node):
         goal = topics.get('goal_status', {}).get('data')
         computation = topics.get('computation_status', {}).get('data')
         active = None
+        active_route = []
         # Remote boot ID is an identity, never compared with this computer's boot ID or clock.
         goal_matches = bool(state and goal and computation and goal['clock_id'] == state['clock_id'] and
                             goal['control_session_start'] == computation['control_session_start'] and
@@ -297,6 +301,9 @@ class MapUI(Node):
                             goal['active_generation'] == state['reset_counter'])
         if not error and goal_matches and goal['active_valid']:
             active = geographic_position(goal['active_enu'], origin)
+            active_route = [geographic_position(point, origin) for point in goal.get('active_route_enu', [])]
+            if any(point is None for point in active_route):
+                active_route = []
         identity = ([state['clock_id'], state['navigation_session'], state['fc_reset_counter'], state['reset_counter'],
                      origin['session_id'], origin['fc_reset_counter'],
                      origin['latitude'], origin['longitude'], origin['altitude'], origin['longitude_scale']]
@@ -309,7 +316,7 @@ class MapUI(Node):
         return clean_json({'topics': topics, 'position': position, 'mapping_error': error,
                            'position_source': position_source, 'position_error': position_error,
                            'heading_deg': heading, 'speed_m_s': speed,
-                           'active_position': active, 'goal_matches_state': goal_matches, 'identity': identity})
+                           'active_position': active, 'active_route': active_route, 'goal_matches_state': goal_matches, 'identity': identity})
 
     def tuning_call(self, client, request):
         # HTTP worker waits without holding telemetry lock; the existing ROS spin
@@ -381,6 +388,24 @@ class MapUI(Node):
         with self.lock:
             self.pause_publisher.publish(Empty())
         return {'status': 'sent', 'message': '暂停请求已发送，等待控制端处理'}
+
+    def submit_route(self, payload):
+        if not isinstance(payload, dict) or set(payload) != {'mode', 'points'} or payload['mode'] not in ('straight', 'smooth'):
+            raise ValueError('路线只接收 mode: straight/smooth 和 points')
+        points = payload['points']
+        if not isinstance(points, list) or not points:
+            raise ValueError('路线至少需要一个航点')
+        messages = []
+        for point in points:
+            if not isinstance(point, dict) or set(point) != {'latitude', 'longitude', 'altitude_msl'} or \
+                    not finite(*point.values()) or abs(point['latitude']) > 90 or abs(point['longitude']) > 180:
+                raise ValueError('每个航点必须包含有限 WGS84 经纬度和 MSL 海拔')
+            messages.append(GeographicGoal(**{key: float(value) for key, value in point.items()}))
+        message = GeographicRoute(mode=GeographicRoute.SMOOTH if payload['mode'] == 'smooth' else GeographicRoute.STRAIGHT,
+                                  points=messages)
+        with self.lock:
+            self.route_publisher.publish(message)
+        return {'status': 'sent', 'message': '路线已发送，等待控制端处理；结果未确认'}
 
     def submit(self, payload):
         if not isinstance(payload, dict) or set(payload) != {'latitude', 'longitude', 'altitude_msl'}:
@@ -460,7 +485,7 @@ def make_server(node, tiles, host, port, maps=None):
         def do_POST(self):
             map_actions = ('estimate', 'download', 'resume', 'cancel', 'select')
             action = self.path.removeprefix('/api/maps/') if self.path.startswith('/api/maps/') else None
-            if self.path not in ('/api/tuning', '/api/goal', '/api/pause', '/api/runtime/start', '/api/runtime/stop', '/api/runtime/shutdown') and (not maps or action not in map_actions):
+            if self.path not in ('/api/tuning', '/api/goal', '/api/route', '/api/pause', '/api/runtime/start', '/api/runtime/stop', '/api/runtime/shutdown') and (not maps or action not in map_actions):
                 return self.respond(404, {'error': 'not found'})
             # JSON and same-origin only: an unrelated website cannot issue flight goals.
             origin = self.headers.get('Origin')
@@ -470,7 +495,7 @@ def make_server(node, tiles, host, port, maps=None):
                 return self.respond(415, {'error': 'application/json required'})
             try:
                 size = int(self.headers.get('Content-Length', '0'))
-                if not 0 < size <= 4096:
+                if not 0 < size <= (65536 if self.path == '/api/route' else 4096):
                     raise ValueError('invalid request length')
                 self.connection.settimeout(3)
                 data = json.loads(self.rfile.read(size),
@@ -479,6 +504,8 @@ def make_server(node, tiles, host, port, maps=None):
                     raise ValueError('JSON object required')
                 if self.path == '/api/tuning':
                     result = node.set_tuning(data)
+                elif self.path == '/api/route':
+                    result = node.submit_route(data)
                 elif self.path == '/api/goal':
                     result = node.submit(data)
                 elif self.path == '/api/pause':
@@ -515,7 +542,7 @@ def make_server(node, tiles, host, port, maps=None):
                 if self.path in ('/api/runtime/start', '/api/runtime/stop', '/api/runtime/shutdown'):
                     label = {'start': '启动', 'stop': '结束任务', 'shutdown': '关机'}[self.path.rsplit('/', 1)[1]]
                     return self.respond(503, {'error': label + '结果未确认；不自动重试'})
-                return self.respond(503, {'error': '发布结果未确认；不自动重试' if self.path in ('/api/goal', '/api/pause') else '地图操作失败'})
+                return self.respond(503, {'error': '发布结果未确认；不自动重试' if self.path in ('/api/goal', '/api/route', '/api/pause') else '地图操作失败'})
             return self.respond(200 if self.path == '/api/tuning' else 202, result)
 
     return ThreadingHTTPServer((host, port), Handler)

@@ -11,6 +11,10 @@ let altitudeInitialized = false, mapWarning = '';
 let positionRendered = false, lastReasons = '';
 new ResizeObserver(() => map.invalidateSize({pan: false})).observe($('map'));
 const trail = L.polyline([], {color: '#72b6ee', weight: 3}).addTo(map);
+const draftRouteLayer = L.featureGroup().addTo(map);
+const activeRouteLine = L.polyline([], {color: '#86e1ad', weight: 2, dashArray: '6 8'}).addTo(map);
+let routeDraft = [], routeSelected = -1, routeDraftSignature = '';
+const routeEnabled = () => $('route-enabled').checked;
 const direction = L.polyline([], {color: '#86e1ad', weight: 2, dashArray: '6 8'}).addTo(map);
 const latlng = position => [position.latitude, position.longitude];
 const read = id => $(id).value.trim() === '' ? null : Number($(id).value);
@@ -102,7 +106,9 @@ function draft() {
 }
 function updateDraft() {
   const target = draft(), position = snapshot?.position, origin = data('navigation/origin');
-  draftMarker = marker(draftMarker, target, '#ffbc66', '待选目标');
+  if (routeEnabled() && routeSelected >= 0) routeDraft[routeSelected] = {latitude: read('latitude'), longitude: read('longitude'), altitude_msl: read('altitude')};
+  renderDraftRoute();
+  draftMarker = marker(draftMarker, routeEnabled() ? null : target, '#ffbc66', '待选目标');
   let relative = null, distance = null, delta = null;
   if (target && num(target.altitude_msl) && !snapshot?.mapping_error && origin) relative = target.altitude_msl - origin.altitude;
   if (target && position) {
@@ -112,18 +118,69 @@ function updateDraft() {
   $('target-metrics').textContent = `相对原点高度 ${fmt(relative)} m\n水平距离 ${fmt(distance)} m · 高度差 ${fmt(delta)} m` +
     (position && !positionFresh() ? '\n依据最后位置（已过期）' : '');
 }
+function selectRoutePoint(index) {
+  routeSelected = index;
+  const point = routeDraft[index];
+  if (point) for (const [id, key] of [['latitude', 'latitude'], ['longitude', 'longitude'], ['altitude', 'altitude_msl']]) {
+    $(id).value = point[key] ?? '';
+  }
+  updateDraft();
+}
+function renderDraftRoute() {
+  const signature = JSON.stringify([routeEnabled(), routeSelected, routeDraft]);
+  if (signature === routeDraftSignature) return;
+  routeDraftSignature = signature;
+  draftRouteLayer.clearLayers();
+  $('route-points').replaceChildren();
+  if (!routeEnabled()) return;
+  const positions = [];
+  routeDraft.forEach((point, index) => {
+    const button = document.createElement('button'); button.type = 'button';
+    button.textContent = `${index + 1}. ${fmt(point.latitude, 7)}, ${fmt(point.longitude, 7)} · ${fmt(point.altitude_msl)} m MSL`;
+    button.setAttribute('aria-pressed', String(index === routeSelected));
+    button.onclick = () => selectRoutePoint(index);
+    const item = document.createElement('li'); item.append(button); $('route-points').append(item);
+    if (num(point.latitude) && Math.abs(point.latitude) <= 90 && num(point.longitude) && Math.abs(point.longitude) <= 180) {
+      positions.push(latlng(point));
+      L.circleMarker(latlng(point), {radius: index === routeSelected ? 8 : 5, color: '#ffbc66'})
+        .bindTooltip(`待选 ${index + 1}`, {permanent: true, direction: 'top'}).addTo(draftRouteLayer);
+    }
+  });
+  L.polyline(positions, {color: '#ffbc66', weight: 2}).addTo(draftRouteLayer);
+}
+$('route-enabled').onchange = () => {
+  $('route-editor').hidden = !routeEnabled();
+  $('execute').textContent = routeEnabled() ? '执行路线' : '执行目标';
+  $('clear').textContent = routeEnabled() ? '清空待选路线' : '清除待选目标';
+  if (routeEnabled() && routeSelected >= 0) selectRoutePoint(routeSelected); else updateDraft();
+};
+$('route-add').onclick = () => {
+  const point = draft();
+  if (!point || !num(point.altitude_msl)) { $('submission').textContent = '请先输入有效经纬度和海拔'; return; }
+  routeDraft.push({...point}); selectRoutePoint(routeDraft.length - 1);
+};
+$('route-remove').onclick = () => {
+  if (routeSelected >= 0) routeDraft.splice(routeSelected, 1);
+  selectRoutePoint(routeDraft.length ? Math.min(routeSelected, routeDraft.length - 1) : -1);
+};
 for (const id of ['latitude', 'longitude', 'altitude']) $(id).addEventListener('input', () => {
   if (id === 'altitude') altitudeInitialized = true;
   updateDraft();
 });
 map.on('click', event => {
   if (mapSelection) { selectMapCorner(event.latlng); return; }
+  if (routeEnabled()) {
+    routeDraft.push({latitude: Number(event.latlng.lat.toFixed(8)), longitude: Number(event.latlng.wrap().lng.toFixed(8)),
+      altitude_msl: routeDraft.length ? routeDraft[routeDraft.length - 1].altitude_msl : read('altitude')});
+    selectRoutePoint(routeDraft.length - 1); return;
+  }
   $('latitude').value = event.latlng.lat.toFixed(8);
   $('longitude').value = event.latlng.wrap().lng.toFixed(8);
   updateDraft();
 });
 map.on('dragstart', () => { $('follow').checked = false; });
 $('clear').onclick = () => {
+  if (routeEnabled()) { routeDraft = []; routeSelected = -1; }
   for (const id of ['latitude', 'longitude', 'altitude']) $(id).value = '';
   altitudeInitialized = true;
   updateDraft();
@@ -137,7 +194,7 @@ $('current-altitude').onclick = () => {
 };
 $('locate').onclick = () => { if (snapshot?.position) map.setView(latlng(snapshot.position), Math.max(map.getZoom(), 17)); };
 $('fit').onclick = () => {
-  const points = [snapshot?.position, snapshot?.active_position, draft()].filter(Boolean).map(latlng);
+  const points = [snapshot?.position, snapshot?.active_position, draft(), ...(snapshot?.active_route || []), ...(routeEnabled() ? routeDraft : [])].filter(p => p && num(p.latitude) && Math.abs(p.latitude) <= 90 && num(p.longitude) && Math.abs(p.longitude) <= 180).map(latlng);
   if (points.length) map.fitBounds(L.latLngBounds(points), {padding: [65, 65], maxZoom: 18});
 };
 $('goal-form').addEventListener('submit', async event => {
@@ -145,13 +202,16 @@ $('goal-form').addEventListener('submit', async event => {
   if ($('execute').disabled) return;
   const target = draft();
   if (!target || !num(target.altitude_msl)) return;
+  const isRoute = routeEnabled();
+  if (isRoute && (!routeDraft.length || routeDraft.some(p => !num(p.latitude) || !num(p.longitude) || !num(p.altitude_msl)))) return;
+  const payload = isRoute ? {mode: $('route-mode').value, points: routeDraft.map(p => ({...p}))} : target;
   $('execute').disabled = true;
   $('submission').textContent = '正在发送；结果未确认…';
   try {
-    const response = await fetch('/api/goal', {method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(target), signal: AbortSignal.timeout(5000)});
+    const response = await fetch(isRoute ? '/api/route' : '/api/goal', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload), signal: AbortSignal.timeout(5000)});
     const result = await response.json();
-    $('submission').textContent = response.ok ? `${result.message}\n${fmt(target.latitude, 8)}, ${fmt(target.longitude, 8)}, ${fmt(target.altitude_msl)} m MSL`
+    $('submission').textContent = response.ok ? `${result.message}\n` + (isRoute ? `${payload.points.length} 个航点 · ${payload.mode === 'smooth' ? '平滑' : '直线'}` : `${fmt(target.latitude, 8)}, ${fmt(target.longitude, 8)}, ${fmt(target.altitude_msl)} m MSL`)
       : (result.error || '发送结果未确认');
   } catch (_) { $('submission').textContent = '连接中断：发送结果未确认。请查看控制端全局反馈；不会自动重试。'; }
   finally { $('execute').disabled = false; }
@@ -199,15 +259,20 @@ function renderTelemetry() {
   const sessionMatches = !!goal && !!computation && goal.control_session_start === computation.control_session_start && goal.clock_id === state?.clock_id;
   const phaseConfirmed = connected && sessionMatches && (!goal.active_valid || snapshot.goal_matches_state);
   const initialAuto = !goal?.active_valid && computation?.trajectory_active;
-  const phaseText = initialAuto ? (computation.hover_stable ? '稳定悬停' : 'AUTO 控制中') : phase[goal?.active_phase] || '阶段未知';
+  const intermediate = goal?.active_route_enu?.length && goal.active_waypoint_index + 1 < goal.active_route_enu.length;
+  const phaseText = goal?.route_preparing ? '路线准备中 · 保持悬停' : initialAuto ? (computation.hover_stable ? '稳定悬停' : 'AUTO 控制中') : intermediate && goal.active_phase === 2 ? '航点收敛' : phase[goal?.active_phase] || '阶段未知';
   const phaseColor = initialAuto ? (computation.hover_stable ? 'hovering' : 'settling') : ['idle', 'tracking', 'settling', 'hovering'][goal?.active_phase];
   $('phase').textContent = `${phaseConfirmed ? '' : '未确认 · 最后报告：'}${phaseText}`;
   $('phase').className = 'phase ' + (phaseConfirmed ? phaseColor || 'unconfirmed' : 'unconfirmed');
   $('active-detail').textContent = goal?.active_valid ? `活动请求 #${goal.active_request_sequence}\nENU ${fmt(goal.active_enu.x)}, ${fmt(goal.active_enu.y)}, ${fmt(goal.active_enu.z)} m` +
     (!snapshot.goal_matches_state ? '\n会话未匹配；不显示旧目标坐标' : '') : initialAuto ? 'AUTO 参考已激活 · 尚无在线目标' : goal ? '当前快照无活动目标' : '活动目标未知';
+  if (goal?.active_route_enu?.length) {
+    $('active-detail').textContent += `\n${goal.active_route_mode === 1 ? '平滑' : '直线'}路线 · 航点 ${goal.active_waypoint_index + 1}/${goal.active_route_enu.length}` +
+      (goal.active_phase === 3 ? '\n路线完成 · 最终稳定悬停' : goal.active_route_mode === 1 ? '\n进度依据参考过点时刻' : '');
+  }
   if (goal?.request_sequence) {
     const requested = goal.request_source === 'go_to_geographic_position' ? goal.requested_geographic : goal.requested_enu;
-    const values = goal.request_source === 'pause_hover' ? '暂停并悬停' : goal.request_source === 'go_to_geographic_position' ? `${fmt(requested.latitude, 8)}, ${fmt(requested.longitude, 8)}, ${fmt(requested.altitude_msl)} m MSL`
+    const values = goal.request_source === 'go_to_geographic_route' ? `${goal.requested_route?.points?.length || 0} 个航点 · ${goal.requested_route?.mode === 1 ? '平滑' : '直线'}路线` : goal.request_source === 'pause_hover' ? '暂停并悬停' : goal.request_source === 'go_to_geographic_position' ? `${fmt(requested.latitude, 8)}, ${fmt(requested.longitude, 8)}, ${fmt(requested.altitude_msl)} m MSL`
       : `${fmt(requested.x)}, ${fmt(requested.y)}, ${fmt(requested.z)} m (${goal.request_frame})`;
     $('request').textContent = `#${goal.request_sequence} · ${['无请求', '待处理', '已接受', '已拒绝'][goal.request_state] || '未知'}\n${values}\n${goal.request_reason}`;
   } else $('request').textContent = '尚无目标请求';
@@ -237,6 +302,7 @@ function renderState() {
   }
   const point = snapshot.position, origin = data('navigation/origin');
   originMarker = marker(originMarker, !snapshot.mapping_error ? origin : null, '#5ecce8', 'FC 导航原点');
+  activeRouteLine.setLatLngs((snapshot.active_route || []).map(latlng));
   activeMarker = marker(activeMarker, snapshot.active_position, '#86e1ad', data('goal_status')?.pause_active ? '悬停点' : '已接受目标');
   direction.setLatLngs(point && snapshot.active_position ? [latlng(point), latlng(snapshot.active_position)] : []);
   if (point) {

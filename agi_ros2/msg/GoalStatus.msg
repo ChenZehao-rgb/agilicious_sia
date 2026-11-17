@@ -29,3 +29,10 @@ uint32 active_fc_reset_counter
 uint64 active_generation
 uint8 active_phase
 string active_reason
+
+# Route fields belong to the same retained request/active identities above.
+GeographicRoute requested_route
+geometry_msgs/Point[] active_route_enu
+uint8 active_route_mode
+uint32 active_waypoint_index
+bool route_preparing

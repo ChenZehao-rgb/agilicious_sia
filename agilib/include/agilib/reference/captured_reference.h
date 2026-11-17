@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <limits>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include "agilib/math/gravity.hpp"
@@ -83,6 +85,7 @@ public:
 			if (!trajectory->valid()) return false;
 			trajectories.push_back(std::move(trajectory));
 		}
+		_smooth_active = false;
 		_pause_yaw.reset();
 		_online_turn = std::move(turn);
 		_online_turn_end = turn_end.t;
@@ -93,6 +96,14 @@ public:
 		_online_end.q(end.q() * alignment);
 		return true;
 	}
+	// Preparation runs on the owner thread, at most one polynomial solve per call.
+	std::string beginSmoothRoute(const std::vector<Vector<3>>& points, double now, double max_velocity, double max_acceleration,
+	                             double yaw_rate_max);
+	// Empty means still preparing; "ready" means atomically installed; otherwise an error.
+	std::string prepareSmoothRoute(double now, bool stable_hover = true);
+	void cancelSmoothPreparation() { _smooth_plan.reset(); }
+	bool smoothPreparing() const { return static_cast<bool>(_smooth_plan); }
+	size_t smoothWaypointIndex(double now) const;
 	// Candidate first: a failed brake must leave the currently valid reference intact.
 	std::string pauseHover(double now, double deceleration, const Vector<3>& fence_min, const Vector<3>& fence_max) {
 		if (pauseActive()) return {};
@@ -143,6 +154,7 @@ public:
 			    (sample.a - boundary.a).norm() > 1e-6 || (sample.j - boundary.j).norm() > 1e-6)
 				return "brake polynomial boundary mismatch";
 		}
+		_smooth_active = false;
 		_online_turn.reset();
 		_online_turn_end = 0;
 		_online_heading = heading;
@@ -158,11 +170,15 @@ public:
 	bool pauseActive() const { return static_cast<bool>(_pause_yaw); }
 	Vector<3> onlineEndpoint() const { return _online_end.p; }
 	void clearOnlineTarget() {
+		_smooth_active = false;
+		_smooth_plan.reset();
+		_smooth_segments.clear();
+		_smooth_waypoint_times.clear();
 		_pause_yaw.reset();
 		_online_turn.reset();
 		_online_trajectories.clear();
 	}
-	bool hasOnlineTarget() const { return !_online_trajectories.empty(); }
+	bool hasOnlineTarget() const { return _smooth_active || !_online_trajectories.empty(); }
 	bool movingAt(double now) const {
 		if (hasOnlineTarget()) return now - _online_start < _online_end.t;
 		return _execute_trajectory && now - start_state_.t < _trajectory->getEndTime();
@@ -176,6 +192,7 @@ public:
 		_execute_trajectory = execute_trajectory && static_cast<bool>(_trajectory);
 	}
 	Setpoint getSetpoint(const QuadState& state, const Scalar t) override {
+		if (_smooth_active) return sampleSmooth(t);
 		if (hasOnlineTarget()) {
 			const double relative_time = std::max(0.0, t - _online_start);
 			if (relative_time >= _online_end.t) return hover(_online_end, t);
@@ -223,6 +240,34 @@ public:
 	bool isHover() const override { return !_execute_trajectory && !hasOnlineTarget(); }
 
 private:
+	struct SmoothSegment {
+		std::shared_ptr<MinSnapTrajectory> trajectory;
+		bool tangent = true;
+		double heading = 0;
+	};
+	struct SmoothPlan {
+		std::vector<QuadState> boundaries;
+		std::vector<SmoothSegment> motions;
+		std::vector<SmoothSegment> ready;
+		std::vector<double> arrivals;
+		std::vector<size_t> waypoint_ends;
+		size_t next = 0;
+		bool assembling = false;
+		double scale = 1;
+		double max_velocity = 0;
+		double max_acceleration = 0;
+		double yaw_rate_max = 0;
+		double time = 0;
+		double heading = 0;
+		double rate = 0;
+	};
+	static std::pair<double, double> tangentHeading(const MinSnapTrajectory& trajectory, double time, double fallback);
+	static double derivativeBound(const MinSnapTrajectory& trajectory, int derivative);
+	Setpoint sampleSmooth(double time) const;
+	std::shared_ptr<SmoothPlan> _smooth_plan;
+	std::vector<SmoothSegment> _smooth_segments;
+	std::vector<double> _smooth_waypoint_times;
+	bool _smooth_active = false;
 	static Setpoint hover(const QuadState& state, double t) {
 		Setpoint result;
 		result.state = state.getHoverState();
