@@ -124,8 +124,8 @@ class RuntimeProfileNodes(unittest.TestCase):
         # The nonexistent device is reached only after model configuration succeeds.
         # No physical serial port is opened by this test.
         cases = [(small, 'measured_cubic'), ({**small, 'airframe': 'small'}, 'measured_cubic'),
-                 (big, 'manufacturer_fit'),
-                 ({**big, 'a1_n': '.4junk', 'a2_n': True, 'a3_n': float('nan')}, 'manufacturer_fit')]
+                 (big, 'manufacturer_hover_fit'),
+                 ({**big, 'a1_n': '.4junk', 'a2_n': True, 'a3_n': float('nan')}, 'manufacturer_hover_fit')]
         with tempfile.TemporaryDirectory(prefix='agi_airframe_profile_') as directory:
             profile = Path(directory) / 'hardware.yaml'
             missing_device = Path(directory) / 'no_physical_uart'

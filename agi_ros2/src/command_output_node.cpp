@@ -146,12 +146,13 @@ CommandOutputNode::CommandOutputNode()
 		const double voltage_exponent_p = model_parameter("voltage_exponent_p");
 		_quadratic_thrust = std::make_unique<agi::hardware::QuadraticThrustModel>(
 		        a1_n, a2_n, a3_n, reference_voltage_v, voltage_exponent_p, _bridge_params.min_check, airframe);
-		_thrust_model_source = airframe == "big" ? "manufacturer_fit" : "measured_cubic";
+		_thrust_model_source = airframe == "big" ? "manufacturer_hover_fit" : "measured_cubic";
 		if (airframe == "big") {
 			RCLCPP_WARN(get_logger(),
-			            "Thrust model: quadratic, airframe=big (manufacturer_fit), reference_voltage_v=%.12g, "
-			            "voltage_exponent_p=%.12g; raw manufacturer fit without voltage normalization; "
-			            "voltage exponent unidentified (p=0 disables compensation; 24 V is nominal)",
+			            "Thrust model: quadratic, airframe=big (manufacturer_hover_fit), reference_voltage_v=%.12g, "
+			            "voltage_exponent_p=%.12g; manufacturer shape anchored to 2.4 kg hover at raw RC 1348.2696014, "
+			            "21.6564 V; other inputs/voltages extrapolated; voltage exponent unidentified "
+			            "(p=0 disables compensation; reference voltage is nominal)",
 			            reference_voltage_v, voltage_exponent_p);
 		} else {
 			RCLCPP_WARN(get_logger(),

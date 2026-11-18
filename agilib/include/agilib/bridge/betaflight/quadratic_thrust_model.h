@@ -71,9 +71,10 @@ public:
 private:
 	double referenceThrust(double normalized) const {
 		if (_airframe == "big") {
-			// 大飞机：GEPRC EM3115 900KV + Hoprop MQ10X5，厂家数据拟合；已换算为四电机总推力 N。
-			// Raw data at 23.47-24.08 V, without voltage normalization; the exponent below describes curve shape.
-			return 161.946600121777 * (-std::expm1(-std::pow(normalized / 0.6159720191140124, 3.1165108548961253)));
+			// Big airframe: retain the manufacturer amplitude/exponent; adjust only the input scale using AUTO 1 hover.
+			// 20261117test bag 222.405-268.075 s: raw RC 1348.2696014, min_check 1050, mass 2.4 kg, voltage 21.6564 V.
+			// T((RC-1050)/950) = 2.4 * 9.8066 N. Other inputs/voltages remain model extrapolation, without normalization.
+			return 161.946600121777 * (-std::expm1(-std::pow(normalized / 0.5686723751794087, 3.1165108548961253)));
 		}
 		// 小飞机：保留原实测三次公式。
 		return normalized * (_a1_n + normalized * (_a2_n + normalized * _a3_n));

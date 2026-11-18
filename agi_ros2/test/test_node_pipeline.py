@@ -342,7 +342,7 @@ class NodePipelineTest(unittest.TestCase):
         self.assertTrue(status.thrust_mapping_ready)
         self.assertFalse(status.thrust_calibrated)
         self.assertEqual(status.thrust_model, 'quadratic')
-        self.assertEqual(status.thrust_model_source, 'manufacturer_fit' if airframe == 'big' else 'measured_cubic')
+        self.assertEqual(status.thrust_model_source, 'manufacturer_hover_fit' if airframe == 'big' else 'measured_cubic')
         return h
 
     def rc_frames(self):
@@ -358,9 +358,9 @@ class NodePipelineTest(unittest.TestCase):
     def test_big_mapping_without_cubic_coefficients_and_voltage_compensation(self):
         h = self.start_quadratic_output(airframe='big')
         h.auto = True
-        for voltage in (20., 24.):
-            for thrust, expected_rc in ((0., 1050), (10., 1292), (20., 1355), (40., 1441),
-                                       (80., 1567), (120., 1694), (160.1959166931985, 2000), (200., 2000)):
+        for voltage in (20., 21.656421274103636, 24.):
+            for thrust, expected_rc in ((0., 1050), (10., 1273), (20., 1332), (2.4 * 9.8066, 1348), (40., 1411),
+                                       (80., 1528), (120., 1645), (161.45986777872045, 2000), (200., 2000)):
                 with self.subTest(voltage=voltage, thrust=thrust):
                     h.battery_voltage = voltage
                     h.total_thrust = thrust

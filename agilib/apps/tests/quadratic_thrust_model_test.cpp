@@ -77,36 +77,43 @@ void testExplicitSmallMatchesDefault() {
 	}
 }
 
-void testManufacturerFitAndSaturation() {
+void testHoverAnchoredFitAndSaturation() {
 	// Big airframe ignores cubic coefficients, including their validity.
 	const double unused = std::numeric_limits<double>::quiet_NaN();
 	const QuadraticThrustModel model(unused, unused, unused, kReferenceVoltage, 0.0, 1050, "big");
-	constexpr double endpoint = 160.1959166931985;
-	const std::pair<double, uint16_t> anchors[] = {
-	        {0.0, 1050}, {10.0, 1292}, {20.0, 1355}, {40.0, 1441}, {80.0, 1567}, {120.0, 1694}, {endpoint, 2000}, {200.0, 2000}};
+	constexpr double endpoint = 161.45986777872045;
+	const std::pair<double, uint16_t> anchors[] = {{0.0, 1050},  {10.0, 1273},  {20.0, 1332},     {40.0, 1411},
+	                                               {80.0, 1528}, {120.0, 1645}, {endpoint, 2000}, {200.0, 2000}};
 	for (const auto& anchor : anchors) {
 		for (const double voltage : {20.0, 24.0, 25.2}) {
 			require(model.totalThrustToRc(anchor.first, voltage) == anchor.second,
-			        "Manufacturer fit RC anchors must match at all positive test voltages when p=0");
+			        "Hover-anchored RC values must match at all positive test voltages when p=0");
 		}
 	}
+	// Independent flight anchor: the user confirmed 2.4 kg including battery/payload.
+	constexpr double hover_thrust = 2.4 * 9.8066;
+	constexpr double hover_input = (1348.2696014016644 - 1050.0) / 950.0;
+	require(std::abs(model.totalThrustToNormalized(hover_thrust, 21.656421274103636) - hover_input) < 2.4e-10,
+	        "2.4 kg hover must recover the measured normalized raw RC input at the logged voltage");
+	require(model.totalThrustToRc(hover_thrust, 21.656421274103636) == 1348,
+	        "2.4 kg hover must map to measured raw RC rounded to 1348");
 	double previous_thrust = -1.0;
 	double previous_input = -1.0;
 	for (int step = 0; step <= 1000; ++step) {
 		const double input = step / 1000.0;
-		const double thrust = 161.946600121777 * (-std::expm1(-std::pow(input / 0.6159720191140124, 3.1165108548961253)));
+		const double thrust = 161.946600121777 * (-std::expm1(-std::pow(input / 0.5686723751794087, 3.1165108548961253)));
 		require(std::isfinite(thrust) && thrust >= 0.0 && thrust > previous_thrust,
-		        "Manufacturer reference formula must be finite, nonnegative and monotonic throughout [0, 1]");
+		        "Hover-anchored formula must be finite, nonnegative and monotonic throughout [0, 1]");
 		const double recovered = model.totalThrustToNormalized(thrust, 24.0);
-		require(std::abs(recovered - input) <= 1.0 / 4294967296.0, "Full-range inverse must agree with the manufacturer fit");
-		require(recovered > previous_input, "Manufacturer inverse must be monotonic throughout [0, 1]");
+		require(std::abs(recovered - input) <= 1.0 / 4294967296.0, "Full-range inverse must agree with the hover-anchored fit");
+		require(recovered > previous_input, "Hover-anchored inverse must be monotonic throughout [0, 1]");
 		previous_thrust = thrust;
 		previous_input = recovered;
 	}
-	require(std::abs(previous_thrust - endpoint) < 1e-12, "Manufacturer endpoint must be 160.1959166931985 N");
-	require(model.totalThrustToNormalized(endpoint, 24.0) == 1.0, "Manufacturer endpoint must saturate to normalized one");
+	require(std::abs(previous_thrust - endpoint) < 1e-12, "Hover-anchored endpoint must be 161.45986777872045 N");
+	require(model.totalThrustToNormalized(endpoint, 24.0) == 1.0, "Hover-anchored endpoint must saturate to normalized one");
 	require(model.totalThrustToNormalized(endpoint - 0.01, 24.0) < 1.0, "Thrust below the endpoint must not saturate early");
-	require(model.totalThrustToNormalized(200.0, 24.0) == 1.0, "Excess manufacturer thrust must saturate");
+	require(model.totalThrustToNormalized(200.0, 24.0) == 1.0, "Excess hover-anchored thrust must saturate");
 
 	// Test-only exponent verifies the retained interface; it is not a big-airframe calibration value.
 	constexpr double test_exponent = 0.5;
@@ -203,11 +210,11 @@ int main() {
 		testMeasuredAnchorsAndVoltage();
 		testFullRangeAndSaturation();
 		testExplicitSmallMatchesDefault();
-		testManufacturerFitAndSaturation();
+		testHoverAnchoredFitAndSaturation();
 		testBigInvalidConfigurationAndInputs();
 		testInvalidConfiguration();
 		testInvalidInputsAndNumericalOverflow();
-		std::cout << "PASS: small measured cubic and big manufacturer fit anchors, voltage compensation, full-range inverse, "
+		std::cout << "PASS: small measured cubic and big hover-anchored fit, voltage compensation, full-range inverse, "
 		             "saturation and invalid-input rejection\n";
 		return 0;
 	} catch (const std::exception& error) {

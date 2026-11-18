@@ -67,7 +67,7 @@ private:
 	double _route_acceleration = 0;
 	// Actual speed and tracking error; no dwell time or additional navigation gate.
 	static constexpr double kHoverSpeed = 0.2;          // m/s, Euclidean norm
-	static constexpr double kHoverPositionError = 0.2;  // m, Euclidean norm
+	static constexpr double kHoverPositionError = 0.3;  // m, Euclidean norm
 	const TimeFunction _clock;
 	const TimeFunction _steady_clock;
 	const NavigationPolicy _navigation_policy;
