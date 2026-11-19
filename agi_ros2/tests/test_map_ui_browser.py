@@ -23,6 +23,7 @@ import runtime_launcher
 import rclpy
 from std_msgs.msg import Empty
 from rclpy.executors import SingleThreadedExecutor
+from agi_ros2.srv import ExecuteTrajectory
 from agi_ros2.msg import FcEstimatorStatus, FusedState, GlobalPositionInt, NavigationOrigin, GoalStatus, ComputationStatus, Health, GeographicGoal, GeographicRoute, Authority
 from playwright.sync_api import sync_playwright, expect
 
@@ -89,6 +90,16 @@ commands=[]
 source.create_subscription(GeographicGoal,'go_to_geographic_position',lambda m: commands.append(m),1)
 routes=[]
 source.create_subscription(GeographicRoute,'go_to_geographic_route',routes.append,1)
+trajectory_requests=[]
+def trajectory_service(request, response):
+    if not request.filename:
+        response.filenames=['one.csv','two.csv']
+    else:
+        trajectory_requests.append(request.filename)
+        response.queued=True
+    return response
+source.create_service(ExecuteTrajectory,'flight_control/execute_trajectory',trajectory_service)
+
 enabled=[False]; ticks=[0]; moving=[False]; auto_active=[True]; hover_stable=[True]
 def emit():
     if not enabled[0]: return
@@ -141,7 +152,7 @@ from rcl_interfaces.srv import GetParameters, SetParametersAtomically
 from rclpy.parameter import Parameter
 runtime_values = dict(mode='sitl', controller_type='MPC', clock_id=s.clock_id, control_session_start=10.,
                       go_to_pose_max_vel=2., go_to_pose_max_acc=1., Q_pos_x=50., Q_pos_y=50., Q_pos_z=100.,
-                      Q_att_x=10., Q_att_y=10., Q_att_z=50., Q_vel=5., R_collective_thrust=1.,
+                      Q_att_x=10., Q_att_y=10., Q_att_z=50., Q_vel=[7.,7.,5.5], R_collective_thrust=1.,
                       R_body_rates=[100.,100.,100.], exp_decay=1.)
 tuning_requests=[]; tuning_reads=[]
 def read_tuning(request, response):
@@ -150,7 +161,8 @@ def read_tuning(request, response):
     return response
 def set_tuning(request, response):
     patch_values = {item.name: Parameter.from_parameter_msg(item).value for item in request.parameters}
-    if 'R_body_rates' in patch_values: patch_values['R_body_rates'] = list(patch_values['R_body_rates'])
+    for name in ('Q_vel', 'R_body_rates'):
+        if name in patch_values: patch_values[name] = list(patch_values[name])
     tuning_requests.append(patch_values)
     runtime_values.update(patch_values)
     response.result.successful = True
@@ -194,9 +206,9 @@ try:
         page.locator('#open-tuning').click()
         expect(page.locator('#tuning-read-status')).to_contain_text('已读取')
         expect(page.locator('#tuning-identity')).to_have_text('仿真 · MPC')
-        # All twelve exact tooltip strings come from the user-supplied prompt.
+        # Each MPC field has the same axis-specific help on its label and input.
         help_text = page.evaluate('mpcHelp')
-        assert list(help_text) == ['Q_pos_x','Q_pos_y','Q_pos_z','Q_att_x','Q_att_y','Q_att_z','Q_vel',
+        assert list(help_text) == ['Q_pos_x','Q_pos_y','Q_pos_z','Q_att_x','Q_att_y','Q_att_z','Q_vel_x','Q_vel_y','Q_vel_z',
                                   'R_collective_thrust','R_body_rates_x','R_body_rates_y','R_body_rates_z','exp_decay']
         for name, description in help_text.items():
             label = page.locator(f'label[for="tuning-{name}"]')
@@ -205,12 +217,19 @@ try:
             expect(field).to_have_attribute('title', description)
             label.hover(); field.hover(); page.locator('#tuning-title').hover()
         assert not tuning_requests
+        for axis,value in zip('xyz', ['7','7','5.5']):
+            expect(page.locator('#tuning-Q_vel_' + axis)).to_have_value(value)
         page.locator('#tuning-Q_pos_x').fill('60')
+        page.locator('#tuning-Q_vel_y').fill('8.5')
         page.locator('#tuning-go_to_pose_max_vel').fill('1.5')
         runtime_values['go_to_pose_max_acc'] = .8
+        runtime_values['Q_vel'][0] = 7.25
         page.locator('#tuning-read').click()
         expect(page.locator('#actual-go_to_pose_max_acc')).to_contain_text('0.8')
         expect(page.locator('#tuning-Q_pos_x')).to_have_value('60')
+        expect(page.locator('#tuning-Q_vel_x')).to_have_value('7.25')
+        expect(page.locator('#tuning-Q_vel_y')).to_have_value('8.5')
+        expect(page.locator('#tuning-Q_vel_z')).to_have_value('5.5')
         page.locator('#tuning-apply-trajectory').click()
         expect(page.locator('#tuning-result-trajectory')).to_contain_text('已确认应用')
         assert tuning_requests == [{'go_to_pose_max_vel':1.5}]
@@ -218,7 +237,8 @@ try:
         page.locator('#tuning-R_body_rates_y').fill('110')
         page.locator('#tuning-apply-mpc').click()
         expect(page.locator('#tuning-result-mpc')).to_contain_text('已确认应用')
-        assert tuning_requests[-1] == {'Q_pos_x':60., 'R_body_rates':[100.,110.,100.]}
+        assert tuning_requests[-1] == {'Q_pos_x':60., 'Q_vel':[7.25,8.5,5.5], 'R_body_rates':[100.,110.,100.]}
+        expect(page.locator('#actual-Q_vel_y')).to_have_text('实际：8.5')
         page.screenshot(path=str(out/'tuning.png'))
         page.locator('#tuning-Q_pos_y').fill('65')
         page.keyboard.press('Escape')
@@ -230,7 +250,7 @@ try:
         expect(page.locator('#tuning-Q_pos_y')).to_have_value('50')
         held_tuning=[]
         page.route('**/api/tuning', lambda route: held_tuning.append(route) if route.request.method == 'POST' else route.continue_())
-        page.locator('#tuning-Q_vel').fill('6')
+        page.locator('#tuning-Q_vel_z').fill('6')
         page.locator('#tuning-apply-mpc').click()
         expect(page.locator('#tuning-apply-mpc')).to_be_disabled()
         expect(page.locator('#tuning-result-mpc')).to_contain_text('结果未确认', timeout=8000)
@@ -243,8 +263,8 @@ try:
                    if route.request.method == 'POST' else route.continue_())
         page.locator('#tuning-apply-mpc').click()
         expect(page.locator('#tuning-result-mpc')).to_contain_text('未应用')
-        expect(page.locator('#tuning-Q_vel')).to_have_value('6')
-        expect(page.locator('#actual-Q_vel')).to_contain_text('实际：5')
+        expect(page.locator('#tuning-Q_vel_z')).to_have_value('6')
+        expect(page.locator('#actual-Q_vel_z')).to_contain_text('实际：5.5')
         page.unroute('**/api/tuning')
         # A confirmed SET survives a failed GET; no invented rollback/failure.
         page.route('**/api/tuning', lambda route: route.fulfill(status=200, content_type='application/json',
@@ -581,17 +601,40 @@ try:
         assert len(routes)==1
         goal.active_waypoint_index=0;goal.active_phase=GoalStatus.SETTLING;goal.revision+=1;gpub.publish(goal)
         expect(page.locator('#phase')).to_have_text('航点收敛')
+        page.locator('#trajectory-enabled').check()
+        expect(page.locator('#trajectory-file option')).to_have_count(2)
+        expect(page.locator('#latitude')).to_be_disabled()
+        expect(page.locator('#route-enabled')).to_be_disabled()
+        page.locator('#trajectory-file').select_option('two.csv')
+        assert not trajectory_requests
+        page.locator('#execute').click()
+        expect(page.locator('#submission')).to_contain_text('轨迹加载请求已提交')
+        assert trajectory_requests==['two.csv']
+        goal.active_route_enu=[];goal.active_trajectory='two.csv';goal.requested_trajectory='two.csv'
+        goal.request_source='execute_trajectory';goal.active_phase=GoalStatus.STABLE;goal.revision+=1
+        gpub.publish(goal)
+        expect(page.locator('#active-detail')).to_contain_text('轨迹完成 · 稳定悬停，等待下一条指令')
+        expect(page.locator('#request')).to_contain_text('CSV two.csv')
+        page.screenshot(path=str(out/'csv-trajectory.png'),full_page=True)
+        page.reload()
+        expect(page.locator('#active-detail')).to_contain_text('CSV two.csv')
+        assert trajectory_requests==['two.csv']
+        page.locator('#trajectory-enabled').check()
+        expect(page.locator('#trajectory-file option')).to_have_count(2)
+        page.locator('#trajectory-enabled').uncheck()
+        expect(page.locator('#latitude')).to_be_enabled()
+        expect(page.locator('#route-enabled')).to_be_enabled()
         page.close()
         assert not errors, errors
         assert all(r.startswith(url) for r in requests),requests
-        (out/'result.json').write_text(json.dumps({'passed':True,'tuning_tooltips':12,'tuning_patches':tuning_requests,'tuning_timeout_no_retry':True,'requests':len(requests),'external_requests':0,'commands':len(commands),'pauses':len(pauses),'pause_timeout_no_retry':True,'runtime_no_aircraft_online':True,'runtime_requests':len(runtime_requests),
+        (out/'result.json').write_text(json.dumps({'passed':True,'tuning_tooltips':14,'tuning_patches':tuning_requests,'tuning_timeout_no_retry':True,'requests':len(requests),'external_requests':0,'commands':len(commands),'pauses':len(pauses),'pause_timeout_no_retry':True,'runtime_no_aircraft_online':True,'runtime_requests':len(runtime_requests),
             'runtime_timeout_refresh_disconnect_no_retry':True,'runtime_stop_requests':len(runtime_stops),'runtime_stop_timeout_no_retry':True,'runtime_old_backend_404_guidance':True,'hardware_shutdown_mock_requests':len(runtime_shutdowns),
             'shutdown_hardware_only_permission_error_timeout_and_refresh':True,'page_errors':errors,'fixture':'synthetic, not real map',
             'position_updates_in_2_4s':len(changes), 'position_min_interval_ms':min(b-a for a,b in zip(changes,changes[1:])),
             'initial_auto_hover':True,'browser_stall_without_false_disconnect':True,'http_failure_and_timeout_recovery':True,
             'origin_refresh_without_invalid_position':True,'gps_disarmed_fused_priority_and_invalidity':True,
             'mag_heading_flags_validity_preflight_stale_and_http_recovery':True,
-            'route_commands':len(routes),'route_edit_submit_timeout_no_replay_and_retained_refresh':True},indent=2))
+            'csv_commands':trajectory_requests,'csv_selection_terminal_hover_and_no_replay':True,'route_commands':len(routes),'route_edit_submit_timeout_no_replay_and_retained_refresh':True},indent=2))
         browser.close()
 finally:
     server.shutdown();server.server_close();http_thread.join()

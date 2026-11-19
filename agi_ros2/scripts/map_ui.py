@@ -24,6 +24,7 @@ from std_msgs.msg import Empty
 from diagnostic_msgs.msg import DiagnosticArray
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from rosidl_runtime_py.convert import message_to_ordereddict
+from agi_ros2.srv import ExecuteTrajectory
 from agi_ros2.msg import Authority, ComputationStatus, FcEstimatorStatus, FusedState, GeographicGoal, GeographicRoute, GlobalPositionInt, GoalStatus, Health, NavigationOrigin, OutputStatus
 
 
@@ -79,9 +80,9 @@ def tuning_patch(payload):
     for name, value in values.items():
         if name not in TUNING_GROUPS[group]:
             raise ValueError('未知参数: ' + name)
-        if name == 'R_body_rates':
+        if name == 'R_body_rates' or (name == 'Q_vel' and isinstance(value, list)):
             if not isinstance(value, list) or len(value) != 3 or not finite(*value) or min(value) < 0:
-                raise ValueError('R_body_rates 需要三个有限非负数，顺序 x/y/z')
+                raise ValueError(name + ' 需要三个有限非负数，顺序 x/y/z')
             value = [float(v) for v in value]
         else:
             if not finite(value) or value < 0 or (value == 0 and (group == 'trajectory' or name == 'exp_decay')):
@@ -228,6 +229,7 @@ class MapUI(Node):
         self.lock = threading.Lock()
         self.latest = {}
         self.version = 0
+        self.trajectory_client = self.create_client(ExecuteTrajectory, 'flight_control/execute_trajectory')
         self.tuning_get_client = self.create_client(GetParameters, 'flight_control/get_runtime_parameters')
         self.tuning_set_client = self.create_client(SetParametersAtomically, 'flight_control/set_runtime_parameters')
         self.command_publisher = self.create_publisher(GeographicGoal, 'go_to_geographic_position',
@@ -389,6 +391,22 @@ class MapUI(Node):
             self.pause_publisher.publish(Empty())
         return {'status': 'sent', 'message': '暂停请求已发送，等待控制端处理'}
 
+    def trajectories(self):
+        response = self.tuning_call(self.trajectory_client, ExecuteTrajectory.Request())
+        if response.reason:
+            raise ValueError(response.reason)
+        return {'filenames': response.filenames}
+
+    def submit_trajectory(self, payload):
+        if not isinstance(payload, dict) or set(payload) != {'filename'} or not isinstance(payload['filename'], str):
+            raise ValueError('轨迹请求只接收 filename')
+        name = payload['filename']
+        if not name or Path(name).name != name or '/' in name or '\\' in name or not name.endswith('.csv'):
+            raise ValueError('请选择 open_source 目录内的 CSV 文件名')
+        response = self.tuning_call(self.trajectory_client, ExecuteTrajectory.Request(filename=name))
+        return {'status': 'sent' if response.queued else 'rejected',
+                'message': '轨迹加载请求已提交，等待控制端接受' if response.queued else '轨迹请求被拒绝：' + response.reason}
+
     def submit_route(self, payload):
         if not isinstance(payload, dict) or set(payload) != {'mode', 'points'} or payload['mode'] not in ('straight', 'smooth'):
             raise ValueError('路线只接收 mode: straight/smooth 和 points')
@@ -454,6 +472,11 @@ def make_server(node, tiles, host, port, maps=None):
             path = unquote(urlsplit(self.path).path)
             if path == '/api/state':
                 return self.respond(200, node.snapshot())
+            if path == '/api/trajectories':
+                try:
+                    return self.respond(200, node.trajectories())
+                except Exception as error:
+                    return self.respond(503, {'error': '轨迹列表不可读取：' + str(error)})
             if path == '/api/tuning':
                 try:
                     return self.respond(200, node.get_tuning())
@@ -485,7 +508,7 @@ def make_server(node, tiles, host, port, maps=None):
         def do_POST(self):
             map_actions = ('estimate', 'download', 'resume', 'cancel', 'select')
             action = self.path.removeprefix('/api/maps/') if self.path.startswith('/api/maps/') else None
-            if self.path not in ('/api/tuning', '/api/goal', '/api/route', '/api/pause', '/api/runtime/start', '/api/runtime/stop', '/api/runtime/shutdown') and (not maps or action not in map_actions):
+            if self.path not in ('/api/tuning', '/api/goal', '/api/route', '/api/trajectory', '/api/pause', '/api/runtime/start', '/api/runtime/stop', '/api/runtime/shutdown') and (not maps or action not in map_actions):
                 return self.respond(404, {'error': 'not found'})
             # JSON and same-origin only: an unrelated website cannot issue flight goals.
             origin = self.headers.get('Origin')
@@ -504,6 +527,8 @@ def make_server(node, tiles, host, port, maps=None):
                     raise ValueError('JSON object required')
                 if self.path == '/api/tuning':
                     result = node.set_tuning(data)
+                elif self.path == '/api/trajectory':
+                    result = node.submit_trajectory(data)
                 elif self.path == '/api/route':
                     result = node.submit_route(data)
                 elif self.path == '/api/goal':
@@ -531,6 +556,8 @@ def make_server(node, tiles, host, port, maps=None):
                 if self.path in ('/api/runtime/start', '/api/runtime/stop', '/api/runtime/shutdown'):
                     label = {'start': '启动', 'stop': '结束任务', 'shutdown': '关机'}[self.path.rsplit('/', 1)[1]]
                     return self.respond(503, {'error': label + '结果未确认；不自动重试'})
+                if self.path == '/api/trajectory':
+                    return self.respond(503, {'error': '轨迹请求结果未确认；不自动重试'})
                 if self.path == '/api/pause':
                     return self.respond(503, {'error': '暂停结果未确认；不自动重试'})
                 return self.respond(400, {'error': str(error)})
@@ -542,7 +569,7 @@ def make_server(node, tiles, host, port, maps=None):
                 if self.path in ('/api/runtime/start', '/api/runtime/stop', '/api/runtime/shutdown'):
                     label = {'start': '启动', 'stop': '结束任务', 'shutdown': '关机'}[self.path.rsplit('/', 1)[1]]
                     return self.respond(503, {'error': label + '结果未确认；不自动重试'})
-                return self.respond(503, {'error': '发布结果未确认；不自动重试' if self.path in ('/api/goal', '/api/route', '/api/pause') else '地图操作失败'})
+                return self.respond(503, {'error': '发布结果未确认；不自动重试' if self.path in ('/api/goal', '/api/route', '/api/trajectory', '/api/pause') else '地图操作失败'})
             return self.respond(200 if self.path == '/api/tuning' else 202, result)
 
     return ThreadingHTTPServer((host, port), Handler)

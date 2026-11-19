@@ -127,7 +127,8 @@ void HardwarePilot::reportOutputFault() {
 
 ControlDecision HardwarePilot::tick(const QuadState& state, Evidence evidence, bool shadow_only, bool navigation_valid,
                                     bool computation_requested, const Vector<3>* go_to_position, bool pause_hover,
-                                    const Vector<3>& fence_min, const Vector<3>& fence_max, const OnlineRoute* route) {
+                                    const Vector<3>& fence_min, const Vector<3>& fence_max, const OnlineRoute* route,
+                                    std::shared_ptr<SampledTrajectory> trajectory) {
 	checkOwner();
 	const bool was_preparing = _reference->smoothPreparing();
 	if (_navigation_policy == NavigationPolicy::FcFused &&
@@ -182,6 +183,8 @@ ControlDecision HardwarePilot::tick(const QuadState& state, Evidence evidence, b
 	bool segment_ended = false;
 	if (pause_hover)
 		result.goal_event = "pause_hover rejected: AUTO/state/authorization unavailable";
+	else if (trajectory)
+		result.goal_event = "CSV trajectory rejected: AUTO/state/authorization unavailable";
 	else if (route)
 		result.goal_event = "route rejected: AUTO/state/authorization unavailable";
 	else if (go_to_position)
@@ -216,6 +219,17 @@ ControlDecision HardwarePilot::tick(const QuadState& state, Evidence evidence, b
 					_online_moving = _reference->movingAt(now);
 				} else
 					result.goal_event = "pause_hover rejected: " + rejection;
+			} else if (trajectory) {
+				const std::string rejection = goalRejection(state, now);
+				if (!rejection.empty())
+					result.goal_event = "CSV trajectory rejected: " + rejection;
+				else if (_reference->startSampledTrajectory(trajectory, now, fence_min, fence_max)) {
+					clearRoute();
+					_online_moving = true;
+					goal_installed = true;
+				} else
+					result.goal_event =
+					        "CSV trajectory rejected: invalid reference or endpoint outside configured geofence";
 			} else if (route) {
 				std::string rejection = goalRejection(state, now);
 				if (route->points.empty()) rejection = "empty route";
@@ -375,6 +389,9 @@ ControlDecision HardwarePilot::tick(const QuadState& state, Evidence evidence, b
 		if (pause_hover)
 			result.goal_event = _reference_active ? "pause_hover accepted: braking/hover reference installed or already active"
 			                                      : "pause_hover rejected: control/safety check failed after planning";
+		else if (trajectory)
+			result.goal_event = _reference_active ? "CSV trajectory accepted: captured position/heading, terminal hover"
+			                                      : "CSV trajectory rejected: control/safety check failed after loading";
 		else if (route || result.route_request_result)
 			result.goal_event = _reference_active ? "route accepted: absolute odom route installed"
 			                                      : "route rejected: control/safety check failed after planning";

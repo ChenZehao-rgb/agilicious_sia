@@ -216,6 +216,9 @@ class DeliveryTests(unittest.TestCase):
         original = get(['go_to_pose_max_vel', 'go_to_pose_max_acc', 'Q_pos_x', 'Q_pos_y', 'Q_vel',
                         'R_body_rates', 'exp_decay', 'control_session_start', 'controller_type'])
         self.assertEqual(original['controller_type'], 'MPC')
+        self.assertEqual(list(original['Q_vel']), [7., 7., 5.5])
+        self.assertTrue(patch([('Q_vel', 5.)]).successful)
+        self.assertEqual(list(get(['Q_vel'])['Q_vel']), [5., 5., 5.])
         h.run(1.5)
         h.auto = True
         h.run(.2)
@@ -231,18 +234,21 @@ class DeliveryTests(unittest.TestCase):
         begin = time.monotonic()
         begin_index = len(h.computations())
         self.assertTrue(patch([('go_to_pose_max_vel', .8)]).successful)
-        self.assertTrue(patch([('Q_pos_x', original['Q_pos_x']*1.05), ('Q_vel', 5.),
+        self.assertTrue(patch([('Q_pos_x', original['Q_pos_x']*1.05), ('Q_vel', [7., 8., 5.5]),
                                ('R_body_rates', [100., 101., 102.]), ('exp_decay', 1.001)]).successful)
         current = get(list(original))
         self.assertEqual(current['go_to_pose_max_vel'], .8)
         self.assertEqual(current['go_to_pose_max_acc'], original['go_to_pose_max_acc'])
         self.assertEqual(current['Q_pos_x'], original['Q_pos_x']*1.05)
         self.assertEqual(current['Q_pos_y'], original['Q_pos_y'])
-        self.assertEqual(current['Q_vel'], 5.)
+        self.assertEqual(list(current['Q_vel']), [7., 8., 5.5])
         self.assertEqual(list(current['R_body_rates']), [100.,101.,102.])
         self.assertEqual(current['control_session_start'], original['control_session_start'])
         for values in [[('go_to_pose_max_vel', 1.), ('go_to_pose_max_acc', -1.)],
                        [('Q_pos_x', -1.)], [('Q_pos_x', True)], [('Q_pos_x', math.nan)],
+                       [('Q_vel', [7., 7.])], [('Q_vel', [7., 7., 5.5, 1.])],
+                       [('Q_vel', [7., -1., 5.5])], [('Q_vel', [7., math.inf, 5.5])],
+                       [('Q_pos_x', 1.), ('Q_vel', [7., math.nan, 5.5])],
                        [('R_body_rates', [1.,2.])], [('Q_pos_x', 1.), ('Q_pos_x', 2.)],
                        [('exp_decay', 1e100)], [('go_to_pose_max_vel', 1.), ('Q_pos_x', 1.)],
                        [('unknown', 1.)]]:
@@ -427,6 +433,80 @@ class DeliveryTests(unittest.TestCase):
     def test_geographic_goals_share_local_chain_and_reset_cleanup(self):
         self.online_goal_scenario(True, geographic=True)
 
+    def test_csv_selection_execution_hover_next_goal_pause_and_no_replay(self):
+        from agi_ros2.srv import ExecuteTrajectory
+        h = DeliveryHarness(shadow=False, controller='GEO')
+        self.addCleanup(h.close)
+        h.subscribe('reference', Odometry)
+        h.subscribe('goal_status', GoalStatus)
+        pause_publisher = h.publisher('pause_hover', Empty)
+        client = h.node.create_client(ExecuteTrajectory, 'flight_control/execute_trajectory')
+        h.run(.5)
+        def call(filename=''):
+            future = client.call_async(ExecuteTrajectory.Request(filename=filename))
+            deadline = time.monotonic() + 3
+            while not future.done() and time.monotonic() < deadline:
+                h.run(.01)
+            self.assertTrue(future.done(), 'trajectory service timed out')
+            return future.result()
+        listing = call()
+        self.assertFalse(listing.reason)
+        self.assertEqual(listing.filenames, sorted(p.name for p in (ROOT/'miscellaneous/datasets/ref_trajs/open_source').glob('*.csv')))
+        name = 'LINE_ONE_WAY_L20_10mps.csv'
+        for bad in ['../' + name, '/tmp/' + name, 'missing.csv']:
+            self.assertFalse(call(bad).queued)
+        self.assertFalse(call(name).queued, 'manual mode accepted CSV')
+        h.run(.4)
+        h.auto = True
+        h.run(.3)
+        self.assertTrue(call(name).queued)
+        h.run(.2)
+        status = h.received['goal_status'][-1]
+        self.assertEqual(status.request_state, GoalStatus.ACCEPTED, status.request_reason)
+        self.assertEqual(status.active_trajectory, name)
+        sequence = status.active_request_sequence
+        endpoint = status.active_enu
+        self.assertFalse(call(name).queued, 'moving CSV accepted another trajectory')
+        # Feed the published reference back as synthetic state: validates the
+        # actual ROS/control/reference path, not aircraft dynamics or tracking.
+        deadline = time.monotonic() + 12
+        while time.monotonic() < deadline:
+            ref = h.received['reference'][-1]
+            h.position = (ref.pose.pose.position.x, ref.pose.pose.position.y, ref.pose.pose.position.z)
+            h.velocity = (ref.twist.twist.linear.x, ref.twist.twist.linear.y, ref.twist.twist.linear.z)
+            h.run(.02)
+            status = h.received['goal_status'][-1]
+            if status.active_phase == GoalStatus.STABLE:
+                break
+        self.assertEqual(status.active_phase, GoalStatus.STABLE, status.active_reason)
+        self.assertEqual(status.active_request_sequence, sequence)
+        self.assertEqual(status.active_trajectory, name)
+        self.assertAlmostEqual(h.received['reference'][-1].pose.pose.position.x, endpoint.x, places=5)
+        h.run(.1)
+        self.assertEqual(h.received['goal_status'][-1].active_phase, GoalStatus.STABLE)
+        goal = PointStamped()
+        goal.header.frame_id = 'odom'
+        goal.point = endpoint
+        goal.point.z += .1
+        h.publisher('go_to_position', PointStamped).publish(goal)
+        h.run(.08)
+        self.assertEqual(h.received['goal_status'][-1].request_state, GoalStatus.ACCEPTED)
+        self.assertFalse(h.received['goal_status'][-1].active_trajectory)
+        h.auto = False
+        h.run(.08)
+        h.velocity = (0., 0., 0.)
+        h.run(.6)
+        h.auto = True
+        h.run(.2)
+        self.assertFalse(h.received['goal_status'][-1].active_valid, 'CSV replayed on AUTO reentry')
+        self.assertTrue(call(name).queued)
+        h.run(.15)
+        pause_publisher.publish(Empty())
+        h.run(.1)
+        status = h.received['goal_status'][-1]
+        self.assertTrue(status.pause_active)
+        self.assertFalse(status.active_trajectory)
+
     def test_multi_route_atomic_admission_feedback_pause_and_reset(self):
         for mode in (GeographicRoute.STRAIGHT, GeographicRoute.SMOOTH):
             h = DeliveryHarness(shadow=False)
@@ -434,6 +514,8 @@ class DeliveryTests(unittest.TestCase):
                 h.subscribe('reference', Odometry)
                 h.subscribe('goal_status', GoalStatus)
                 publisher = h.publisher('go_to_geographic_route', GeographicRoute)
+                # Discover the volatile pause subscription before the one-shot command.
+                pause_publisher = h.publisher('pause_hover', Empty)
                 origins = h.node.create_publisher(NavigationOrigin, 'navigation/origin',
                     QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
                 origin = NavigationOrigin(session_id=h.fc_session, altitude_reference='msl', xy_valid=True,
@@ -476,7 +558,7 @@ class DeliveryTests(unittest.TestCase):
                 self.assertEqual(status.request_state,GoalStatus.REJECTED)
                 self.assertEqual(status.active_request_sequence,sequence)
                 self.assertEqual(len(status.active_route_enu),3)
-                h.publisher('pause_hover',Empty).publish(Empty());h.run(.08)
+                pause_publisher.publish(Empty());h.run(.08)
                 status=h.received['goal_status'][-1]
                 self.assertTrue(status.pause_active)
                 self.assertFalse(status.active_route_enu)

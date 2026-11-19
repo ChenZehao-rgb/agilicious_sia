@@ -7,7 +7,9 @@ const mpcHelp = {
   Q_att_x: '滚转相关的倾斜误差权重。增大后更重视该姿态分量的参考跟踪。',
   Q_att_y: '俯仰相关的倾斜误差权重。增大后更重视该姿态分量的参考跟踪。',
   Q_att_z: '偏航相关的姿态误差权重。增大后更重视朝向跟踪。',
-  Q_vel: '三轴速度误差的共用权重。增大后更重视参考速度跟踪，不直接设置飞行速度。',
+  Q_vel_x: 'ENU x（东向）速度误差权重。增大后更重视该方向的参考速度跟踪，不直接设置飞行速度。',
+  Q_vel_y: 'ENU y（北向）速度误差权重。增大后更重视该方向的参考速度跟踪，不直接设置飞行速度。',
+  Q_vel_z: 'ENU z（向上）速度误差权重。增大后更重视该方向的参考速度跟踪，不直接设置飞行速度。',
   R_collective_thrust: '总推力加速度（T/m）偏离参考值的惩罚。增大后更抑制额外推力修正，响应可能更保守。',
   R_body_rates_x: '机体 x 轴（滚转）角速度偏离参考值的惩罚。增大后更抑制该轴的额外角速度修正。',
   R_body_rates_y: '机体 y 轴（俯仰）角速度偏离参考值的惩罚。增大后更抑制该轴的额外角速度修正。',
@@ -22,7 +24,8 @@ let tuningCurrent = null, tuningReady = false, tuningReading = false;
 const tuningBusy = {trajectory: false, mpc: false}, tuningDirty = new Set();
 const tuningInput = name => $('tuning-' + name);
 function tuningActual(group, name) {
-  if (name.startsWith('R_body_rates_')) return tuningCurrent?.mpc.R_body_rates?.['xyz'.indexOf(name.slice(-1))];
+  if (name.startsWith('Q_vel_') || name.startsWith('R_body_rates_'))
+    return tuningCurrent?.mpc[name.slice(0, -2)]?.['xyz'.indexOf(name.slice(-1))];
   return tuningCurrent?.[group]?.[name];
 }
 for (const [group, fields] of Object.entries(tuningFields)) {
@@ -100,9 +103,10 @@ async function applyTuning(group) {
     }
     submitted.push(name);
     if (value === tuningActual(group, name)) continue;
-    if (name.startsWith('R_body_rates_')) {
-      values.R_body_rates ??= [...tuningCurrent.mpc.R_body_rates];
-      values.R_body_rates['xyz'.indexOf(name.slice(-1))] = value;
+    if (name.startsWith('Q_vel_') || name.startsWith('R_body_rates_')) {
+      const key = name.slice(0, -2);
+      values[key] ??= [...tuningCurrent.mpc[key]];
+      values[key]['xyz'.indexOf(name.slice(-1))] = value;
     } else values[name] = value;
   }
   if (!Object.keys(values).length) { resultBox.textContent = '没有改变的参数'; return; }

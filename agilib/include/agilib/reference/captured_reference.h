@@ -12,12 +12,14 @@
 #include "agilib/reference/trajectory_reference/sampled_trajectory.hpp"
 
 namespace agi {
-// Single control-thread owner. A relative trajectory is loaded once; only the
-// sampled prediction window is transformed when the vehicle takes control.
+// Single control-thread owner. Relative CSV trajectories retain their capture
+// transform; only the sampled prediction window is transformed at query time.
 class CapturedReference final : public ReferenceBase {
 public:
 	CapturedReference() : ReferenceBase("Captured hover/trajectory") {}
 	void setTrajectory(std::shared_ptr<SampledTrajectory> trajectory) { _trajectory = std::move(trajectory); }
+	bool startSampledTrajectory(std::shared_ptr<SampledTrajectory> trajectory, double now, const Vector<3>& fence_min,
+	                            const Vector<3>& fence_max);
 	// Online references are already in odom; the configured CSV keeps its capture transform.
 	bool goToPosition(const Vector<3>& position, double now, double max_velocity, double max_acceleration, double yaw_rate_max) {
 		if (!position.allFinite() || !std::isfinite(now) || !std::isfinite(max_velocity) || max_velocity <= 0 ||
@@ -85,6 +87,7 @@ public:
 			if (!trajectory->valid()) return false;
 			trajectories.push_back(std::move(trajectory));
 		}
+		_online_sampled.reset();
 		_smooth_active = false;
 		_pause_yaw.reset();
 		_online_turn = std::move(turn);
@@ -154,6 +157,7 @@ public:
 			    (sample.a - boundary.a).norm() > 1e-6 || (sample.j - boundary.j).norm() > 1e-6)
 				return "brake polynomial boundary mismatch";
 		}
+		_online_sampled.reset();
 		_smooth_active = false;
 		_online_turn.reset();
 		_online_turn_end = 0;
@@ -170,6 +174,7 @@ public:
 	bool pauseActive() const { return static_cast<bool>(_pause_yaw); }
 	Vector<3> onlineEndpoint() const { return _online_end.p; }
 	void clearOnlineTarget() {
+		_online_sampled.reset();
 		_smooth_active = false;
 		_smooth_plan.reset();
 		_smooth_segments.clear();
@@ -178,7 +183,7 @@ public:
 		_online_turn.reset();
 		_online_trajectories.clear();
 	}
-	bool hasOnlineTarget() const { return _smooth_active || !_online_trajectories.empty(); }
+	bool hasOnlineTarget() const { return _online_sampled || _smooth_active || !_online_trajectories.empty(); }
 	bool movingAt(double now) const {
 		if (hasOnlineTarget()) return now - _online_start < _online_end.t;
 		return _execute_trajectory && now - start_state_.t < _trajectory->getEndTime();
@@ -192,6 +197,19 @@ public:
 		_execute_trajectory = execute_trajectory && static_cast<bool>(_trajectory);
 	}
 	Setpoint getSetpoint(const QuadState& state, const Scalar t) override {
+		if (_online_sampled) {
+			const double relative_time = std::max(0.0, t - _online_start);
+			if (relative_time >= _online_end.t) return hover(_online_end, t);
+			Setpoint result = _online_sampled->getSetpoint(state, relative_time);
+			result.state.p = _online_origin + _online_heading * result.state.p;
+			result.state.v = _online_heading * result.state.v;
+			result.state.a = _online_heading * result.state.a;
+			result.state.j = _online_heading * result.state.j;
+			result.state.s = _online_heading * result.state.s;
+			result.state.q(_online_heading * result.state.q());
+			result.state.t = result.input.t = t;
+			return result;
+		}
 		if (_smooth_active) return sampleSmooth(t);
 		if (hasOnlineTarget()) {
 			const double relative_time = std::max(0.0, t - _online_start);
@@ -277,6 +295,8 @@ private:
 	}
 	std::shared_ptr<Polynomial<>> _pause_yaw;
 	std::shared_ptr<SampledTrajectory> _trajectory;
+	std::shared_ptr<SampledTrajectory> _online_sampled;
+	Vector<3> _online_origin{Vector<3>::Zero()};
 	std::shared_ptr<MinSnapTrajectory> _online_turn;
 	std::vector<std::shared_ptr<MinSnapTrajectory>> _online_trajectories;
 	double _online_turn_end{0};

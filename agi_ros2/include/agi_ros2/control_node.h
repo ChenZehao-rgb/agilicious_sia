@@ -3,6 +3,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <future>
 #include <memory>
 #include <optional>
 #include <string>
@@ -19,6 +20,7 @@
 #include "agi_ros2/msg/health.hpp"
 #include "agi_ros2/msg/navigation_origin.hpp"
 #include "agi_ros2/msg/output_status.hpp"
+#include "agi_ros2/srv/execute_trajectory.hpp"
 #include "agilib/pilot/hardware_pilot.hpp"
 #include "geometry_msgs/msg/point_stamped.hpp"
 #include "nav_msgs/msg/odometry.hpp"
@@ -43,6 +45,12 @@ private:
 	                          std::shared_ptr<rcl_interfaces::srv::SetParametersAtomically::Response> response);
 	rclcpp::Service<rcl_interfaces::srv::GetParameters>::SharedPtr _get_runtime_parameters;
 	rclcpp::Service<rcl_interfaces::srv::SetParametersAtomically>::SharedPtr _set_runtime_parameters;
+	void executeTrajectory(const std::shared_ptr<srv::ExecuteTrajectory::Request> request,
+	                       std::shared_ptr<srv::ExecuteTrajectory::Response> response);
+	rclcpp::Service<srv::ExecuteTrajectory>::SharedPtr _execute_trajectory;
+	std::future<std::shared_ptr<agi::SampledTrajectory>> _trajectory_load;
+	bool _pending_trajectory = false;
+	std::string _trajectory_filename;
 	void onState(msg::FusedState::ConstSharedPtr message);
 	void onOutputStatus(msg::OutputStatus::ConstSharedPtr message);
 	void onGoToPosition(geometry_msgs::msg::PointStamped::ConstSharedPtr message);
@@ -56,7 +64,7 @@ private:
 	void beginGoalRequest(const char* source, const std::string& frame);
 	void publishGoalStatus();
 	void updateGoalStatus(const agi::hardware::ControlDecision& decision, const std::optional<agi::Vector<3>>& goal, bool pause,
-	                      bool route);
+	                      bool route, const std::string& trajectory);
 	void tick();
 	void dispatchFcState();
 	void runCycle(bool computation_requested);

@@ -46,7 +46,7 @@ public:
 	ControlDecision tick(const QuadState& fused_state, Evidence evidence, bool shadow_only = false, bool navigation_valid = false,
 	                     bool computation_requested = true, const Vector<3>* go_to_position = nullptr, bool pause_hover = false,
 	                     const Vector<3>& fence_min = Vector<3>::Constant(-INF), const Vector<3>& fence_max = Vector<3>::Constant(INF),
-	                     const OnlineRoute* route = nullptr);
+	                     const OnlineRoute* route = nullptr, std::shared_ptr<SampledTrajectory> trajectory = nullptr);
 	const OnlineRoute& activeRoute() const { return _route; }
 	std::pair<double, double> getTrajectoryParameters() const;
 	bool setTrajectoryParameters(double max_velocity, double max_acceleration);

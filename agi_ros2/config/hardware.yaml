@@ -52,7 +52,7 @@ pilot:
           Q_att_x: 10
           Q_att_y: 10
           Q_att_z: 50
-          Q_vel: 5.5
+          Q_vel: [7.0, 7.0, 5.5]
           # Conservative initial weights from generic plant simulation; not verified on real hardware.
           R_collective_thrust: 1.0
           R_body_rates: [100.0, 100.0, 100.0]

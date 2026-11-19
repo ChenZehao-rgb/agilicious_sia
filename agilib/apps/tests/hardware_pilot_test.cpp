@@ -111,7 +111,55 @@ void stateFreshnessTests() {
 	decision = delayed.tick(sample, health(state_time));
 	require(!decision.state_valid && !decision.evidence.command_valid, "16 ms state bypassed 15 ms limit");
 }
+void selectedTrajectoryTests() {
+	QuadState state;
+	state.setZero();
+	state.t = 10;
+	state.p = Vector<3>(2, 3, 4);
+	state.q(M_PI / 2);
+	SetpointVector points(2);
+	for (int i = 0; i < 2; ++i) {
+		points[i].state.setZero();
+		points[i].state.t = i;
+		points[i].state.p.x() = i;
+		points[i].state.v.x() = 1;
+		points[i].state.w.z() = .1;
+		points[i].input = Command(i, G, points[i].state.w);
+	}
+	auto trajectory = std::make_shared<SampledTrajectory>(points);
+	CapturedReference reference;
+	reference.capture(state, 10, false);
+	const Vector<3> fence_min = Vector<3>::Constant(-100), fence_max = Vector<3>::Constant(100);
+	require(!reference.startSampledTrajectory(trajectory, 10, fence_min, Vector<3>::Zero()), "CSV endpoint fence ignored");
+	require(!reference.hasOnlineTarget(), "rejected CSV changed active reference");
+	require(reference.startSampledTrajectory(trajectory, 10, fence_min, fence_max), "CSV installation failed");
+	require(reference.hasOnlineTarget() && reference.movingAt(10.5), "CSV phase missing");
+	const auto middle = reference.getSetpoint(state, 10.5);
+	require(middle.state.p.isApprox(Vector<3>(2, 3.5, 4)), "CSV did not align current hover position/heading");
+	require(middle.state.v.isApprox(Vector<3>(0, 1, 0)), "CSV velocity transform");
+	require(middle.input.omega.isApprox(points.front().input.omega), "CSV body rates rotated into world");
+	require(middle.state.t == 10.5 && middle.input.t == 10.5, "CSV relative clock");
+	const auto end = reference.getSetpoint(state, 12);
+	require(end.state.p.isApprox(Vector<3>(2, 4, 4)) && end.state.v.isZero() && end.state.w.isZero(), "CSV terminal hover");
+	require(!reference.movingAt(12) && reference.hasOnlineTarget(), "CSV terminal identity lost");
+	// MPC future queries must not advance the active trajectory's sampling phase.
+	require(reference.getSetpoint(state, 10.25).state.p.isApprox(Vector<3>(2, 3.25, 4)), "CSV horizon advanced current time");
+	require(reference.goToPosition(Vector<3>(2, 5, 4), 12, 1, 1, 1), "next goal after CSV failed");
+	require(reference.getSetpoint(state, 12).state.p.isApprox(end.state.p), "next goal reused CSV/start position");
+	reference.capture(state, 20, false);
+	require(!reference.hasOnlineTarget() && !reference.movingAt(20), "CSV resumed on recapture");
+	require(reference.startSampledTrajectory(trajectory, 20, fence_min, fence_max), "second CSV start failed");
+	require(reference.pauseHover(20.5, 1, fence_min, fence_max).empty(), "CSV pause failed");
+	require(reference.pauseActive(), "CSV pause identity missing");
+	const auto stopped = reference.getSetpoint(state, 30);
+	require(stopped.state.v.isZero() && stopped.state.w.isZero(), "CSV pause did not hold");
+	require(reference.startSampledTrajectory(trajectory, 30, fence_min, fence_max), "CSV after pause failed");
+	const auto paused_start = reference.getSetpoint(state, 30);
+	require(paused_start.state.p.isApprox(stopped.state.p), "CSV after pause used old capture");
+	require(!reference.pauseActive(), "CSV retained pause state");
+}
 void referenceAndWatchdogTests() {
+	selectedTrajectoryTests();
 	stateFreshnessTests();
 	QuadState state;
 	state.setZero();

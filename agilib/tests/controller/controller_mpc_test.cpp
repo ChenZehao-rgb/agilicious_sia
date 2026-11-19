@@ -275,7 +275,7 @@ TEST(MPC, RuntimeWeightsAreInstalledAtomicallyAndUsedByNextSolve) {
 	const auto before = prediction.front().input;
 	auto candidate = controller.getParameters();
 	candidate->Q_pos_ *= 4;
-	candidate->Q_vel_.setConstant(5);
+	candidate->Q_vel_ << 7.0, 8.0, 5.5;
 	candidate->R_ << 1, 100, 110, 120;
 	candidate->exp_decay_ = 1.01;
 	EXPECT_NE(controller.getParameters()->Q_pos_.x(), candidate->Q_pos_.x());

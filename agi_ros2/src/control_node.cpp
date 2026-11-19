@@ -101,6 +101,8 @@ ControlNode::ControlNode()
 		RCLCPP_INFO(get_logger(), "Loaded trajectory: %s (%zu samples, %.3f s)", trajectory.c_str(), points.size(),
 		            points.back().state.t);
 	}
+	_execute_trajectory = create_service<srv::ExecuteTrajectory>(
+	        "~/execute_trajectory", std::bind(&ControlNode::executeTrajectory, this, std::placeholders::_1, std::placeholders::_2));
 	_get_runtime_parameters = create_service<rcl_interfaces::srv::GetParameters>(
 	        "~/get_runtime_parameters",
 	        std::bind(&ControlNode::getRuntimeParameters, this, std::placeholders::_1, std::placeholders::_2));
@@ -151,6 +153,55 @@ ControlNode::ControlNode()
 	}
 }
 
+void ControlNode::executeTrajectory(const std::shared_ptr<srv::ExecuteTrajectory::Request> request,
+                                    std::shared_ptr<srv::ExecuteTrajectory::Response> response) {
+	if (!request->filename.empty()) {
+		beginGoalRequest("execute_trajectory", "captured CSV");
+		_goal_status.requested_trajectory = request->filename;
+	}
+	try {
+		const auto directory = std::filesystem::canonical(AGI_TRAJECTORY_DIRECTORY);
+		if (request->filename.empty()) {
+			for (const auto& entry : std::filesystem::directory_iterator(directory)) {
+				if (entry.is_regular_file() && entry.path().extension() == ".csv" &&
+				    std::filesystem::canonical(entry.path()).parent_path() == directory)
+					response->filenames.push_back(entry.path().filename().string());
+			}
+			std::sort(response->filenames.begin(), response->filenames.end());
+			return;
+		}
+		const std::filesystem::path name(request->filename);
+		if (name.filename() != name || name.extension() != ".csv") throw std::invalid_argument("expected a CSV filename");
+		const auto path = std::filesystem::canonical(directory / name);
+		if (path.parent_path() != directory || !std::filesystem::is_regular_file(path))
+			throw std::invalid_argument("trajectory must belong to open_source");
+		if (_output_fault || _pending_pause || _pending_goal || _pending_route || _trajectory_load.valid())
+			throw std::invalid_argument("another target/loading/pause or output reset pending");
+		if (!_goal_rejection.empty()) throw std::invalid_argument(_goal_rejection);
+		// Disk I/O, parsing and allocation stay off the control executor. Only a
+		// ready candidate enters tick(), where current authority/hover is rechecked.
+		_trajectory_load = std::async(std::launch::async, [path] {
+			const auto rows = agi::trajectory_csv::readTrajectoryRows(path);
+			const auto points = agi::trajectory_csv::loadTrajectory(rows, 0, agi::Vector<3>::Zero(), 0,
+			                                                        agi::trajectory_csv::estimateSourceMass(rows), -agi::INF);
+			return std::make_shared<agi::SampledTrajectory>(points);
+		});
+		_trajectory_filename = request->filename;
+		_pending_trajectory = true;
+		_pending_goal_sequence = _goal_status.request_sequence;
+		_goal_status.request_reason = "loading CSV; holding current reference";
+		response->queued = true;
+		response->reason = _goal_status.request_reason;
+	} catch (const std::exception& error) {
+		response->reason = error.what();
+		if (!request->filename.empty()) {
+			_goal_status.request_state = msg::GoalStatus::REJECTED;
+			_goal_status.request_reason = error.what();
+		}
+	}
+	if (!request->filename.empty()) publishGoalStatus();
+}
+
 void ControlNode::getRuntimeParameters(const std::shared_ptr<rcl_interfaces::srv::GetParameters::Request> request,
                                        std::shared_ptr<rcl_interfaces::srv::GetParameters::Response> response) {
 	const auto trajectory = _pilot->getTrajectoryParameters();
@@ -177,13 +228,9 @@ void ControlNode::getRuntimeParameters(const std::shared_ptr<rcl_interfaces::srv
 				value = rclcpp::Parameter(name, mpc->Q_pos_[index]);
 			else if (index < 6)
 				value = rclcpp::Parameter(name, mpc->Q_att_[index - 3]);
-			else if (index == 6) {
-				if ((mpc->Q_vel_.array() == mpc->Q_vel_[0]).all())
-					value = rclcpp::Parameter(name, mpc->Q_vel_[0]);
-				else
-					value = rclcpp::Parameter(name,
-					                          std::vector<double>{mpc->Q_vel_[0], mpc->Q_vel_[1], mpc->Q_vel_[2]});
-			} else if (index == 7)
+			else if (index == 6)
+				value = rclcpp::Parameter(name, std::vector<double>{mpc->Q_vel_[0], mpc->Q_vel_[1], mpc->Q_vel_[2]});
+			else if (index == 7)
 				value = rclcpp::Parameter(name, mpc->R_[0]);
 			else if (index == 8)
 				value = rclcpp::Parameter(name, std::vector<double>{mpc->R_[1], mpc->R_[2], mpc->R_[3]});
@@ -216,6 +263,12 @@ void ControlNode::setRuntimeParameters(const std::shared_ptr<rcl_interfaces::srv
 			if (!is_trajectory && !candidate) throw std::invalid_argument("MPC unavailable for GEO");
 			const auto& value = parameter.value;
 			using Type = rcl_interfaces::msg::ParameterType;
+			if (name == "Q_vel" && value.type == Type::PARAMETER_DOUBLE_ARRAY) {
+				if (value.double_array_value.size() != 3)
+					throw std::invalid_argument("Q_vel requires three numeric elements x/y/z");
+				for (int i = 0; i < 3; ++i) candidate->Q_vel_[i] = value.double_array_value[i];
+				continue;
+			}
 			if (name == "R_body_rates") {
 				if (value.type != Type::PARAMETER_DOUBLE_ARRAY || value.double_array_value.size() != 3)
 					throw std::invalid_argument("R_body_rates requires three numeric elements x/y/z");
@@ -309,7 +362,7 @@ void ControlNode::onOutputStatus(msg::OutputStatus::ConstSharedPtr message) {
 
 void ControlNode::clearPendingGoal(const char* reason) {
 	const bool preparing = _goal_status.route_preparing;
-	if (_pending_goal || _pending_route || _goal_status.route_preparing) {
+	if (_pending_goal || _pending_route || _pending_trajectory || _goal_status.route_preparing) {
 		RCLCPP_WARN(get_logger(), "go_to_position rejected: %s", reason);
 		if (_pending_goal_sequence == _goal_status.request_sequence) {
 			_goal_status.request_state = msg::GoalStatus::REJECTED;
@@ -319,6 +372,7 @@ void ControlNode::clearPendingGoal(const char* reason) {
 	}
 	_pending_goal.reset();
 	_pending_route.reset();
+	_pending_trajectory = false;
 	_goal_status.route_preparing = false;
 	if (_pending_pause && _pending_pause_sequence == _goal_status.request_sequence) {
 		_goal_status.request_state = msg::GoalStatus::REJECTED;
@@ -329,6 +383,7 @@ void ControlNode::clearPendingGoal(const char* reason) {
 	if (_goal_status.active_valid) {
 		_goal_status.active_valid = false;
 		_goal_status.active_route_enu.clear();
+		_goal_status.active_trajectory.clear();
 		_goal_status.active_waypoint_index = 0;
 		_goal_status.pause_active = false;
 		_goal_status.active_phase = msg::GoalStatus::NO_TARGET;
@@ -341,13 +396,15 @@ void ControlNode::clearPendingGoal(const char* reason) {
 
 void ControlNode::onPauseHover(std_msgs::msg::Empty::ConstSharedPtr) {
 	// Finish the superseded pending request before publishing the new request.
-	if ((_pending_goal || _pending_route || _goal_status.route_preparing) && _pending_goal_sequence == _goal_status.request_sequence) {
+	if ((_pending_goal || _pending_route || _pending_trajectory || _goal_status.route_preparing) &&
+	    _pending_goal_sequence == _goal_status.request_sequence) {
 		_goal_status.request_state = msg::GoalStatus::REJECTED;
 		_goal_status.request_reason = "superseded by pause_hover";
 		publishGoalStatus();
 	}
 	_pending_goal.reset();
 	_pending_route.reset();
+	_pending_trajectory = false;
 	beginGoalRequest("pause_hover", "odom");
 	// Coalesce pending pauses into the latest sequence; no command queue or replay.
 	_pending_pause = true;
@@ -369,6 +426,7 @@ void ControlNode::beginGoalRequest(const char* source, const std::string& frame)
 	_goal_status.requested_geographic = msg::GeographicGoal();
 	_goal_status.requested_enu = geometry_msgs::msg::Point();
 	_goal_status.requested_route = msg::GeographicRoute();
+	_goal_status.requested_trajectory.clear();
 	_goal_status.request_state = msg::GoalStatus::PENDING;
 	_goal_status.request_reason = "waiting for control tick";
 }
@@ -383,10 +441,10 @@ void ControlNode::publishGoalStatus() {
 }
 
 void ControlNode::updateGoalStatus(const agi::hardware::ControlDecision& decision, const std::optional<agi::Vector<3>>& goal, bool pause,
-                                   bool route) {
+                                   bool route, const std::string& trajectory) {
 	bool changed = false;
 	const uint64_t sequence = pause ? _pending_pause_sequence : _pending_goal_sequence;
-	if (goal || pause || route || decision.route_request_result) {
+	if (goal || pause || route || !trajectory.empty() || decision.route_request_result) {
 		if (sequence == _goal_status.request_sequence) {
 			_goal_status.request_state = decision.goal_pending && !pause ? msg::GoalStatus::PENDING
 			                             : decision.goal_accepted        ? msg::GoalStatus::ACCEPTED
@@ -397,6 +455,7 @@ void ControlNode::updateGoalStatus(const agi::hardware::ControlDecision& decisio
 		// Idempotent pauses retain the first installed active request identity.
 		if (decision.goal_accepted && !(pause && _goal_status.pause_active)) {
 			_goal_status.active_request_sequence = sequence;
+			_goal_status.active_trajectory = trajectory;
 			_goal_status.active_enu.x = decision.active_endpoint.x();
 			_goal_status.active_enu.y = decision.active_endpoint.y();
 			_goal_status.active_enu.z = decision.active_endpoint.z();
@@ -432,6 +491,10 @@ void ControlNode::updateGoalStatus(const agi::hardware::ControlDecision& decisio
 	}
 	const auto phase = static_cast<uint8_t>(decision.online_goal_phase);
 	const bool active = phase != msg::GoalStatus::NO_TARGET;
+	if (!active && !_goal_status.active_trajectory.empty()) {
+		_goal_status.active_trajectory.clear();
+		changed = true;
+	}
 	if (_goal_status.active_valid != active || _goal_status.active_phase != phase ||
 	    _goal_status.pause_active != decision.pause_active) {
 		_goal_status.pause_active = decision.pause_active;
@@ -524,7 +587,7 @@ bool ControlNode::enqueueRoute(const agi::hardware::OnlineRoute& route, const st
 		rejection = "output/state reset pending";
 	else if (_pending_pause)
 		rejection = "pause_hover pending";
-	else if (_pending_goal || _pending_route)
+	else if (_pending_goal || _pending_route || _pending_trajectory)
 		rejection = "another target pending";
 	else
 		rejection = _goal_rejection;
@@ -691,6 +754,20 @@ void ControlNode::runCycle(bool computation_requested) {
 	}
 	_computation_requested = computation_requested;
 	_sample_age_before = _fc_event_control ? monotonicSeconds() - evidence.fc_sample_time : NAN;
+	std::shared_ptr<agi::SampledTrajectory> trajectory;
+	if (_trajectory_load.valid() && _trajectory_load.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+		try {
+			auto candidate = _trajectory_load.get();
+			if (_pending_trajectory) trajectory = std::move(candidate);
+		} catch (const std::exception& error) {
+			if (_pending_trajectory && _pending_goal_sequence == _goal_status.request_sequence) {
+				_goal_status.request_state = msg::GoalStatus::REJECTED;
+				_goal_status.request_reason = error.what();
+				publishGoalStatus();
+			}
+		}
+		_pending_trajectory = false;
+	}
 	const bool pause = _pending_pause;
 	const auto goal = pause ? std::nullopt : _pending_goal;
 	const auto route = pause ? std::nullopt : _pending_route;
@@ -701,9 +778,9 @@ void ControlNode::runCycle(bool computation_requested) {
 	const agi::Vector<3> fence_min = fenced ? agi::Vector<3>(_geofence_min.data()) : agi::Vector<3>::Constant(-agi::INF);
 	const agi::Vector<3> fence_max = fenced ? agi::Vector<3>(_geofence_max.data()) : agi::Vector<3>::Constant(agi::INF);
 	const auto decision = _pilot->tick(state, evidence, _shadow_only, navigation_valid, computation_requested, goal ? &*goal : nullptr,
-	                                   pause, fence_min, fence_max, route ? &*route : nullptr);
+	                                   pause, fence_min, fence_max, route ? &*route : nullptr, pause ? nullptr : trajectory);
 	_goal_rejection = decision.goal_rejection;
-	updateGoalStatus(decision, goal, pause, route.has_value());
+	updateGoalStatus(decision, goal, pause, route.has_value(), trajectory && !pause ? _trajectory_filename : "");
 	_cycle_end_time = monotonicSeconds();
 	if (warm_before > 0 && (fault || _pilot->warmCycles() < warm_before)) ++_warm_resets;
 	_cycle_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - cycle_start).count();

@@ -7,6 +7,7 @@ foreach(dep rcl_interfaces diagnostic_msgs rclcpp sensor_msgs geometry_msgs nav_
   find_package(${dep} REQUIRED)
 endforeach()
 rosidl_generate_interfaces(${PROJECT_NAME}
+  "srv/ExecuteTrajectory.srv"
   "msg/Rtk.msg" "msg/Authority.msg" "msg/Health.msg"
   "msg/Navigation.msg" "msg/LocalNavigation.msg" "msg/NavigationOrigin.msg" "msg/GeographicGoal.msg" "msg/GeographicRoute.msg" "msg/GoalStatus.msg" "msg/Barometer.msg"
   "msg/ComputationStatus.msg" "msg/MspState.msg"
@@ -33,6 +34,8 @@ add_executable(state_fusion_node src/state_fusion_main.cpp
   src/state_fusion_node.cpp ${AGILIB_ROOT}/apps/companion_ahrs.cpp)
 add_executable(fc_state_adapter_node src/fc_state_adapter_main.cpp src/fc_state_adapter_node.cpp)
 add_executable(control_node src/control_main.cpp src/control_node.cpp)
+target_compile_definitions(control_node PRIVATE
+  AGI_TRAJECTORY_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}/../miscellaneous/datasets/ref_trajs/open_source")
 add_executable(command_output_node src/command_output_main.cpp
   src/command_output_node.cpp src/msp_telemetry.cpp)
 foreach(target ros2_node_common state_fusion_node fc_state_adapter_node control_node command_output_node)

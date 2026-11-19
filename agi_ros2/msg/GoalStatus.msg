@@ -36,3 +36,7 @@ geometry_msgs/Point[] active_route_enu
 uint8 active_route_mode
 uint32 active_waypoint_index
 bool route_preparing
+
+# CSV identity follows the retained request and active identities above.
+string requested_trajectory
+string active_trajectory

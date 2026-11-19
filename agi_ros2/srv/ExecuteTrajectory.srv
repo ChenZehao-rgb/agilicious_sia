@@ -1,0 +1,6 @@
+# Empty filename lists CSV files on the control host without starting motion.
+string filename
+---
+string[] filenames
+bool queued
+string reason

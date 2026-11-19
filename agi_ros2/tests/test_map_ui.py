@@ -24,6 +24,7 @@ from rclpy.executors import SingleThreadedExecutor
 from rclpy.parameter import Parameter
 from rclpy.serialization import serialize_message
 from rosidl_runtime_py.convert import message_to_ordereddict
+from agi_ros2.srv import ExecuteTrajectory
 from agi_ros2.msg import FcEstimatorStatus, FusedState, GeographicGoal, GeographicRoute, GlobalPositionInt, GoalStatus, NavigationOrigin, Health, Authority, ComputationStatus, OutputStatus
 
 
@@ -55,12 +56,19 @@ class DisplayTests(unittest.TestCase):
                 ('trajectory', {'go_to_pose_max_vel': True}),
                 ('trajectory', {'go_to_pose_max_vel': 0}),
                 ('mpc', {'Q_pos_x': -1}), ('mpc', {'Q_vel': math.nan}),
+                ('mpc', {'Q_vel': []}), ('mpc', {'Q_vel': [1, 2]}), ('mpc', {'Q_vel': [1, 2, 3, 4]}),
+                ('mpc', {'Q_vel': [1, True, 3]}), ('mpc', {'Q_vel': [1, math.nan, 3]}),
+                ('mpc', {'Q_vel': [1, math.inf, 3]}), ('mpc', {'Q_vel': [1, -1, 3]}),
                 ('mpc', {'R_body_rates': [1, 2]}), ('mpc', {'R_body_rates': [1, True, 3]}),
                 ('mpc', {'R_body_rates_x': 1}), ('mpc', {'exp_decay': 0}),
                 ('trajectory', {'Q_pos_x': 1})]:
             with self.assertRaises(ValueError): map_ui.tuning_patch({'group': group, 'values': values})
         values = map_ui.tuning_patch({'group': 'mpc', 'values': {'Q_pos_x': 0, 'exp_decay': 1.01, 'R_body_rates': [1, 2, 3]}})
         self.assertEqual(values[2].value.double_array_value.tolist(), [1., 2., 3.])
+        velocity = map_ui.tuning_patch({'group': 'mpc', 'values': {'Q_vel': [7, 7, 5.5]}})[0]
+        self.assertEqual(velocity.value.double_array_value.tolist(), [7., 7., 5.5])
+        scalar = map_ui.tuning_patch({'group': 'mpc', 'values': {'Q_vel': 5.5}})[0]
+        self.assertEqual(scalar.value.double_value, 5.5)
         with self.assertRaises(ValueError):
             json.loads('{"values":{"Q_pos_x":1,"Q_pos_x":2}}', object_pairs_hook=map_ui.unique_json)
 
@@ -191,6 +199,8 @@ class DDSTests(unittest.TestCase):
                              '{"group":"mpc","values":{"Q_pos_x":true}}',
                              '{"group":"mpc","values":{"R_body_rates":[1,2]}}',
                              '{"group":"mpc","values":{"Q_vel":NaN}}',
+                             '{"group":"mpc","values":{"Q_vel":[7,7]}}',
+                             '{"group":"mpc","values":{"Q_vel":[7,NaN,5.5]}}',
                              '{"group":"trajectory","values":{"Q_pos_x":1}}']:
                     with self.assertRaises(urllib.error.HTTPError) as error: post(body)
                     self.assertEqual(error.exception.code, 400)
@@ -216,7 +226,7 @@ class DDSTests(unittest.TestCase):
             return response
         def set_values(request, response):
             calls.append(request)
-            if request.parameters[0].name.startswith('Q_'):
+            if installed['controller_type'] == 'GEO' and request.parameters[0].name.startswith('Q_'):
                 response.result.reason = 'GEO'; return response
             for item in request.parameters: installed[item.name] = Parameter.from_parameter_msg(item).value
             response.result.successful = True
@@ -243,6 +253,12 @@ class DDSTests(unittest.TestCase):
                 self.assertEqual(result['status'], 'applied')
                 self.assertIn('回读未完成', result['message'])
             self.assertEqual(len(calls), 3)
+            installed.update(controller_type='MPC', Q_vel=[7., 7., 5.5])
+            current = call(self.ui.get_tuning)
+            self.assertEqual(current['mpc']['Q_vel'], [7., 7., 5.5])
+            result = call(self.ui.set_tuning, {'group':'mpc', 'values':{'Q_vel':[7., 8., 5.5]}})
+            self.assertEqual(result['status'], 'applied')
+            self.assertEqual(result['current']['mpc']['Q_vel'], [7., 8., 5.5])
 
     def run_for(self, duration, publish=None):
         end, next_source, count = time.monotonic() + duration, time.monotonic(), 0
@@ -790,6 +806,51 @@ class DDSTests(unittest.TestCase):
                     self.assertIn('未确认', json.load(error.exception)['error'])
             finally:
                 self.ui.pause_publisher = original
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
+    def test_trajectory_http_service_validation_and_confirmation(self):
+        requests = []
+        def execute(request, response):
+            requests.append(request.filename)
+            response.filenames = ['one.csv', 'two.csv'] if not request.filename else []
+            response.queued = request.filename == 'one.csv'
+            response.reason = 'not stable' if request.filename == 'two.csv' else ''
+            return response
+        self.source.create_service(ExecuteTrajectory, 'flight_control/execute_trajectory', execute)
+        self.run_for(.3)
+        server = map_ui.make_server(self.ui, map_ui.MBTiles(None), '127.0.0.1', 0)
+        thread = threading.Thread(target=server.serve_forever)
+        thread.start()
+        base = f'http://127.0.0.1:{server.server_port}'
+        def request(path, payload=None):
+            data = json.dumps(payload).encode() if payload is not None else None
+            with urllib.request.urlopen(urllib.request.Request(base + path, data, {'Content-Type': 'application/json'})) as response:
+                return response.status, json.load(response)
+        def call(path, payload=None):
+            with ThreadPoolExecutor() as worker:
+                future = worker.submit(request, path, payload)
+                deadline = time.monotonic() + 4
+                while not future.done() and time.monotonic() < deadline:
+                    self.executor.spin_once(timeout_sec=.005)
+                return future.result()
+        try:
+            status, result = call('/api/trajectories')
+            self.assertEqual(result['filenames'], ['one.csv', 'two.csv'])
+            for payload in [{}, {'filename': ''}, {'filename': '../one.csv'}, {'filename': '/tmp/one.csv'},
+                            {'filename': True}, {'filename': 'one.json'}, {'filename': 'one.csv', 'auto': True}]:
+                with self.assertRaises(urllib.error.HTTPError): call('/api/trajectory', payload)
+            self.assertEqual(requests, [''])
+            status, result = call('/api/trajectory', {'filename': 'one.csv'})
+            self.assertEqual(status, 202)
+            self.assertEqual(result['status'], 'sent')
+            status, result = call('/api/trajectory', {'filename': 'two.csv'})
+            self.assertEqual(result['status'], 'rejected')
+            self.assertIn('not stable', result['message'])
+            self.assertEqual(requests, ['', 'one.csv', 'two.csv'])
+            self.assertFalse(self.commands)
         finally:
             server.shutdown()
             server.server_close()

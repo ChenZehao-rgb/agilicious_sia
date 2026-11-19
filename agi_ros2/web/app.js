@@ -14,6 +14,7 @@ const trail = L.polyline([], {color: '#72b6ee', weight: 3}).addTo(map);
 const draftRouteLayer = L.featureGroup().addTo(map);
 const activeRouteLine = L.polyline([], {color: '#86e1ad', weight: 2, dashArray: '6 8'}).addTo(map);
 let routeDraft = [], routeSelected = -1, routeDraftSignature = '';
+const trajectoryEnabled = () => $('trajectory-enabled').checked;
 const routeEnabled = () => $('route-enabled').checked;
 const direction = L.polyline([], {color: '#86e1ad', weight: 2, dashArray: '6 8'}).addTo(map);
 const latlng = position => [position.latitude, position.longitude];
@@ -148,6 +149,36 @@ function renderDraftRoute() {
   });
   L.polyline(positions, {color: '#ffbc66', weight: 2}).addTo(draftRouteLayer);
 }
+async function loadTrajectories() {
+  $('trajectory-refresh').disabled = true;
+  $('trajectory-list-status').textContent = '正在读取控制端轨迹列表…';
+  const selected = $('trajectory-file').value;
+  try {
+    const response = await fetch('/api/trajectories', {signal: AbortSignal.timeout(5000)});
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || '轨迹列表读取失败');
+    $('trajectory-file').replaceChildren();
+    for (const name of result.filenames) {
+      const option = document.createElement('option'); option.value = name; option.textContent = name;
+      $('trajectory-file').append(option);
+    }
+    if (result.filenames.includes(selected)) $('trajectory-file').value = selected;
+    $('trajectory-list-status').textContent = result.filenames.length ? `共 ${result.filenames.length} 条轨迹` : 'open_source 目录内没有 CSV';
+  } catch (error) {
+    $('trajectory-file').replaceChildren();
+    $('trajectory-list-status').textContent = error.message;
+  } finally { $('trajectory-refresh').disabled = false; }
+}
+$('trajectory-refresh').onclick = loadTrajectories;
+$('trajectory-enabled').onchange = () => {
+  if (trajectoryEnabled()) $('route-enabled').checked = false;
+  $('trajectory-editor').hidden = !trajectoryEnabled();
+  $('route-enabled').disabled = trajectoryEnabled();
+  for (const id of ['latitude', 'longitude', 'altitude', 'current-altitude']) $(id).disabled = trajectoryEnabled();
+  $('trajectory-file').required = trajectoryEnabled();
+  $('route-enabled').onchange();
+  if (trajectoryEnabled()) loadTrajectories();
+};
 $('route-enabled').onchange = () => {
   $('route-editor').hidden = !routeEnabled();
   $('execute').textContent = routeEnabled() ? '执行路线' : '执行目标';
@@ -169,6 +200,7 @@ for (const id of ['latitude', 'longitude', 'altitude']) $(id).addEventListener('
 });
 map.on('click', event => {
   if (mapSelection) { selectMapCorner(event.latlng); return; }
+  if (trajectoryEnabled()) return;
   if (routeEnabled()) {
     routeDraft.push({latitude: Number(event.latlng.lat.toFixed(8)), longitude: Number(event.latlng.wrap().lng.toFixed(8)),
       altitude_msl: routeDraft.length ? routeDraft[routeDraft.length - 1].altitude_msl : read('altitude')});
@@ -201,17 +233,19 @@ $('goal-form').addEventListener('submit', async event => {
   event.preventDefault();
   if ($('execute').disabled) return;
   const target = draft();
-  if (!target || !num(target.altitude_msl)) return;
+  const isTrajectory = trajectoryEnabled();
+  if (!isTrajectory && (!target || !num(target.altitude_msl))) return;
+  if (isTrajectory && !$('trajectory-file').value) return;
   const isRoute = routeEnabled();
   if (isRoute && (!routeDraft.length || routeDraft.some(p => !num(p.latitude) || !num(p.longitude) || !num(p.altitude_msl)))) return;
-  const payload = isRoute ? {mode: $('route-mode').value, points: routeDraft.map(p => ({...p}))} : target;
+  const payload = isTrajectory ? {filename: $('trajectory-file').value} : isRoute ? {mode: $('route-mode').value, points: routeDraft.map(p => ({...p}))} : target;
   $('execute').disabled = true;
   $('submission').textContent = '正在发送；结果未确认…';
   try {
-    const response = await fetch(isRoute ? '/api/route' : '/api/goal', {method: 'POST', headers: {'Content-Type': 'application/json'},
+    const response = await fetch(isTrajectory ? '/api/trajectory' : isRoute ? '/api/route' : '/api/goal', {method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(payload), signal: AbortSignal.timeout(5000)});
     const result = await response.json();
-    $('submission').textContent = response.ok ? `${result.message}\n` + (isRoute ? `${payload.points.length} 个航点 · ${payload.mode === 'smooth' ? '平滑' : '直线'}` : `${fmt(target.latitude, 8)}, ${fmt(target.longitude, 8)}, ${fmt(target.altitude_msl)} m MSL`)
+    $('submission').textContent = response.ok ? `${result.message}\n` + (isTrajectory ? payload.filename : isRoute ? `${payload.points.length} 个航点 · ${payload.mode === 'smooth' ? '平滑' : '直线'}` : `${fmt(target.latitude, 8)}, ${fmt(target.longitude, 8)}, ${fmt(target.altitude_msl)} m MSL`)
       : (result.error || '发送结果未确认');
   } catch (_) { $('submission').textContent = '连接中断：发送结果未确认。请查看控制端全局反馈；不会自动重试。'; }
   finally { $('execute').disabled = false; }
@@ -266,13 +300,16 @@ function renderTelemetry() {
   $('phase').className = 'phase ' + (phaseConfirmed ? phaseColor || 'unconfirmed' : 'unconfirmed');
   $('active-detail').textContent = goal?.active_valid ? `活动请求 #${goal.active_request_sequence}\nENU ${fmt(goal.active_enu.x)}, ${fmt(goal.active_enu.y)}, ${fmt(goal.active_enu.z)} m` +
     (!snapshot.goal_matches_state ? '\n会话未匹配；不显示旧目标坐标' : '') : initialAuto ? 'AUTO 参考已激活 · 尚无在线目标' : goal ? '当前快照无活动目标' : '活动目标未知';
+  if (goal?.active_trajectory) {
+    $('active-detail').textContent += `\nCSV ${goal.active_trajectory}` + (goal.active_phase === 3 ? '\n轨迹完成 · 稳定悬停，等待下一条指令' : '');
+  }
   if (goal?.active_route_enu?.length) {
     $('active-detail').textContent += `\n${goal.active_route_mode === 1 ? '平滑' : '直线'}路线 · 航点 ${goal.active_waypoint_index + 1}/${goal.active_route_enu.length}` +
       (goal.active_phase === 3 ? '\n路线完成 · 最终稳定悬停' : goal.active_route_mode === 1 ? '\n进度依据参考过点时刻' : '');
   }
   if (goal?.request_sequence) {
     const requested = goal.request_source === 'go_to_geographic_position' ? goal.requested_geographic : goal.requested_enu;
-    const values = goal.request_source === 'go_to_geographic_route' ? `${goal.requested_route?.points?.length || 0} 个航点 · ${goal.requested_route?.mode === 1 ? '平滑' : '直线'}路线` : goal.request_source === 'pause_hover' ? '暂停并悬停' : goal.request_source === 'go_to_geographic_position' ? `${fmt(requested.latitude, 8)}, ${fmt(requested.longitude, 8)}, ${fmt(requested.altitude_msl)} m MSL`
+    const values = goal.request_source === 'execute_trajectory' ? `CSV ${goal.requested_trajectory}` : goal.request_source === 'go_to_geographic_route' ? `${goal.requested_route?.points?.length || 0} 个航点 · ${goal.requested_route?.mode === 1 ? '平滑' : '直线'}路线` : goal.request_source === 'pause_hover' ? '暂停并悬停' : goal.request_source === 'go_to_geographic_position' ? `${fmt(requested.latitude, 8)}, ${fmt(requested.longitude, 8)}, ${fmt(requested.altitude_msl)} m MSL`
       : `${fmt(requested.x)}, ${fmt(requested.y)}, ${fmt(requested.z)} m (${goal.request_frame})`;
     $('request').textContent = `#${goal.request_sequence} · ${['无请求', '待处理', '已接受', '已拒绝'][goal.request_state] || '未知'}\n${values}\n${goal.request_reason}`;
   } else $('request').textContent = '尚无目标请求';

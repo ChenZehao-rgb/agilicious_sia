@@ -66,6 +66,14 @@
     <section><div class="eyebrow">WGS84 · MSL</div><h1>地理目标</h1>
       <p class="hint">点击地图选点，或输入经纬高。稳定 AUTO 悬停时可接受新目标。</p>
       <form id="goal-form">
+        <label><input id="trajectory-enabled" type="checkbox"> 加载轨迹</label>
+        <div id="trajectory-editor" hidden>
+          <label for="trajectory-file">已有 CSV 轨迹</label>
+          <select id="trajectory-file"><option value="">请加载轨迹列表</option></select>
+          <button type="button" id="trajectory-refresh">刷新列表</button>
+          <p id="trajectory-list-status" class="detail" role="status"></p>
+          <p class="hint">以执行时的悬停位置和航向对齐起点，保留 CSV 时间、速度和相对高度；轨迹结束后在终点悬停。</p>
+        </div>
         <label><input id="route-enabled" type="checkbox"> 多点路线（点击地图依次添加）</label>
         <div id="route-editor" hidden>
           <label for="route-mode">整条路线模式</label>

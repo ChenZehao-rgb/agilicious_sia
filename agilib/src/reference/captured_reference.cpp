@@ -2,6 +2,25 @@
 
 namespace agi {
 
+bool CapturedReference::startSampledTrajectory(std::shared_ptr<SampledTrajectory> trajectory, double now, const Vector<3>& fence_min,
+                                               const Vector<3>& fence_max) {
+	if (!trajectory || !std::isfinite(now) || trajectory->getStartTime() != 0 || trajectory->getEndTime() <= 0) return false;
+	const QuadState start = getSetpoint(start_state_, now).state.getHoverState();
+	const Quaternion heading(Eigen::AngleAxisd(start.getYaw(), Vector<3>::UnitZ()));
+	QuadState end = trajectory->getEndSetpoint().state;
+	end.p = start.p + heading * end.p;
+	end.q(heading * end.q());
+	if (!start.valid() || !end.valid() || !(end.p.array() >= fence_min.array()).all() || !(end.p.array() <= fence_max.array()).all())
+		return false;
+	clearOnlineTarget();
+	_online_origin = start.p;
+	_online_heading = heading;
+	_online_start = now;
+	_online_end = end;
+	_online_sampled = std::move(trajectory);
+	return true;
+}
+
 std::pair<double, double> CapturedReference::tangentHeading(const MinSnapTrajectory& trajectory, double time, double fallback) {
 	const double begin_time = trajectory.getStartTime(), end_time = trajectory.getEndTime();
 	const Vector<> velocity = trajectory.evalTranslation(time, 1);
@@ -184,6 +203,7 @@ std::string CapturedReference::prepareSmoothRoute(double now, bool stable_hover)
 	_online_start = now;
 	_online_end = end;
 	_pause_yaw.reset();
+	_online_sampled.reset();
 	_smooth_active = true;
 	_smooth_plan.reset();
 	return "ready";
